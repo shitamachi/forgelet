@@ -1,0 +1,21 @@
+# binaries
+/bin/
+/dist/
+cmd/server/server
+cmd/controller/controller
+cmd/executor/executor
+
+# go
+*.test
+*.out
+coverage.*
+
+# tooling
+.venv/
+.idea/
+.vscode/
+.DS_Store
+
+# local dev only
+.env
+*.local.yaml
