@@ -15,7 +15,7 @@
 - [ ] 0004-crd-api-and-controller（accepted，M0 已合入；T6/T7 见其 tasks.md）
 - [ ] 0005-github-events-and-checks（accepted，M0 已合入；T7–T9 见其 tasks.md）
 - [ ] 0006-workflow-syntax-and-compiler（accepted，M0 已合入；T6–T8 见其 tasks.md）
-- [ ] 0007-expression-engine（FR-3）
+- [ ] 0007-expression-engine（accepted，M0 已合入；T5–T7 见其 tasks.md）
 - [ ] 0008-executor-runtime（FR-5）
 - [ ] 0009-builtin-actions（FR-6）
 - [ ] 0010-observability（FR-10）

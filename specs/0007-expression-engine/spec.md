@@ -1,7 +1,8 @@
 # Spec 0007 — Expression Engine
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-3.1、FR-3.4（P0）；FR-3.2/3.3 为本 spec 的 V1 切片任务
 - **Depends on**: 无（纯逻辑，无内部依赖）；0006 保留的 `${{ }}` 原文由本引擎求值

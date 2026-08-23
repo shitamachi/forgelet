@@ -1,7 +1,8 @@
 # Plan — Spec 0007 Expression Engine
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0007-expression-engine/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（workflow 纯逻辑模块）
 
