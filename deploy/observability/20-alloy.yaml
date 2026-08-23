@@ -1,0 +1,114 @@
+# Grafana Alloy DaemonSet: ships every container's log (forgelet executor
+# pods included) to Loki, parsing forgelet's structured JSON into labels
+# (spec 0010 T5 / FR-O1).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy-logs
+  namespace: forgelet-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-logs
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-logs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-logs
+subjects:
+  - kind: ServiceAccount
+    name: alloy-logs
+    namespace: forgelet-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: forgelet-system
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.kubernetes.pods.targets
+      forward_to = [loki.process.forgelet.receiver]
+    }
+
+    // Forgelet emits one JSON object per line (FR-O1). Lift the stable
+    // identifiers into labels; everything else stays searchable via
+    // LogQL `| json`.
+    loki.process "forgelet" {
+      stage.json {
+        expressions = {
+          job_run_id = "jobRun",
+          step       = "step",
+        }
+      }
+      stage.labels {
+        values = {
+          job_run_id = "",
+          step       = "",
+        }
+      }
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.forgelet-system.svc:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy-logs
+  namespace: forgelet-system
+  labels: {app: alloy-logs, app.kubernetes.io/part-of: forgelet}
+spec:
+  selector:
+    matchLabels: {app: alloy-logs}
+  template:
+    metadata:
+      labels: {app: alloy-logs}
+    spec:
+      serviceAccountName: alloy-logs
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.5.1
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+          ports:
+            - containerPort: 12345
+              name: http
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: data
+              mountPath: /var/lib/alloy/data
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+      volumes:
+        - name: config
+          configMap: {name: alloy-config}
+        - name: data
+          emptyDir: {}
+        - name: varlog
+          hostPath:
+            path: /var/log
