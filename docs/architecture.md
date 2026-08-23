@@ -183,7 +183,7 @@ Executor 拉取 Plan/secret 和上报状态时使用专用 workload identity：P
 `automountServiceAccountToken: false`，同时显式投影短时效、`audience=forgelet-control-plane` 的
 ServiceAccount token。该 ServiceAccount 不授予 Kubernetes RBAC；控制面验证 token，并把
 namespace、Pod UID、JobRun、允许接口和过期时间绑定到授权上下文。这里的 token 仅是 forgelet
-身份，不得被 Kubernetes API 当作有效授权使用。0009 spec 必须固化具体 TokenReview/JWKS 验证、
+身份，不得被 Kubernetes API 当作有效授权使用。0003 spec 必须固化具体 TokenReview/JWKS 验证、
 轮换和防重放方案。
 
 ## 10. 安全

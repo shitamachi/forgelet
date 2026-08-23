@@ -49,3 +49,4 @@ specs/NNNN-<slug>/
 | 编号 | 标题 | 状态 |
 |------|------|------|
 | [0001](0001-platform-overview/spec.md) | Platform Overview（总纲） | accepted |
+| [0002](0002-state-consistency-and-scheduler/spec.md) | State Consistency and Scheduler | accepted |
