@@ -21,10 +21,18 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/shitamachi/forgelet/internal/observability/metrics"
+	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/run/scheduler"
+	"github.com/shitamachi/forgelet/internal/security/identity"
+	"github.com/shitamachi/forgelet/internal/security/tokenreview"
 	"github.com/shitamachi/forgelet/internal/server"
 	"github.com/shitamachi/forgelet/internal/storage/postgres"
 )
@@ -44,6 +52,10 @@ func main() {
 		installationID = flag.Int64("github-installation-id", 0, "GitHub App installation id")
 		appKeyPath     = flag.String("github-app-key", "", "GitHub App private key PEM path")
 		scheduledRepos = flag.String("scheduled-repos", "", "comma-separated owner/name repos whose default branches are cron-scanned")
+
+		executorAuth = flag.String("executor-auth", "local", "executor identity verification: local (HMAC dev tokens) or tokenreview (projected ServiceAccount tokens)")
+		kubeconfig   = flag.String("kubeconfig", "", "kubeconfig path for TokenReview; empty uses in-cluster config")
+		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP HTTP collector host:port for tracing; empty disables tracing")
 	)
 	flag.Parse()
 
@@ -72,6 +84,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	tp, shutdown, err := tracing.Setup(ctx, *otlpEndpoint, "forgelet-server")
+	if err != nil {
+		logger.Error("tracing", "err", err.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+	if *otlpEndpoint != "" {
+		logger.Info("tracing: exporting to " + *otlpEndpoint)
+	}
+
 	var durable scheduler.DurableStore
 	if *dbURL != "" {
 		durable, err = postgres.New(ctx, *dbURL, nil, nil)
@@ -86,6 +108,8 @@ func main() {
 
 	opts := server.Options{
 		Durable:        durable,
+		Metrics:        metrics.New(),
+		TracerProvider: tp,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		ScheduledRepos: repos,
@@ -94,9 +118,19 @@ func main() {
 		SecretValues:   map[string]string{},
 		Log:            logger,
 	}
+	if *executorAuth == "tokenreview" {
+		verifier, err := tokenReviewVerifier(*kubeconfig)
+		if err != nil {
+			logger.Error("tokenreview verifier", "err", err.Error())
+			os.Exit(1)
+		}
+		opts.Verifier = verifier
+		logger.Info("executor auth: tokenreview", "audience", identity.Audience, "namespace", jobNamespace)
+	}
 	if tokens != nil {
-		opts.WorkflowFetcher = githubSource{github.NewContentClient(*apiBaseURL, nil, tokens)}
-		opts.CheckReporter = github.NewCheckReporter(*apiBaseURL, nil, tokens)
+		hc := &http.Client{Transport: tracing.Transport(nil, tp), Timeout: 30 * time.Second}
+		opts.WorkflowFetcher = githubSource{github.NewContentClient(*apiBaseURL, hc, tokens)}
+		opts.CheckReporter = github.NewCheckReporter(*apiBaseURL, hc, tokens)
 		logger.Info("provider: github", "auth", tokenAuthMode(*ghToken, *appID), "scheduledRepos", len(repos))
 	} else {
 		if len(repos) > 0 {
@@ -170,4 +204,40 @@ func tokenAuthMode(token string, appID int64) string {
 		return "static-token"
 	}
 	return "github-app"
+}
+
+// jobNamespace is the namespace executor pods run in (0004 §4); it matches
+// the namespace minted identities carry.
+const jobNamespace = "forgelet-jobs"
+
+// tokenReviewVerifier builds the production executor identity verifier:
+// projected ServiceAccount tokens are checked through the TokenReview API
+// and bound to JobRuns via the pod label (spec 0003 FR-S1.5).
+func tokenReviewVerifier(kubeconfig string) (identity.Verifier, error) {
+	var cfg *rest.Config
+	if kubeconfig != "" {
+		c, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("load kubeconfig: %w", err)
+		}
+		cfg = c
+	} else {
+		c, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("in-cluster config: %w (run inside the cluster or pass -kubeconfig)", err)
+		}
+		cfg = c
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes client: %w", err)
+	}
+	return &tokenreview.Verifier{
+		Client:    client,
+		Audience:  identity.Audience,
+		Namespace: jobNamespace,
+		SAName:    "forgelet-executor",
+		Scopes:    []string{identity.ScopePlanRead, identity.ScopeSecretsRead, identity.ScopeStatusWrite},
+		Bindings:  tokenreview.NewPodLabelBindings(client),
+	}, nil
 }

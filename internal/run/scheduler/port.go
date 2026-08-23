@@ -38,6 +38,10 @@ type DurableStore interface {
 
 	ListJobRuns(ctx context.Context, run model.RunID) ([]model.JobRunRecord, error)
 
+	// CountQueuedJobs reports how many JobRuns are waiting for dispatch
+	// (observability: queue depth, spec 0010 FR-O3).
+	CountQueuedJobs(ctx context.Context) (int, error)
+
 	// ClaimNextQueuedJob returns the oldest queued JobRun without changing
 	// its status. Concurrent claims must not hand the same JobRun to two
 	// callers before the claim is released. Returns ErrNoQueuedJob when idle.

@@ -194,13 +194,15 @@ func (p *parser) parseJobs(node *yaml.Node, wf *Workflow) {
 func (p *parser) parseJob(node *yaml.Node, jobID string) *Job {
 	job := &Job{}
 	path := ".jobs." + jobID
-	p.mapping(node, path, map[string]bool{"name": true, "runs-on": true, "needs": true, "strategy": true, "env": true, "steps": true},
+	p.mapping(node, path, map[string]bool{"name": true, "runs-on": true, "if": true, "needs": true, "strategy": true, "env": true, "steps": true},
 		func(key, value *yaml.Node) {
 			switch key.Value {
 			case "name":
 				job.Name = p.scalarString(value, path+".name")
 			case "runs-on":
 				job.RunsOn = p.scalarString(value, path+".runs-on")
+			case "if":
+				job.If = p.conditionString(value, path+".if")
 			case "needs":
 				job.Needs = p.parseNeeds(value, path+".needs")
 			case "strategy":
@@ -212,6 +214,14 @@ func (p *parser) parseJob(node *yaml.Node, jobID string) *Job {
 			}
 		})
 	return job
+}
+
+// conditionString accepts a string condition or a bare boolean (`if: true`).
+func (p *parser) conditionString(node *yaml.Node, path string) string {
+	if node.Tag == "!!bool" {
+		return node.Value
+	}
+	return p.scalarString(node, path)
 }
 
 // parseNeeds accepts `needs: job` and `needs: [a, b]`.
@@ -257,13 +267,21 @@ func (p *parser) parseSteps(node *yaml.Node, jobID string) []*Step {
 	for idx, item := range node.Content {
 		path := fmt.Sprintf(".jobs.%s.steps[%d]", jobID, idx)
 		step := &Step{Pos: Position{Line: item.Line, Column: item.Column}}
-		p.mapping(item, path, map[string]bool{"name": true, "run": true, "env": true},
+		p.mapping(item, path, map[string]bool{"name": true, "if": true, "run": true, "continue-on-error": true, "env": true},
 			func(key, value *yaml.Node) {
 				switch key.Value {
 				case "name":
 					step.Name = p.scalarString(value, path+".name")
+				case "if":
+					step.If = p.conditionString(value, path+".if")
 				case "run":
 					step.Run = p.scalarString(value, path+".run")
+				case "continue-on-error":
+					if value.Tag != "!!bool" {
+						p.fail(value, path+".continue-on-error", "expected boolean")
+						return
+					}
+					step.ContinueOnError = value.Value == "true"
 				case "env":
 					step.Env = p.envMap(value, path+".env")
 				}

@@ -8,6 +8,7 @@ import "strings"
 // unregistered context yields a ContextUnavailableError, never null.
 type Env struct {
 	contexts map[string]Value
+	hasher   WorkspaceHasher // capability behind hashFiles(); nil outside workspace phases
 }
 
 // NewEnv returns an empty environment.
@@ -18,7 +19,7 @@ func NewEnv() *Env {
 // With returns a new Env with the named context registered (copy-on-write).
 // The name is lowercased for lookup.
 func (e *Env) With(name string, v Value) *Env {
-	next := &Env{contexts: make(map[string]Value, len(e.contexts)+1)}
+	next := &Env{contexts: make(map[string]Value, len(e.contexts)+1), hasher: e.hasher}
 	for k, val := range e.contexts {
 		next.contexts[k] = val
 	}

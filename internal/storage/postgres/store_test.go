@@ -113,6 +113,30 @@ func TestPGCreateRunIdempotent(t *testing.T) {
 	}
 }
 
+func TestPGCountQueuedJobs(t *testing.T) {
+	s, _ := testDatabase(t)
+	_ = ingest(t, s, "dq")
+	ctx := context.Background()
+
+	if n, err := s.CountQueuedJobs(ctx); err != nil || n != 2 {
+		t.Fatalf("queued after create = %d err=%v, want 2", n, err)
+	}
+	job, err := s.ClaimNextQueuedJob(ctx)
+	if err != nil || job.JobKey != "build" {
+		t.Fatalf("claim: %+v %v", job, err)
+	}
+	// A claim without ack keeps the queued count unchanged.
+	if n, err := s.CountQueuedJobs(ctx); err != nil || n != 2 {
+		t.Fatalf("queued during claim = %d err=%v, want 2", n, err)
+	}
+	if err := s.AckDispatched(ctx, job.ID, scheduler.ActiveObject{Name: job.ID.CRName(), UID: "u"}, time.Unix(1, 0).UTC()); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if n, err := s.CountQueuedJobs(ctx); err != nil || n != 1 {
+		t.Fatalf("queued after ack = %d err=%v, want 1", n, err)
+	}
+}
+
 func TestPGClaimGatingAndSkip(t *testing.T) {
 	s, _ := testDatabase(t)
 	runID := ingest(t, s, "d3")

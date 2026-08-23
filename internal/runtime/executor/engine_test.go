@@ -175,8 +175,12 @@ func TestFailureStopsAndReports(t *testing.T) {
 	if result.Success || result.Steps[1].ExitCode != 3 {
 		t.Errorf("result = %+v", result)
 	}
-	if len(result.Steps) != 2 {
-		t.Errorf("steps executed after failure: %+v", result.Steps)
+	// Two steps ran; the third is recorded as skipped without executing.
+	if len(result.Steps) != 3 {
+		t.Errorf("steps after failure: %+v", result.Steps)
+	}
+	if result.Steps[2].StepID != "never" || result.Steps[2].Outcome != "skipped" {
+		t.Errorf("remaining step = %+v, want skipped record", result.Steps[2])
 	}
 	if cp.reported[0].Success {
 		t.Error("failure reported as success")

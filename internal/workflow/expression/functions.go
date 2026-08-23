@@ -31,9 +31,10 @@ func (e *Env) jobStatus() string {
 	return JobStatusSuccess
 }
 
-// builtin functions (spec 0007 FR-3.3). hashFiles stays unsupported until
-// the workspace capability lands (0007 T6).
+// builtin functions (spec 0007 FR-3.3). hashFiles evaluates through the
+// injected workspace capability (hashfiles.go).
 var functions = map[string]func(env *Env, args []Value) (Value, error){
+	"hashfiles": hashFilesFn,
 	"success": func(env *Env, _ []Value) (Value, error) {
 		return BoolOf(env.jobStatus() == JobStatusSuccess), nil
 	},

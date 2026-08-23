@@ -6,5 +6,5 @@
 - [x] T4 AC-M0 测试矩阵（运算符/context/拒绝/两阶段一致）
 - [x] T5 V1：函数注册表（success/failure/cancelled/always/contains/startsWith/endsWith/
       format/join/toJSON/fromJSON）（FR-3.3）
-- [ ] T6 V1：hashFiles workspace capability 注入（FR-3.4）
+- [x] T6 V1：hashFiles workspace capability 注入（FR-3.4）；executor 运行时接线随 `if:` 求值落地
 - [x] T7 模板插值 API（`${{ }}` 展开为字符串）供 0006/0008 使用

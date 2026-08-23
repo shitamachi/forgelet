@@ -17,6 +17,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/shitamachi/forgelet/internal/observability/metrics"
+	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -28,6 +34,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/security/policy"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
 	"github.com/shitamachi/forgelet/internal/workflow/compiler"
+	"github.com/shitamachi/forgelet/internal/workflow/expression"
 	"github.com/shitamachi/forgelet/internal/workflow/syntax"
 )
 
@@ -45,12 +52,16 @@ type Options struct {
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
+	Metrics        *metrics.Metrics       // Prometheus instrumentation; default instance when nil
+	TracerProvider trace.TracerProvider   // OpenTelemetry; no-op when nil
 	Verifier       identity.Verifier
 	Issuer         identity.Issuer
 	TokenKey       []byte // used when Verifier/Issuer are nil (local dev identity)
 	DetailsBaseURL string
 	Now            func() time.Time
 	Log            *slog.Logger
+
+	tracer trace.Tracer
 }
 
 // Server wires and exposes the M0 control plane.
@@ -72,6 +83,7 @@ type Server struct {
 	jobMu    sync.Mutex
 	src      *workflowSource
 	mux      chi.Router
+	handler  http.Handler
 }
 
 // NewServer wires everything. Callers then use Handler() (HTTP) and the
@@ -92,6 +104,13 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.CheckReporter == nil {
 		return nil, fmt.Errorf("server: CheckReporter is required")
 	}
+	if opts.Metrics == nil {
+		opts.Metrics = metrics.New()
+	}
+	if opts.TracerProvider == nil {
+		opts.TracerProvider = noop.NewTracerProvider()
+	}
+	opts.tracer = opts.TracerProvider.Tracer("github.com/shitamachi/forgelet/internal/server")
 	if len(opts.TokenKey) == 0 && (opts.Verifier == nil || opts.Issuer == nil) {
 		return nil, fmt.Errorf("server: TokenKey required for local identity")
 	}
@@ -129,19 +148,25 @@ func NewServer(opts Options) (*Server, error) {
 	}
 
 	s.mux = chi.NewRouter()
+	s.mux.Handle("/metrics", s.opts.Metrics.Handler())
 	s.routes()
+	s.handler = tracing.Middleware(opts.TracerProvider, "forgelet-server", s.mux)
 	return s, nil
 }
 
 // Ingest records a delivery and, for a new one, compiles workflows and
 // materializes plans. It satisfies the github IngestPort.
 func (s *Server) Ingest(ctx context.Context, d model.Delivery) (model.RunID, bool, error) {
+	ctx, span := s.opts.tracer.Start(ctx, "server.ingest",
+		trace.WithAttributes(attribute.String("forgelet.event.name", d.Event.Name)))
+	defer span.End()
 	runID, created, err := s.ingest.Ingest(ctx, d)
 	if err != nil || runID == "" || !created {
 		return runID, created, err
 	}
 	trust := trustFor(d)
 	if err := s.buildPlans(ctx, d, runID, trust); err != nil {
+		span.RecordError(err)
 		return runID, created, err
 	}
 	return runID, created, nil
@@ -197,6 +222,25 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 		if inst == nil {
 			return fmt.Errorf("server: job %s missing from compiled set", rec.JobKey)
 		}
+		// Job-level condition (spec 0006 V1): evaluated scheduler-side with
+		// github/needs contexts. A false condition projects the instance to
+		// skipped; existing dependency gating propagates it to dependents.
+		if inst.If != "" {
+			if err := ensureEagerCondition(inst.If); err != nil {
+				return fmt.Errorf("server: job %s: %w", rec.JobKey, err)
+			}
+			run, err := expression.EvaluateCondition(inst.If, jobConditionEnv(d.Event, runs))
+			switch {
+			case err != nil:
+				return fmt.Errorf("server: job %s: invalid if %q: %w", rec.JobKey, inst.If, err)
+			case !run:
+				if perr := s.projectObserved(ctx, rec.ID, model.PhaseSkipped); perr != nil {
+					return fmt.Errorf("server: skip job %s: %w", rec.ID, perr)
+				}
+				s.reportCheck(ctx, rec.ID)
+				continue
+			}
+		}
 		p := buildPlan(rec, d.Event, *inst)
 		if err := s.plans.Put(p); err != nil {
 			return fmt.Errorf("server: store plan for %s: %w", rec.ID, err)
@@ -209,20 +253,115 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 	return nil
 }
 
-// DispatchOnce drains the queue once and reports queued checks.
+// ensureEagerCondition rejects conditions that cannot be evaluated
+// correctly at ingest time. needs results are not final until dependencies
+// finish, and failure()/cancelled() describe outcomes of earlier jobs —
+// both need dispatch-time evaluation; failing loudly beats guessing wrong.
+func ensureEagerCondition(cond string) error {
+	lower := strings.ToLower(cond)
+	if strings.Contains(lower, "needs.") || strings.Contains(lower, "failure(") || strings.Contains(lower, "cancelled(") {
+		return fmt.Errorf("if condition %q depends on other jobs' results; scheduler-side evaluation supports github-only conditions", cond)
+	}
+	return nil
+}
+
+// jobConditionEnv builds the scheduler-time evaluation environment for
+// `if:` conditions: github plus needs.<job>.result. env/secrets/steps are
+// unavailable here by design (GitHub evaluates job conditions pre-run).
+func jobConditionEnv(ev model.Event, runs []model.JobRunRecord) *expression.Env {
+	needs := map[string]expression.Value{}
+	for _, r := range runs {
+		needs[r.JobKey] = expression.ObjOf(map[string]expression.Value{
+			"result": expression.StrOf(githubResultName(r.Status)),
+		})
+	}
+	return expression.NewEnv().
+		With("github", githubContextValue(ev)).
+		With("needs", expression.ObjOf(needs))
+}
+
+// githubContextValue exposes the event as the `github` expression context.
+func githubContextValue(ev model.Event) expression.Value {
+	return expression.ObjOf(map[string]expression.Value{
+		"event_name": expression.StrOf(ev.Name),
+		"ref":        expression.StrOf(ev.Ref),
+		"sha":        expression.StrOf(ev.SHA),
+		"actor":      expression.StrOf(ev.Actor),
+		"repository": expression.ObjOf(map[string]expression.Value{
+			"owner":     expression.StrOf(ev.Repository.Owner),
+			"name":      expression.StrOf(ev.Repository.Name),
+			"full_name": expression.StrOf(ev.Repository.Owner + "/" + ev.Repository.Name),
+		}),
+	})
+}
+
+func githubResultName(s model.JobRunStatus) string {
+	switch s {
+	case model.JobSucceeded:
+		return "success"
+	case model.JobFailed:
+		return "failure"
+	case model.JobCancelled:
+		return "cancelled"
+	case model.JobSkipped:
+		return "skipped"
+	default:
+		return "pending"
+	}
+}
+
+// DispatchOnce drains the queue once and reports queued checks. It feeds
+// the dispatch-latency histogram and the queue-depth gauge (0010 FR-O3).
 func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
+	ctx, span := s.opts.tracer.Start(ctx, "server.dispatch_drain")
+	defer span.End()
 	n := 0
 	for {
 		job, err := s.dispatch.DispatchNext(ctx)
 		if err != nil {
 			if err == scheduler.ErrNoQueuedJob { //nolint:errorlint // sentinel identity check is sufficient
-				return n, nil
+				break
 			}
+			span.RecordError(err)
+			s.publishQueueDepth(ctx)
 			return n, err
 		}
 		n++
+		_, dspan := s.opts.tracer.Start(ctx, "server.dispatch",
+			trace.WithAttributes(attribute.String("forgelet.jobrun.id", string(job.ID))))
+		if rec, gerr := s.durable.GetJobRun(ctx, job.ID); gerr == nil && rec.DispatchedAt != nil {
+			s.opts.Metrics.ObserveDispatch(rec.CreatedAt, *rec.DispatchedAt)
+		}
 		s.reportCheck(ctx, job.ID)
+		dspan.End()
 	}
+	s.publishQueueDepth(ctx)
+	return n, nil
+}
+
+func (s *Server) publishQueueDepth(ctx context.Context) {
+	if n, err := s.durable.CountQueuedJobs(ctx); err == nil {
+		s.opts.Metrics.SetQueueDepth(n)
+	}
+}
+
+// projectObserved projects a phase through the monotonic channel and, on
+// terminal outcomes, records duration/completion metrics.
+func (s *Server) projectObserved(ctx context.Context, id model.JobRunID, phase model.ObservedPhase) error {
+	ctx, span := s.opts.tracer.Start(ctx, "server.project",
+		trace.WithAttributes(
+			attribute.String("forgelet.jobrun.id", string(id)),
+			attribute.String("forgelet.phase", string(phase)),
+		))
+	defer span.End()
+	if err := s.project.Project(ctx, id, phase); err != nil {
+		span.RecordError(err)
+		return err
+	}
+	if rec, err := s.durable.GetJobRun(ctx, id); err == nil {
+		s.opts.Metrics.ObserveCompletion(rec)
+	}
+	return nil
 }
 
 // CollectOnce GCs terminal active objects.
@@ -252,8 +391,9 @@ func (s *Server) MintJobToken(ctx context.Context, id model.JobRunID) (string, e
 	})
 }
 
-// Handler returns the HTTP handler (webhook + internal API + health).
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the HTTP handler (webhook + internal API + health +
+// metrics), wrapped in the tracing middleware.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // StartLoops runs dispatch and collection until ctx is done.
 func (s *Server) StartLoops(ctx context.Context) {
@@ -434,7 +574,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if result.Success {
 		phase = model.PhaseSucceeded
 	}
-	if err := s.project.Project(r.Context(), id, phase); err != nil {
+	if err := s.projectObserved(r.Context(), id, phase); err != nil {
 		http.Error(w, "projection failed", http.StatusInternalServerError)
 		return
 	}
@@ -454,7 +594,7 @@ func (s *Server) handleObserved(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed body", http.StatusBadRequest)
 		return
 	}
-	if err := s.project.Project(r.Context(), id, body.Phase); err != nil {
+	if err := s.projectObserved(r.Context(), id, body.Phase); err != nil {
 		http.Error(w, "projection failed", http.StatusInternalServerError)
 		return
 	}
@@ -635,6 +775,8 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 	p := &plan.Plan{
 		JobRunID:    rec.ID,
 		Repository:  ev.Repository,
+		EventName:   ev.Name,
+		Actor:       ev.Actor,
 		SHA:         ev.SHA,
 		Ref:         ev.Ref,
 		RunnerClass: inst.RunnerClass,
@@ -648,7 +790,11 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 		p.Env[k] = v
 	}
 	for _, st := range inst.Steps {
-		p.Steps = append(p.Steps, plan.Step{ID: stDisplayName(st), Name: st.Name, Run: plan.RunStep{Script: st.Run, Env: st.Env}})
+		p.Steps = append(p.Steps, plan.Step{
+			ID: stDisplayName(st), Name: st.Name, If: st.If,
+			Run:             plan.RunStep{Script: st.Run, Env: st.Env},
+			ContinueOnError: st.ContinueOnError,
+		})
 	}
 	return p
 }

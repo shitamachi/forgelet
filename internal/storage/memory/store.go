@@ -158,6 +158,19 @@ func (s *DurableStore) ListJobRuns(_ context.Context, run model.RunID) ([]model.
 	return out, nil
 }
 
+// CountQueuedJobs implements scheduler.DurableStore.
+func (s *DurableStore) CountQueuedJobs(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, j := range s.jobs {
+		if j.Status == model.JobQueued {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // GetJobRun returns a single job record (test/dev convenience).
 func (s *DurableStore) GetJobRun(_ context.Context, id model.JobRunID) (model.JobRunRecord, error) {
 	s.mu.Lock()
@@ -309,7 +322,7 @@ func (s *DurableStore) ApplyObserved(_ context.Context, id model.JobRunID, phase
 		case model.JobRunning:
 			t := now
 			job.StartedAt = &t
-		case model.JobSucceeded, model.JobFailed:
+		case model.JobSucceeded, model.JobFailed, model.JobSkipped:
 			t := now
 			job.StartedAt = orTime(job.StartedAt, t)
 			job.FinishedAt = &t

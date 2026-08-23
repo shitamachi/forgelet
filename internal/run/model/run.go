@@ -127,6 +127,10 @@ const (
 	PhaseRunning   ObservedPhase = "running"
 	PhaseSucceeded ObservedPhase = "succeeded"
 	PhaseFailed    ObservedPhase = "failed"
+	// PhaseSkipped marks a job that will never run: unsatisfied `if:` or
+	// skipped dependencies. It is a scheduling decision, not a Kubernetes
+	// phase, projected through the same monotonic channel.
+	PhaseSkipped ObservedPhase = "skipped"
 )
 
 // JobStatusFromPhase maps an observed phase to the durable JobRun status it
@@ -141,6 +145,8 @@ func JobStatusFromPhase(p ObservedPhase) (JobRunStatus, bool) {
 		return JobSucceeded, true
 	case PhaseFailed:
 		return JobFailed, true
+	case PhaseSkipped:
+		return JobSkipped, true
 	default:
 		return "", false
 	}
