@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgelet-controller
+  namespace: forgelet-system
+  labels: {app: forgelet-controller}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: forgelet-controller}
+  template:
+    metadata:
+      labels: {app: forgelet-controller}
+    spec:
+      serviceAccountName: forgelet-controller
+      containers:
+        - name: controller
+          image: ghcr.io/shitamachi/forgelet/controller:dev
+          args:
+            - --api-url=http://forgelet-server.forgelet-system.svc
+            - --token=$(CONTROL_PLANE_TOKEN)
+          envFrom:
+            - secretRef: {name: forgelet-server}

@@ -48,6 +48,11 @@ func (i *Ingestor) Ingest(ctx context.Context, d model.Delivery) (model.RunID, b
 			return "", false, fmt.Errorf("delivery %s: %w", d.Key, err)
 		}
 	}
+	if len(jobs) == 0 {
+		// Delivery matched no workflow: keep the durable receipt, create no
+		// run (empty runs would never terminate).
+		return "", false, nil
+	}
 
 	seed := model.RunSeed{Delivery: d.Key, Event: d.Event, Jobs: jobs}
 	run, createdRun, err := i.store.CreateRun(ctx, seed, i.now())

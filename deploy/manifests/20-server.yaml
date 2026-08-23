@@ -1,0 +1,43 @@
+# M0 draft: images are placeholders until the release pipeline lands
+# (spec 0011 T8). The server runs with an in-memory store and local identity
+# in M0; secrets come from a Secret wired in V1.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgelet-server
+  namespace: forgelet-system
+  labels: {app: forgelet-server}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: forgelet-server}
+  template:
+    metadata:
+      labels: {app: forgelet-server}
+    spec:
+      serviceAccountName: forgelet-controller
+      containers:
+        - name: server
+          image: ghcr.io/shitamachi/forgelet/server:dev
+          args:
+            - --addr=:8080
+            - --webhook-secret=$(WEBHOOK_SECRET)
+            - --token-key=$(TOKEN_KEY)
+            - --workflows-dir=/workflows
+          envFrom:
+            - secretRef: {name: forgelet-server}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgelet-server
+  namespace: forgelet-system
+spec:
+  selector: {app: forgelet-server}
+  ports:
+    - port: 80
+      targetPort: 8080
