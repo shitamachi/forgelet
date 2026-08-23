@@ -1,7 +1,8 @@
 # Spec 0002 — State Consistency and Scheduler
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-7（全部）、FR-1.4、FR-1.5 的 durable 去重语义
 - **Out of scope here**: GitHub webhook 验签/归一化（0005）、CRD schema 与 controller（0004）、
