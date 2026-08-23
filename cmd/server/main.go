@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/shitamachi/forgelet/internal/observability/metrics"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -95,6 +96,7 @@ func main() {
 
 	opts := server.Options{
 		Durable:        durable,
+		Metrics:        metrics.New(),
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		ScheduledRepos: repos,

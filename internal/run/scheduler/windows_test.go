@@ -51,6 +51,9 @@ func (f *failingDurable) GetJobRun(ctx context.Context, id model.JobRunID) (mode
 func (f *failingDurable) ListJobRuns(ctx context.Context, run model.RunID) ([]model.JobRunRecord, error) {
 	return f.inner.ListJobRuns(ctx, run)
 }
+func (f *failingDurable) CountQueuedJobs(ctx context.Context) (int, error) {
+	return f.inner.CountQueuedJobs(ctx)
+}
 func (f *failingDurable) ClaimNextQueuedJob(ctx context.Context) (model.JobRunRecord, error) {
 	return f.inner.ClaimNextQueuedJob(ctx)
 }

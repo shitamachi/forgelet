@@ -235,6 +235,15 @@ func (s *Store) ListJobRuns(ctx context.Context, run model.RunID) ([]model.JobRu
 	return jobs, nil
 }
 
+// CountQueuedJobs implements scheduler.DurableStore.
+func (s *Store) CountQueuedJobs(ctx context.Context) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM job_runs WHERE status=$1`, model.JobQueued).Scan(&n); err != nil {
+		return 0, fmt.Errorf("postgres: count queued: %w", err)
+	}
+	return n, nil
+}
+
 const jobCols = `SELECT id, run_id, job_key, runner_class, depends_on, matrix, plan_digest,
 	status, attempt, active_name, active_uid, created_at, dispatched_at, started_at, finished_at, active_collected_at
 	FROM job_runs`

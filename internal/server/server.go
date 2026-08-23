@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/shitamachi/forgelet/internal/observability/metrics"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -46,6 +47,7 @@ type Options struct {
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
+	Metrics        *metrics.Metrics       // Prometheus instrumentation; default instance when nil
 	Verifier       identity.Verifier
 	Issuer         identity.Issuer
 	TokenKey       []byte // used when Verifier/Issuer are nil (local dev identity)
@@ -93,6 +95,9 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.CheckReporter == nil {
 		return nil, fmt.Errorf("server: CheckReporter is required")
 	}
+	if opts.Metrics == nil {
+		opts.Metrics = metrics.New()
+	}
 	if len(opts.TokenKey) == 0 && (opts.Verifier == nil || opts.Issuer == nil) {
 		return nil, fmt.Errorf("server: TokenKey required for local identity")
 	}
@@ -130,6 +135,7 @@ func NewServer(opts Options) (*Server, error) {
 	}
 
 	s.mux = chi.NewRouter()
+	s.mux.Handle("/metrics", s.opts.Metrics.Handler())
 	s.routes()
 	return s, nil
 }
@@ -210,7 +216,7 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 			case err != nil:
 				return fmt.Errorf("server: job %s: invalid if %q: %w", rec.JobKey, inst.If, err)
 			case !run:
-				if perr := s.project.Project(ctx, rec.ID, model.PhaseSkipped); perr != nil {
+				if perr := s.projectObserved(ctx, rec.ID, model.PhaseSkipped); perr != nil {
 					return fmt.Errorf("server: skip job %s: %w", rec.ID, perr)
 				}
 				s.reportCheck(ctx, rec.ID)
@@ -286,20 +292,45 @@ func githubResultName(s model.JobRunStatus) string {
 	}
 }
 
-// DispatchOnce drains the queue once and reports queued checks.
+// DispatchOnce drains the queue once and reports queued checks. It feeds
+// the dispatch-latency histogram and the queue-depth gauge (0010 FR-O3).
 func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
 	n := 0
 	for {
 		job, err := s.dispatch.DispatchNext(ctx)
 		if err != nil {
 			if err == scheduler.ErrNoQueuedJob { //nolint:errorlint // sentinel identity check is sufficient
-				return n, nil
+				break
 			}
+			s.publishQueueDepth(ctx)
 			return n, err
 		}
 		n++
+		if rec, gerr := s.durable.GetJobRun(ctx, job.ID); gerr == nil && rec.DispatchedAt != nil {
+			s.opts.Metrics.ObserveDispatch(rec.CreatedAt, *rec.DispatchedAt)
+		}
 		s.reportCheck(ctx, job.ID)
 	}
+	s.publishQueueDepth(ctx)
+	return n, nil
+}
+
+func (s *Server) publishQueueDepth(ctx context.Context) {
+	if n, err := s.durable.CountQueuedJobs(ctx); err == nil {
+		s.opts.Metrics.SetQueueDepth(n)
+	}
+}
+
+// projectObserved projects a phase through the monotonic channel and, on
+// terminal outcomes, records duration/completion metrics.
+func (s *Server) projectObserved(ctx context.Context, id model.JobRunID, phase model.ObservedPhase) error {
+	if err := s.project.Project(ctx, id, phase); err != nil {
+		return err
+	}
+	if rec, err := s.durable.GetJobRun(ctx, id); err == nil {
+		s.opts.Metrics.ObserveCompletion(rec)
+	}
+	return nil
 }
 
 // CollectOnce GCs terminal active objects.
@@ -511,7 +542,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if result.Success {
 		phase = model.PhaseSucceeded
 	}
-	if err := s.project.Project(r.Context(), id, phase); err != nil {
+	if err := s.projectObserved(r.Context(), id, phase); err != nil {
 		http.Error(w, "projection failed", http.StatusInternalServerError)
 		return
 	}
@@ -531,7 +562,7 @@ func (s *Server) handleObserved(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed body", http.StatusBadRequest)
 		return
 	}
-	if err := s.project.Project(r.Context(), id, body.Phase); err != nil {
+	if err := s.projectObserved(r.Context(), id, body.Phase); err != nil {
 		http.Error(w, "projection failed", http.StatusInternalServerError)
 		return
 	}
