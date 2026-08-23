@@ -37,7 +37,7 @@ type Options struct {
 	SecretValues   map[string]string // "scope/name" -> plaintext (M0 demo source)
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
-	Durable        *memory.DurableStore
+	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
 	Verifier       identity.Verifier
 	Issuer         identity.Issuer
 	TokenKey       []byte // used when Verifier/Issuer are nil (local dev identity)
@@ -51,7 +51,7 @@ type Server struct {
 	opts     Options
 	log      *slog.Logger
 	now      func() time.Time
-	durable  *memory.DurableStore
+	durable  scheduler.DurableStore
 	active   scheduler.ActiveExecutionStore
 	ingest   *scheduler.Ingestor
 	dispatch *scheduler.Dispatcher
