@@ -22,9 +22,11 @@ type Step struct {
 // JobInstance is one executable job of the compiled workflow. V1 matrix
 // expansion produces multiple instances per workflow job with stable keys.
 type JobInstance struct {
-	Key         string // job id (V1: "test[go=1.27]")
+	Key         string // job id, or "test[go=1.27,os=linux]" with matrix
 	DisplayName string
 	RunnerClass string
+	DependsOn   []string
+	Matrix      map[string]string
 	Env         map[string]string
 	Steps       []Step
 }
@@ -46,8 +48,13 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 	if len(wf.Jobs) == 0 {
 		return nil, fmt.Errorf("compile %s: no jobs", wf.File)
 	}
-	out := &Compiled{Name: wf.Name, Jobs: make([]JobInstance, 0, len(wf.Jobs)), push: wf.On.Push}
-	for _, job := range wf.Jobs {
+	out := &Compiled{Name: wf.Name, Jobs: []JobInstance{}, push: wf.On.Push}
+
+	ordered, err := topoSort(wf.Jobs)
+	if err != nil {
+		return nil, fmt.Errorf("compile %s: %w", wf.File, err)
+	}
+	for _, job := range ordered {
 		if strings.TrimSpace(job.RunsOn) == "" {
 			return nil, fmt.Errorf("compile %s: job %q: empty runs-on", wf.File, job.ID)
 		}
@@ -58,6 +65,7 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			Key:         job.ID,
 			DisplayName: displayName(job),
 			RunnerClass: job.RunsOn,
+			DependsOn:   job.Needs,
 			Env:         job.Env,
 		}
 		if inst.Env == nil {
@@ -69,7 +77,11 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			}
 			inst.Steps = append(inst.Steps, Step{Name: step.Name, Run: step.Run, Env: step.Env})
 		}
-		out.Jobs = append(out.Jobs, inst)
+		expanded, err := expandMatrix(job, inst)
+		if err != nil {
+			return nil, fmt.Errorf("compile %s: %w", wf.File, err)
+		}
+		out.Jobs = append(out.Jobs, expanded...)
 	}
 	return out, nil
 }
@@ -98,10 +110,15 @@ func (c *Compiled) MatchesPush(ref string) bool {
 func (c *Compiled) JobIntents() []model.JobIntent {
 	intents := make([]model.JobIntent, 0, len(c.Jobs))
 	for _, job := range c.Jobs {
-		intents = append(intents, model.JobIntent{
+		intent := model.JobIntent{
 			JobKey:      job.Key,
 			RunnerClass: job.RunnerClass,
-		})
+			DependsOn:   job.DependsOn,
+		}
+		if job.Matrix != nil {
+			intent.Matrix = job.Matrix
+		}
+		intents = append(intents, intent)
 	}
 	return intents
 }

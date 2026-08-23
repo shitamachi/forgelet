@@ -96,7 +96,7 @@ on: push
 jobs:
   test:
     runs-on: k3s-small
-    needs: build
+    timeout-minutes: 5
     steps:
       - run: echo hi
 `
@@ -130,7 +130,7 @@ func TestParseUnknownFieldsReportLocation(t *testing.T) {
 		line     int
 		column   int
 	}{
-		{"job needs", unknownJobField, ".jobs.test", `"needs"`, 8, 5},
+		{"job timeout", unknownJobField, ".jobs.test", `"timeout-minutes"`, 8, 5},
 		{"step uses", unknownStepField, ".steps[0]", `"uses"`, 7, 9},
 		{"schedule trigger", unsupportedTrigger, ".on", `"schedule"`, 2, 3},
 	}
@@ -159,7 +159,7 @@ func TestParseUnknownFieldsReportLocation(t *testing.T) {
 		if !strings.Contains(d.Message, tc.field) || !strings.Contains(d.Message, "not in the supported subset") {
 			t.Errorf("%s: message %q lacks field/subset note", tc.name, d.Message)
 		}
-		if !strings.Contains(err.Error(), "wf.yml:8") && tc.name == "job needs" {
+		if !strings.Contains(err.Error(), "wf.yml:8") && tc.name == "job timeout" {
 			t.Errorf("%s: error string lacks location: %v", tc.name, err)
 		}
 	}
@@ -228,7 +228,7 @@ func TestParseNoPartialASTOnError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	// Multiple problems in one document are all reported together.
-	src := "on: push\njobs:\n  a:\n    runs-on: x\n    needs: b\n    steps:\n      - uses: u\n"
+	src := "on: push\njobs:\n  a:\n    runs-on: x\n    timeout-minutes: 5\n    steps:\n      - uses: u\n"
 	_, err = Parse("multi.yml", []byte(src))
 	var serr *Error
 	if !errors.As(err, &serr) {

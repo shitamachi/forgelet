@@ -68,6 +68,8 @@ type Job struct {
 	Pos    Position
 	Name   string
 	RunsOn string
+	Needs  []string
+	Matrix map[string][]string // axis name -> values (V1: no include/exclude)
 	Env    map[string]string
 	Steps  []*Step
 }
