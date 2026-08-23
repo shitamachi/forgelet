@@ -17,7 +17,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/shitamachi/forgelet/internal/observability/metrics"
+	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -48,12 +53,15 @@ type Options struct {
 	Active         scheduler.ActiveExecutionStore
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
 	Metrics        *metrics.Metrics       // Prometheus instrumentation; default instance when nil
+	TracerProvider trace.TracerProvider   // OpenTelemetry; no-op when nil
 	Verifier       identity.Verifier
 	Issuer         identity.Issuer
 	TokenKey       []byte // used when Verifier/Issuer are nil (local dev identity)
 	DetailsBaseURL string
 	Now            func() time.Time
 	Log            *slog.Logger
+
+	tracer trace.Tracer
 }
 
 // Server wires and exposes the M0 control plane.
@@ -75,6 +83,7 @@ type Server struct {
 	jobMu    sync.Mutex
 	src      *workflowSource
 	mux      chi.Router
+	handler  http.Handler
 }
 
 // NewServer wires everything. Callers then use Handler() (HTTP) and the
@@ -98,6 +107,10 @@ func NewServer(opts Options) (*Server, error) {
 	if opts.Metrics == nil {
 		opts.Metrics = metrics.New()
 	}
+	if opts.TracerProvider == nil {
+		opts.TracerProvider = noop.NewTracerProvider()
+	}
+	opts.tracer = opts.TracerProvider.Tracer("github.com/shitamachi/forgelet/internal/server")
 	if len(opts.TokenKey) == 0 && (opts.Verifier == nil || opts.Issuer == nil) {
 		return nil, fmt.Errorf("server: TokenKey required for local identity")
 	}
@@ -137,18 +150,23 @@ func NewServer(opts Options) (*Server, error) {
 	s.mux = chi.NewRouter()
 	s.mux.Handle("/metrics", s.opts.Metrics.Handler())
 	s.routes()
+	s.handler = tracing.Middleware(opts.TracerProvider, "forgelet-server", s.mux)
 	return s, nil
 }
 
 // Ingest records a delivery and, for a new one, compiles workflows and
 // materializes plans. It satisfies the github IngestPort.
 func (s *Server) Ingest(ctx context.Context, d model.Delivery) (model.RunID, bool, error) {
+	ctx, span := s.opts.tracer.Start(ctx, "server.ingest",
+		trace.WithAttributes(attribute.String("forgelet.event.name", d.Event.Name)))
+	defer span.End()
 	runID, created, err := s.ingest.Ingest(ctx, d)
 	if err != nil || runID == "" || !created {
 		return runID, created, err
 	}
 	trust := trustFor(d)
 	if err := s.buildPlans(ctx, d, runID, trust); err != nil {
+		span.RecordError(err)
 		return runID, created, err
 	}
 	return runID, created, nil
@@ -295,6 +313,8 @@ func githubResultName(s model.JobRunStatus) string {
 // DispatchOnce drains the queue once and reports queued checks. It feeds
 // the dispatch-latency histogram and the queue-depth gauge (0010 FR-O3).
 func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
+	ctx, span := s.opts.tracer.Start(ctx, "server.dispatch_drain")
+	defer span.End()
 	n := 0
 	for {
 		job, err := s.dispatch.DispatchNext(ctx)
@@ -302,14 +322,18 @@ func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
 			if err == scheduler.ErrNoQueuedJob { //nolint:errorlint // sentinel identity check is sufficient
 				break
 			}
+			span.RecordError(err)
 			s.publishQueueDepth(ctx)
 			return n, err
 		}
 		n++
+		_, dspan := s.opts.tracer.Start(ctx, "server.dispatch",
+			trace.WithAttributes(attribute.String("forgelet.jobrun.id", string(job.ID))))
 		if rec, gerr := s.durable.GetJobRun(ctx, job.ID); gerr == nil && rec.DispatchedAt != nil {
 			s.opts.Metrics.ObserveDispatch(rec.CreatedAt, *rec.DispatchedAt)
 		}
 		s.reportCheck(ctx, job.ID)
+		dspan.End()
 	}
 	s.publishQueueDepth(ctx)
 	return n, nil
@@ -324,7 +348,14 @@ func (s *Server) publishQueueDepth(ctx context.Context) {
 // projectObserved projects a phase through the monotonic channel and, on
 // terminal outcomes, records duration/completion metrics.
 func (s *Server) projectObserved(ctx context.Context, id model.JobRunID, phase model.ObservedPhase) error {
+	ctx, span := s.opts.tracer.Start(ctx, "server.project",
+		trace.WithAttributes(
+			attribute.String("forgelet.jobrun.id", string(id)),
+			attribute.String("forgelet.phase", string(phase)),
+		))
+	defer span.End()
 	if err := s.project.Project(ctx, id, phase); err != nil {
+		span.RecordError(err)
 		return err
 	}
 	if rec, err := s.durable.GetJobRun(ctx, id); err == nil {
@@ -360,8 +391,9 @@ func (s *Server) MintJobToken(ctx context.Context, id model.JobRunID) (string, e
 	})
 }
 
-// Handler returns the HTTP handler (webhook + internal API + health).
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the HTTP handler (webhook + internal API + health +
+// metrics), wrapped in the tracing middleware.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // StartLoops runs dispatch and collection until ctx is done.
 func (s *Server) StartLoops(ctx context.Context) {

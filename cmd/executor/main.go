@@ -9,11 +9,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/runtime/executor"
 	"github.com/shitamachi/forgelet/internal/runtime/executor/httpclient"
@@ -28,6 +30,7 @@ func main() {
 		workDir      = flag.String("workdir", "/workspace", "workspace directory")
 		timeout      = flag.Duration("timeout", time.Hour, "overall job timeout")
 		grace        = flag.Duration("grace", executor.DefaultGrace, "SIGTERM to SIGKILL grace period")
+		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP HTTP collector host:port for tracing; empty disables tracing")
 	)
 	flag.Parse()
 
@@ -53,22 +56,31 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	tp, shutdown, terr := tracing.Setup(ctx, *otlpEndpoint, "forgelet-executor")
+	if terr != nil {
+		logger.Error("tracing", "err", terr.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
+	cpCtx, cpSpan := tp.Tracer("github.com/shitamachi/forgelet/cmd/executor").Start(ctx, "executor.job")
+	defer cpSpan.End()
 	engine := &executor.Engine{
-		CP:      httpclient.New(*controlPlane, string(token), nil),
+		CP:      httpclient.New(*controlPlane, string(token), &http.Client{Transport: tracing.Transport(nil, tp)}),
 		WorkDir: *workDir,
 		Grace:   *grace,
 		Logger:  logger,
 	}
 
-	plan, err := engine.CP.FetchPlan(ctx, id)
+	plan, err := engine.CP.FetchPlan(cpCtx, id)
 	if err != nil {
 		logger.Error("fetch plan", "err", err.Error())
 		os.Exit(1)
 	}
-	result, err := engine.Run(ctx, id, plan)
+	result, err := engine.Run(cpCtx, id, plan)
 	logger.Info("job finished", "success", result.Success, "cancelled", result.Cancelled, "steps", len(result.Steps))
 	switch {
 	case err == nil:

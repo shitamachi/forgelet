@@ -26,6 +26,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/shitamachi/forgelet/internal/observability/metrics"
+	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -54,6 +55,7 @@ func main() {
 
 		executorAuth = flag.String("executor-auth", "local", "executor identity verification: local (HMAC dev tokens) or tokenreview (projected ServiceAccount tokens)")
 		kubeconfig   = flag.String("kubeconfig", "", "kubeconfig path for TokenReview; empty uses in-cluster config")
+		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP HTTP collector host:port for tracing; empty disables tracing")
 	)
 	flag.Parse()
 
@@ -82,6 +84,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	tp, shutdown, err := tracing.Setup(ctx, *otlpEndpoint, "forgelet-server")
+	if err != nil {
+		logger.Error("tracing", "err", err.Error())
+		os.Exit(1)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+	if *otlpEndpoint != "" {
+		logger.Info("tracing: exporting to " + *otlpEndpoint)
+	}
+
 	var durable scheduler.DurableStore
 	if *dbURL != "" {
 		durable, err = postgres.New(ctx, *dbURL, nil, nil)
@@ -97,6 +109,7 @@ func main() {
 	opts := server.Options{
 		Durable:        durable,
 		Metrics:        metrics.New(),
+		TracerProvider: tp,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		ScheduledRepos: repos,
@@ -115,8 +128,9 @@ func main() {
 		logger.Info("executor auth: tokenreview", "audience", identity.Audience, "namespace", jobNamespace)
 	}
 	if tokens != nil {
-		opts.WorkflowFetcher = githubSource{github.NewContentClient(*apiBaseURL, nil, tokens)}
-		opts.CheckReporter = github.NewCheckReporter(*apiBaseURL, nil, tokens)
+		hc := &http.Client{Transport: tracing.Transport(nil, tp), Timeout: 30 * time.Second}
+		opts.WorkflowFetcher = githubSource{github.NewContentClient(*apiBaseURL, hc, tokens)}
+		opts.CheckReporter = github.NewCheckReporter(*apiBaseURL, hc, tokens)
 		logger.Info("provider: github", "auth", tokenAuthMode(*ghToken, *appID), "scheduledRepos", len(repos))
 	} else {
 		if len(repos) > 0 {
