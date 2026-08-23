@@ -1,7 +1,8 @@
 # Spec 0006 — Workflow Syntax and Compiler
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-2.1、FR-2.2、FR-2.4（M0 子集 + 显式报错 + source location）
 - **Depends on**: 0002（`Compiler` port / `model.JobIntent`）

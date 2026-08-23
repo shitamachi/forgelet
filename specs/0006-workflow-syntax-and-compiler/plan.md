@@ -1,7 +1,8 @@
 # Plan — Spec 0006 Workflow Syntax and Compiler
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0006-workflow-syntax-and-compiler/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（workflow：纯逻辑，禁止 k8s/DB/HTTP/provider SDK）
 
