@@ -44,7 +44,9 @@ func (s *planStore) Get(id model.JobRunID) (*plan.Plan, error) {
 	return p, nil
 }
 
-// readDirSorted lists files (not directories) sorted by name.
+// readDirSorted lists files (not directories) sorted by name. Symlinks are
+// resolved before classification so ConfigMap-mounted workflow directories
+// (which front their files with a ..data symlink) read cleanly.
 func readDirSorted(dir string) ([]yamlFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -52,7 +54,8 @@ func readDirSorted(dir string) ([]yamlFile, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		info, err := os.Stat(filepath.Join(dir, e.Name()))
+		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
 		names = append(names, e.Name())

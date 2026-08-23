@@ -12,30 +12,15 @@ import (
 	"syscall"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	forgeletv1 "github.com/shitamachi/forgelet/api/v1alpha1"
 	"github.com/shitamachi/forgelet/internal/runtime/controller"
 )
-
-func schemeWithForgelet() *runtime.Scheme {
-	s := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(s); err != nil {
-		panic(err)
-	}
-	if err := corev1.AddToScheme(s); err != nil {
-		panic(err)
-	}
-	if err := forgeletv1.AddToScheme(s); err != nil {
-		panic(err)
-	}
-	return s
-}
 
 func metricOpts(enabled bool) metricsserver.Options {
 	if !enabled {
@@ -49,6 +34,7 @@ func main() {
 		apiURL      = flag.String("api-url", "http://forgelet-server.forgelet-system.svc", "control plane base URL")
 		token       = flag.String("token", "", "control plane bearer token (required)")
 		metricsFlag = flag.Bool("metrics", false, "enable controller-runtime metrics server (binds :8080)")
+		jobsNS      = flag.String("jobs-namespace", "forgelet-jobs", "namespace whose JobRuns and pods are reconciled")
 	)
 	flag.Parse()
 
@@ -57,10 +43,13 @@ func main() {
 		os.Exit(2)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	log.SetLogger(logr.FromSlogHandler(logger.Handler()))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: schemeWithForgelet(),
-		// M0 runs the controller in one namespace; cluster-wide is a V1 flag.
+		Scheme: controller.NewScheme(),
+		// The controller reconciles one namespace; the cache stays scoped so
+		// the namespaced Role is sufficient (least privilege, 0011).
+		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{*jobsNS: {}}},
 		HealthProbeBindAddress: ":8081",
 		Metrics:                metricOpts(*metricsFlag),
 	})

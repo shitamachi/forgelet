@@ -17,6 +17,7 @@ import (
 
 	"github.com/shitamachi/forgelet/internal/observability/tracing"
 	"github.com/shitamachi/forgelet/internal/run/model"
+	"github.com/shitamachi/forgelet/internal/run/plan"
 	"github.com/shitamachi/forgelet/internal/runtime/executor"
 	"github.com/shitamachi/forgelet/internal/runtime/executor/httpclient"
 	"github.com/shitamachi/forgelet/internal/security/identity"
@@ -75,12 +76,35 @@ func main() {
 		Logger:  logger,
 	}
 
-	plan, err := engine.CP.FetchPlan(cpCtx, id)
-	if err != nil {
-		logger.Error("fetch plan", "err", err.Error())
+	// Cluster DNS can be briefly unavailable right after pod start; the
+	// plan fetch is the one call worth retrying (idempotent read). Permanent
+	// rejections (4xx) are not retried.
+	var fetched plan.Plan
+	var ferr error
+	backoff := time.Second
+	for attempt := 1; attempt <= 10; attempt++ {
+		fetched, ferr = engine.CP.FetchPlan(cpCtx, id)
+		if ferr == nil {
+			break
+		}
+		var cerr *httpclient.ClientError
+		if cpCtx.Err() != nil || (errors.As(ferr, &cerr) && !cerr.Retryable()) {
+			break
+		}
+		logger.Warn("fetch plan retry", "attempt", attempt, "err", ferr.Error())
+		select {
+		case <-cpCtx.Done():
+		case <-time.After(backoff):
+		}
+		if backoff < 15*time.Second {
+			backoff *= 2
+		}
+	}
+	if ferr != nil {
+		logger.Error("fetch plan", "err", ferr.Error())
 		os.Exit(1)
 	}
-	result, err := engine.Run(cpCtx, id, plan)
+	result, err := engine.Run(cpCtx, id, fetched)
 	logger.Info("job finished", "success", result.Success, "cancelled", result.Cancelled, "steps", len(result.Steps))
 	switch {
 	case err == nil:

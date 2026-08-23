@@ -167,11 +167,12 @@ func (r *JobRunReconciler) observePod(ctx context.Context, jr *forgeletv1.JobRun
 	if err := r.Status().Update(ctx, jr); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update jobrun %s status: %w", jr.Name, err)
 	}
-	id, err := IDFromCRName(jr.Name)
-	if err != nil {
-		return ctrl.Result{}, err
+	// Spec.PlanID is the durable JobRun id and the authoritative case; the
+	// CR name lowercases it for DNS-safe Kubernetes naming.
+	if jr.Spec.PlanID == "" {
+		return ctrl.Result{}, fmt.Errorf("jobrun %s has no plan id", jr.Name)
 	}
-	if err := r.Projection.ApplyObserved(ctx, id, toModelPhase(phase), now); err != nil {
+	if err := r.Projection.ApplyObserved(ctx, model.JobRunID(jr.Spec.PlanID), toModelPhase(phase), now); err != nil {
 		return ctrl.Result{}, fmt.Errorf("project observed %s for %s: %w", phase, jr.Name, err)
 	}
 	return ctrl.Result{}, nil
@@ -253,8 +254,10 @@ func buildPod(jr *forgeletv1.JobRun, class *forgeletv1.RunnerClass) *corev1.Pod 
 			Name:      jr.Name + PodSuffix,
 			Namespace: jr.Namespace,
 			Labels: map[string]string{
-				appLabel:    "executor",
-				jobRunLabel: jr.Name,
+				appLabel: "executor",
+				// The durable id (not the CR name): TokenReview binding
+				// resolves executor tokens through this label.
+				jobRunLabel: jr.Spec.PlanID,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -264,9 +267,13 @@ func buildPod(jr *forgeletv1.JobRun, class *forgeletv1.RunnerClass) *corev1.Pod 
 			NodeSelector:                 class.Spec.NodeSelector,
 			Containers: []corev1.Container{
 				{
-					Name:       jobContainer,
-					Image:      class.Spec.Image,
-					Command:    []string{executorPath},
+					Name:    jobContainer,
+					Image:   class.Spec.Image,
+					Command: []string{executorPath},
+					// The executor identifies its JobRun on the command line;
+					// everything else (token, control plane URL) has defaults
+					// matching the pod projection and service names.
+					Args:       []string{"--jobrun=" + jr.Spec.PlanID},
 					Resources:  class.Spec.Resources,
 					WorkingDir: workspaceDir,
 					VolumeMounts: []corev1.VolumeMount{

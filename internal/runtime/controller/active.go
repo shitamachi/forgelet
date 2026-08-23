@@ -28,6 +28,15 @@ func NewActiveStore(c client.Client, source JobRunSource, namespace string) *Act
 	return &ActiveStore{client: c, source: source, namespace: namespace}
 }
 
+// DurableJobRunSource adapts a scheduler.DurableStore to the JobRunSource
+// port used when the control plane dispatches into Kubernetes.
+type DurableJobRunSource struct{ Durable scheduler.DurableStore }
+
+// Get implements JobRunSource.
+func (s DurableJobRunSource) Get(ctx context.Context, id model.JobRunID) (model.JobRunRecord, error) {
+	return s.Durable.GetJobRun(ctx, id)
+}
+
 // CreateOrGet implements scheduler.ActiveExecutionStore.
 func (a *ActiveStore) CreateOrGet(ctx context.Context, id model.JobRunID) (scheduler.ActiveObject, error) {
 	name := CRNameFromID(id)

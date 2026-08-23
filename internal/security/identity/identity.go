@@ -30,6 +30,10 @@ const (
 	ScopePlanRead    = "plan:read"
 	ScopeSecretsRead = "secrets:read"
 	ScopeStatusWrite = "status:write"
+	// ScopeObservedWrite authorizes observed-phase projection for any
+	// JobRun. Only control-plane infrastructure (the controller) holds it;
+	// executor tokens never do, so their per-JobRun binding stays exact.
+	ScopeObservedWrite = "observed:write"
 )
 
 // MaxTTL is the upper bound for executor token lifetime.

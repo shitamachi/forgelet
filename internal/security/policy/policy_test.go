@@ -37,6 +37,26 @@ func TestAuthorizeExecution(t *testing.T) {
 	}
 }
 
+func TestAuthorizeObservation(t *testing.T) {
+	job := model.JobRunID("01JTEST0000000000000000001")
+	cases := []struct {
+		name    string
+		id      identity.Identity
+		wantErr bool
+	}{
+		{"controller scope observes any run", ident("controller", identity.ScopeObservedWrite), false},
+		{"executor bound to own run", ident(job, identity.ScopeStatusWrite), false},
+		{"executor for other run", ident(model.JobRunID("01JOTHER00000000000000000X"), identity.ScopeStatusWrite), true},
+		{"observed:write without other scopes still observes", ident("controller", identity.ScopeObservedWrite), false},
+	}
+	for _, tc := range cases {
+		err := AuthorizeObservation(tc.id, job)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
 func TestDecideSecretsScopeGate(t *testing.T) {
 	job := model.JobRunID("01JTEST0000000000000000002")
 	id := ident(job, identity.ScopePlanRead) // no secrets:read

@@ -7,4 +7,4 @@
 - [x] T4 V1：OpenTelemetry tracing 关键链路（webhook→ingest、dispatch、投影；W3C 传播
       进出 server 与 executor 控制面调用）；`internal/observability/tracing`，OTLP HTTP 导出，
       空 endpoint 即 no-op
-- [ ] T5 V1：日志采集部署件（Alloy/FluentBit → Loki）与查询约定
+- [x] T5 V1：日志采集部署件（Alloy → Loki，`deploy/observability/`）与查询约定（docs/observability.md）

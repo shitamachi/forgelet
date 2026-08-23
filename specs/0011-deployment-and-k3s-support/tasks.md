@@ -9,4 +9,4 @@
 - [x] T6 V1：PostgreSQL adapter 替换内存 store（0002 T8 语义）
 - [x] T7 V1：TokenReview verifier、GitHub content API workflow 源、真实 Check Run 联调
       （adapter 与 server 接线全部落地；真实环境联调随 T8 k3s smoke）
-- [ ] T8 V1：k3s 支持矩阵 + 真实集群 M0 smoke + 镜像发布流程
+- [x] T8 V1：k3s 支持矩阵 + 真实集群 M0 smoke（`hack/k3s-smoke.sh`，rancher/k3s v1.34 实测全链路）+ 镜像发布流程（`make images`，docs/deployment.md）

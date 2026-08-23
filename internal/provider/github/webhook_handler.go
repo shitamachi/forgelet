@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/shitamachi/forgelet/internal/run/model"
@@ -25,12 +26,30 @@ const MaxWebhookBody = 10 << 20 // 10 MiB
 type WebhookHandler struct {
 	secret []byte
 	ingest IngestPort
+	log    *slog.Logger // nil-safe: failures stay unlogged when absent
 }
 
 // NewWebhookHandler wires the handler. secret is the GitHub App webhook
 // secret.
 func NewWebhookHandler(secret []byte, ingest IngestPort) *WebhookHandler {
-	return &WebhookHandler{secret: append([]byte(nil), secret...), ingest: ingest}
+	return NewWebhookHandlerWithLogger(secret, ingest, nil)
+}
+
+// NewWebhookHandlerWithLogger wires the handler with structured failure
+// logging (the HTTP body never carries ingest diagnostics).
+func NewWebhookHandlerWithLogger(secret []byte, ingest IngestPort, log *slog.Logger) *WebhookHandler {
+	return &WebhookHandler{
+		secret: append([]byte(nil), secret...),
+		ingest: ingest,
+		log:    log,
+	}
+}
+
+func (h *WebhookHandler) errorf(w http.ResponseWriter, status int, msg string, err error) {
+	if h.log != nil && err != nil {
+		h.log.Error("webhook", "msg", msg, "err", err.Error())
+	}
+	http.Error(w, msg, status)
 }
 
 // ServeHTTP implements http.Handler.
@@ -71,7 +90,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		runID, created, err := h.ingest.Ingest(r.Context(), model.Delivery{Key: key, Event: ev, Payload: body})
 		if err != nil {
-			http.Error(w, "ingest failed", http.StatusInternalServerError)
+			h.errorf(w, http.StatusInternalServerError, "ingest failed", err)
 			return
 		}
 		if runID == "" {
@@ -91,7 +110,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		runID, created, err := h.ingest.Ingest(r.Context(), model.Delivery{Key: key, Event: ev, Payload: body})
 		if err != nil {
-			http.Error(w, "ingest failed", http.StatusInternalServerError)
+			h.errorf(w, http.StatusInternalServerError, "ingest failed", err)
 			return
 		}
 		if runID == "" {
