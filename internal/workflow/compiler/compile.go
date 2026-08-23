@@ -37,7 +37,9 @@ type Compiled struct {
 	Name string
 	Jobs []JobInstance // document order
 
-	push *syntax.PushTrigger
+	push     *syntax.PushTrigger
+	pr       *syntax.PushTrigger
+	schedule []string
 }
 
 // Compile validates the AST semantics and produces the IR.
@@ -48,7 +50,7 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 	if len(wf.Jobs) == 0 {
 		return nil, fmt.Errorf("compile %s: no jobs", wf.File)
 	}
-	out := &Compiled{Name: wf.Name, Jobs: []JobInstance{}, push: wf.On.Push}
+	out := &Compiled{Name: wf.Name, Jobs: []JobInstance{}, push: wf.On.Push, pr: wf.On.PullRequest, schedule: wf.On.Schedule}
 
 	ordered, err := topoSort(wf.Jobs)
 	if err != nil {
@@ -103,6 +105,20 @@ func (c *Compiled) MatchesPush(ref string) bool {
 		return false
 	}
 	return matchesFilters(c.push, syntax.TrimRefPrefix(ref))
+}
+
+// MatchesPullRequest reports whether a pull_request event targeting the
+// given base branch triggers the workflow (base-branch filters).
+func (c *Compiled) MatchesPullRequest(baseRef string) bool {
+	if c.pr == nil {
+		return false
+	}
+	return matchesFilters(c.pr, syntax.TrimRefPrefix(baseRef))
+}
+
+// Schedules returns the cron expressions of `on.schedule` (spec 0002 T9).
+func (c *Compiled) Schedules() []string {
+	return append([]string(nil), c.schedule...)
 }
 
 // JobIntents bridges the compiled workflow to the scheduler Compiler port

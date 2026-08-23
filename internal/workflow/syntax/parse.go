@@ -95,19 +95,58 @@ func (p *parser) parseWorkflow(root *yaml.Node) *Workflow {
 
 func (p *parser) parseOn(node *yaml.Node, wf *Workflow) {
 	switch node.Kind {
-	case yaml.ScalarNode: // on: push
-		if node.Value != "push" {
+	case yaml.ScalarNode: // on: push | on: pull_request
+		switch node.Value {
+		case "push":
+			wf.On.Push = &PushTrigger{}
+		case "pull_request":
+			wf.On.PullRequest = &PushTrigger{}
+		default:
 			p.fail(node, ".on", fmt.Sprintf("%q %s", node.Value, subsetMessage))
-			return
 		}
-		wf.On.Push = &PushTrigger{}
 	case yaml.MappingNode:
-		p.mapping(node, ".on", map[string]bool{"push": true}, func(_, v *yaml.Node) {
-			wf.On.Push = p.parsePush(v)
+		p.mapping(node, ".on", map[string]bool{"push": true, "pull_request": true, "schedule": true}, func(_, v *yaml.Node) {
+			// The key node is needed to route; re-read from the mapping by
+			// walking again is ugly — the closure loses it, so parse by kind.
 		})
+		// The mapping helper above only validates keys; parse values here.
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, value := node.Content[i], node.Content[i+1]
+			switch key.Value {
+			case "push":
+				wf.On.Push = p.parsePush(value)
+			case "pull_request":
+				wf.On.PullRequest = p.parsePush(value)
+			case "schedule":
+				wf.On.Schedule = p.parseSchedule(value, ".on.schedule")
+			}
+		}
 	default:
-		p.fail(node, ".on", "expected `push` or a trigger mapping")
+		p.fail(node, ".on", "expected a trigger name or a trigger mapping")
 	}
+}
+
+// parseSchedule accepts `schedule: [{cron: "..."}` lists.
+func (p *parser) parseSchedule(node *yaml.Node, path string) []string {
+	if node.Kind != yaml.SequenceNode {
+		p.fail(node, path, "expected sequence of {cron: expression}")
+		return nil
+	}
+	var out []string
+	for idx, item := range node.Content {
+		ipath := fmt.Sprintf("%s[%d]", path, idx)
+		if item.Kind != yaml.MappingNode {
+			p.fail(item, ipath, "expected mapping with a cron key")
+			continue
+		}
+		p.mapping(item, ipath, map[string]bool{"cron": true}, func(_, v *yaml.Node) {})
+		for i := 0; i+1 < len(item.Content); i += 2 {
+			if item.Content[i].Value == "cron" {
+				out = append(out, p.scalarString(item.Content[i+1], ipath+".cron"))
+			}
+		}
+	}
+	return out
 }
 
 func (p *parser) parsePush(node *yaml.Node) *PushTrigger {

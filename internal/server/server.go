@@ -21,6 +21,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/run/plan"
+	"github.com/shitamachi/forgelet/internal/run/schedule"
 	"github.com/shitamachi/forgelet/internal/run/scheduler"
 	"github.com/shitamachi/forgelet/internal/runtime/executor"
 	"github.com/shitamachi/forgelet/internal/security/identity"
@@ -32,8 +33,14 @@ import (
 
 // Options configures a Server. Every external dependency is a port.
 type Options struct {
-	WebhookSecret  []byte
-	WorkflowsDir   string
+	WebhookSecret []byte
+	WorkflowsDir  string
+	// WorkflowFetcher replaces the local directory with a repository
+	// source (GitHub content API adapter); nil = local dir (dev).
+	WorkflowFetcher WorkflowFetcher
+	// ScheduledRepos enables the internal cron scheduler (spec 0002 T9)
+	// for these repositories' default branches.
+	ScheduledRepos []ScheduledRepo
 	SecretValues   map[string]string // "scope/name" -> plaintext (M0 demo source)
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
@@ -57,10 +64,13 @@ type Server struct {
 	dispatch *scheduler.Dispatcher
 	project  *scheduler.Projector
 	collect  *scheduler.Collector
+	sched    *schedule.Scheduler
 	reporter report.CheckReporter
 	plans    *planStore
 	jobs     map[model.RunID][]compiler.JobInstance
+	trust    map[model.JobRunID]policy.TrustLevel
 	jobMu    sync.Mutex
+	src      *workflowSource
 	mux      chi.Router
 }
 
@@ -104,14 +114,19 @@ func NewServer(opts Options) (*Server, error) {
 		reporter: opts.CheckReporter,
 		plans:    newPlanStore(),
 		jobs:     map[model.RunID][]compiler.JobInstance{},
+		trust:    map[model.JobRunID]policy.TrustLevel{},
 	}
 
-	source := &workflowSource{dir: opts.WorkflowsDir, log: opts.Log}
+	source := &workflowSource{dir: opts.WorkflowsDir, fetcher: opts.WorkflowFetcher, log: opts.Log}
+	s.src = source
 	ids := scheduler.NewIDGen(opts.Now, nil)
 	s.ingest = scheduler.NewIngestor(opts.Durable, source, ids, opts.Now)
 	s.dispatch = scheduler.NewDispatcher(opts.Durable, opts.Active, opts.Now)
 	s.project = scheduler.NewProjector(opts.Durable, opts.Now)
 	s.collect = scheduler.NewCollector(opts.Durable, opts.Active, opts.Now)
+	if len(opts.ScheduledRepos) > 0 {
+		s.sched = schedule.New(&repoSchedules{repos: opts.ScheduledRepos, src: source}, s, opts.Now)
+	}
 
 	s.mux = chi.NewRouter()
 	s.routes()
@@ -125,17 +140,41 @@ func (s *Server) Ingest(ctx context.Context, d model.Delivery) (model.RunID, boo
 	if err != nil || runID == "" || !created {
 		return runID, created, err
 	}
-	if err := s.buildPlans(ctx, d, runID); err != nil {
+	trust := trustFor(d)
+	if err := s.buildPlans(ctx, d, runID, trust); err != nil {
 		return runID, created, err
 	}
 	return runID, created, nil
 }
 
+// trustFor classifies a delivery: pushes are trusted; pull requests are
+// same-repo or fork based on the head repository (spec 0001 FR-9.4).
+func trustFor(d model.Delivery) policy.TrustLevel {
+	if d.Event.Name != "pull_request" {
+		return policy.TrustTrusted
+	}
+	var pr struct {
+		PullRequest struct {
+			Head struct {
+				Repo struct {
+					Fork bool `json:"fork"`
+				} `json:"repo"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(d.Payload, &pr); err != nil {
+		return policy.TrustSameRepo // unparsable: least privilege that still runs
+	}
+	if pr.PullRequest.Head.Repo.Fork {
+		return policy.TrustFork
+	}
+	return policy.TrustSameRepo
+}
+
 // buildPlans compiles the matching workflows again (deterministic) and
 // stores an executor plan per job run.
-func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.RunID) error {
-	source := &workflowSource{dir: s.opts.WorkflowsDir, log: s.log}
-	jobs, err := source.matchedJobs(d.Event)
+func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.RunID, trust policy.TrustLevel) error {
+	jobs, err := s.src.matchedJobs(ctx, d.Event, d.Payload)
 	if err != nil {
 		return fmt.Errorf("server: rebuild jobs for %s: %w", runID, err)
 	}
@@ -162,6 +201,9 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 		if err := s.plans.Put(p); err != nil {
 			return fmt.Errorf("server: store plan for %s: %w", rec.ID, err)
 		}
+		s.jobMu.Lock()
+		s.trust[rec.ID] = trust
+		s.jobMu.Unlock()
 		s.reportCheck(ctx, rec.ID) // queued while waiting for dispatch
 	}
 	return nil
@@ -185,6 +227,16 @@ func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
 
 // CollectOnce GCs terminal active objects.
 func (s *Server) CollectOnce(ctx context.Context) (int, error) { return s.collect.Collect(ctx) }
+
+// ScheduleOnce ticks the internal cron scheduler once (spec 0002 T9) and
+// returns how many schedule deliveries were emitted. It is a no-op unless
+// Options.ScheduledRepos is set.
+func (s *Server) ScheduleOnce(ctx context.Context) (int, error) {
+	if s.sched == nil {
+		return 0, nil
+	}
+	return s.sched.Tick(ctx)
+}
 
 // MintJobToken issues the executor identity token for a job run (M0 local
 // identity; in-cluster this becomes a projected ServiceAccount token).
@@ -233,6 +285,22 @@ func (s *Server) StartLoops(ctx context.Context) {
 			}
 		}
 	}()
+	if s.sched != nil {
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if _, err := s.ScheduleOnce(ctx); err != nil {
+						s.log.Error("schedule loop", "err", err.Error())
+					}
+				}
+			}
+		}()
+	}
 }
 
 func (s *Server) routes() {
@@ -332,9 +400,10 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	for _, sr := range p.SecretRefs {
 		planRefs = append(planRefs, policy.Ref{Scope: sr.Scope, Name: sr.Name})
 	}
-	// Push events from the same repo are trusted in M0 (FR-9.4 fork policy
-	// applies once pull_request decoding lands, 0005 T7).
-	decision := policy.DecideSecrets(ident, requested, planRefs, policy.TrustTrusted)
+	s.jobMu.Lock()
+	trust := s.trust[id]
+	s.jobMu.Unlock()
+	decision := policy.DecideSecrets(ident, requested, planRefs, trust)
 	out := map[string]string{}
 	for _, allowed := range decision.Allowed {
 		if v, okv := s.opts.SecretValues[allowed.Scope+"/"+allowed.Name]; okv {
@@ -434,37 +503,55 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// workflowSource compiles workflows from a local directory (M0; GitHub
-// content API lands with 0011 T7).
+// WorkflowFetcher is the repository workflow source port (the GitHub
+// content adapter implements it; the local directory is the dev fallback).
+type WorkflowFetcher interface {
+	FetchWorkflows(ctx context.Context, repo model.RepositoryRef, ref string) ([]WorkflowFile, error)
+}
+
+// WorkflowFile is one workflow file from a source.
+type WorkflowFile struct {
+	Name string
+	Data []byte
+}
+
+// workflowSource compiles workflows from a repository fetcher or a local
+// directory.
 type workflowSource struct {
-	dir string
-	log *slog.Logger
+	dir     string
+	fetcher WorkflowFetcher
+	log     *slog.Logger
 }
 
 // Compile implements scheduler.Compiler.
-func (w *workflowSource) Compile(ctx context.Context, ev model.Event, _ []byte) ([]model.JobIntent, error) {
-	jobs, err := w.matchedJobs(ev)
+func (w *workflowSource) Compile(ctx context.Context, ev model.Event, payload []byte) ([]model.JobIntent, error) {
+	jobs, err := w.matchedJobs(ctx, ev, payload)
 	if err != nil {
 		return nil, err
 	}
 	intents := make([]model.JobIntent, 0, len(jobs))
 	for _, j := range jobs {
-		intents = append(intents, model.JobIntent{JobKey: j.Key, RunnerClass: j.RunnerClass})
+		intent := model.JobIntent{JobKey: j.Key, RunnerClass: j.RunnerClass, DependsOn: j.DependsOn, Matrix: j.Matrix}
+		intents = append(intents, intent)
 	}
 	return intents, nil
 }
 
-func (w *workflowSource) matchedJobs(ev model.Event) ([]compiler.JobInstance, error) {
-	if ev.Name != "push" {
+func (w *workflowSource) matchedJobs(ctx context.Context, ev model.Event, payload []byte) ([]compiler.JobInstance, error) {
+	if ev.Name != "push" && ev.Name != "pull_request" && ev.Name != "schedule" {
 		return nil, nil
 	}
-	files, err := listYAML(w.dir)
+	ref := ev.SHA
+	if ev.Name == "schedule" {
+		ref = ev.Ref
+	}
+	files, err := w.load(ctx, ev.Repository, ref)
 	if err != nil {
 		return nil, fmt.Errorf("workflow source: %w", err)
 	}
 	var out []compiler.JobInstance
 	for _, f := range files {
-		wf, err := syntax.Parse(f.name, f.data)
+		wf, err := syntax.Parse(f.Name, f.Data)
 		if err != nil {
 			return nil, fmt.Errorf("workflow source: %w", err)
 		}
@@ -472,10 +559,47 @@ func (w *workflowSource) matchedJobs(ev model.Event) ([]compiler.JobInstance, er
 		if err != nil {
 			return nil, fmt.Errorf("workflow source: %w", err)
 		}
-		if !c.MatchesPush(ev.Ref) {
-			continue
+		switch ev.Name {
+		case "push":
+			if c.MatchesPush(ev.Ref) {
+				out = append(out, c.Jobs...)
+			}
+		case "pull_request":
+			var pr struct {
+				PullRequest struct {
+					Base struct {
+						Ref string `json:"ref"`
+					} `json:"base"`
+				} `json:"pull_request"`
+			}
+			_ = json.Unmarshal(payload, &pr)
+			if c.MatchesPullRequest(pr.PullRequest.Base.Ref) {
+				out = append(out, c.Jobs...)
+			}
+		case "schedule":
+			if len(c.Schedules()) > 0 {
+				out = append(out, c.Jobs...)
+			}
 		}
-		out = append(out, c.Jobs...)
+	}
+	return out, nil
+}
+
+func (w *workflowSource) load(ctx context.Context, repo model.RepositoryRef, ref string) ([]WorkflowFile, error) {
+	if w.fetcher != nil {
+		files, err := w.fetcher.FetchWorkflows(ctx, repo, ref)
+		if err != nil {
+			return nil, err
+		}
+		return files, nil
+	}
+	local, err := listYAML(w.dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WorkflowFile, 0, len(local))
+	for _, f := range local {
+		out = append(out, WorkflowFile{Name: f.name, Data: f.data})
 	}
 	return out, nil
 }

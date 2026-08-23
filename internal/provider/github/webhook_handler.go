@@ -59,6 +59,26 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := model.DeliveryKey{Provider: "github", DeliveryID: deliveryID}
 
 	switch event {
+	case "pull_request":
+		ev, info, err := DecodePull(body, deliveryID)
+		switch {
+		case errors.Is(err, ErrIgnoredPush):
+			writeJSON(w, http.StatusOK, map[string]any{"ignored": true, "reason": "action " + info.Action})
+			return
+		case err != nil:
+			http.Error(w, "malformed pull_request payload", http.StatusBadRequest)
+			return
+		}
+		runID, created, err := h.ingest.Ingest(r.Context(), model.Delivery{Key: key, Event: ev, Payload: body})
+		if err != nil {
+			http.Error(w, "ingest failed", http.StatusInternalServerError)
+			return
+		}
+		if runID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"ignored": true, "reason": "no matching workflow"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"runId": string(runID), "created": created, "fork": info.Fork})
 	case "push":
 		ev, err := DecodePush(body, deliveryID)
 		switch {
