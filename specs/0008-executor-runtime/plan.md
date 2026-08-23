@@ -1,7 +1,8 @@
 # Plan — Spec 0008 Executor Runtime
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0008-executor-runtime/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（runtime/executor：禁止 Kubernetes client、
   provider SDK、直接访问 PG）

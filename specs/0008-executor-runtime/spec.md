@@ -1,7 +1,8 @@
 # Spec 0008 — Executor Runtime
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-5.1（Plan/secret 获取与状态上报的 Executor 侧契约）、FR-5.2（M0 `run` step）、
   FR-5.4、FR-5.5；FR-5.3 file commands 属本 spec V1 切片（M0 实现 GITHUB_ENV/OUTPUT/PATH 的
