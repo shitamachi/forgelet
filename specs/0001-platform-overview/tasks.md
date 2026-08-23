@@ -18,6 +18,6 @@
 - [ ] 0007-expression-engine（accepted，M0 已合入；T5–T7 见其 tasks.md）
 - [ ] 0008-executor-runtime（accepted，M0 已合入；T8–T10 见其 tasks.md）
 - [ ] 0009-builtin-actions（FR-6）
-- [ ] 0010-observability（FR-10）
-- [ ] 0011-deployment-and-k3s-support（NFR-1）
-- [ ] M0 端到端闭环演示（push → Check Run success）
+- [ ] 0010-observability（accepted，M0 已合入；T3–T5 见其 tasks.md）
+- [ ] 0011-deployment-and-k3s-support（accepted，M0 已合入；T6–T8 见其 tasks.md）
+- [x] M0 端到端闭环（进程内 e2e 全链路绿：push→去重→编译→dispatch→认证执行→状态投影→Check Run→GC；真实 k3s 冒烟待 0011 T8）
