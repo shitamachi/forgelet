@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/workflow/syntax"
 )
 
@@ -34,6 +33,10 @@ jobs:
     steps:
       - run: go build ./cmd/app
 `
+
+func mustCompile(t *testing.T, src string) *Compiled {
+	return compileSrc(t, src)
+}
 
 func compileSrc(t *testing.T, src string) *Compiled {
 	t.Helper()
@@ -105,9 +108,9 @@ func TestJobIntentsBridge(t *testing.T) {
 	if len(intents) != 2 {
 		t.Fatalf("intents = %d", len(intents))
 	}
-	want := model.JobIntent{JobKey: "test", RunnerClass: "k3s-small"}
-	if intents[0] != want {
-		t.Errorf("intent 0 = %+v, want %+v", intents[0], want)
+	got := intents[0]
+	if got.JobKey != "test" || got.RunnerClass != "k3s-small" || len(got.DependsOn) != 0 || got.Matrix != nil {
+		t.Errorf("intent 0 = %+v, want plain test/k3s-small", got)
 	}
 	// The intents must satisfy the scheduler Compiler contract (validated by
 	// model.JobIntent.Validate).

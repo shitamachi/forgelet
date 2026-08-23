@@ -35,12 +35,16 @@ const (
 	JobSucceeded  JobRunStatus = "succeeded"
 	JobFailed     JobRunStatus = "failed"
 	JobCancelled  JobRunStatus = "cancelled"
+	// JobSkipped marks a job whose dependencies did not succeed and that
+	// therefore never executes (GitHub needs semantics; `if: always()` is
+	// not in the V1 subset).
+	JobSkipped JobRunStatus = "skipped"
 )
 
 // IsTerminal reports whether the status is a final state that must never change.
 func (s JobRunStatus) IsTerminal() bool {
 	switch s {
-	case JobSucceeded, JobFailed, JobCancelled:
+	case JobSucceeded, JobFailed, JobCancelled, JobSkipped:
 		return true
 	default:
 		return false
@@ -90,7 +94,7 @@ func CanTransitionJob(from, to JobRunStatus) bool {
 		return false
 	}
 	switch to {
-	case JobCancelled:
+	case JobCancelled, JobSkipped:
 		return true
 	case JobDispatched:
 		return from == JobQueued
@@ -140,11 +144,12 @@ func CanAdvanceRun(from, to WorkflowRunStatus) bool {
 
 // AggregateRunStatus derives the WorkflowRun status from its JobRun statuses.
 // Any non-terminal job keeps the run open; terminal jobs aggregate worst-first.
+// Skipped jobs (unsatisfied needs) do not fail the run (GitHub semantics).
 func AggregateRunStatus(jobs []JobRunStatus) WorkflowRunStatus {
 	running := false
 	started := false
 	allTerminal := true
-	anyFailed, anyCancelled, anySucceeded := false, false, false
+	anyFailed, anyCancelled, anySucceeded, anySkipped := false, false, false, false
 
 	for _, s := range jobs {
 		switch s {
@@ -159,6 +164,8 @@ func AggregateRunStatus(jobs []JobRunStatus) WorkflowRunStatus {
 			anyFailed = true
 		case JobCancelled:
 			anyCancelled = true
+		case JobSkipped:
+			anySkipped = true
 		case JobSucceeded:
 			anySucceeded = true
 		}
@@ -179,7 +186,7 @@ func AggregateRunStatus(jobs []JobRunStatus) WorkflowRunStatus {
 		return RunFailed
 	case anyCancelled:
 		return RunCancelled
-	case anySucceeded:
+	case anySucceeded, anySkipped:
 		return RunSucceeded
 	default:
 		return RunQueued

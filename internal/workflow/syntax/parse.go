@@ -155,13 +155,17 @@ func (p *parser) parseJobs(node *yaml.Node, wf *Workflow) {
 func (p *parser) parseJob(node *yaml.Node, jobID string) *Job {
 	job := &Job{}
 	path := ".jobs." + jobID
-	p.mapping(node, path, map[string]bool{"name": true, "runs-on": true, "env": true, "steps": true},
+	p.mapping(node, path, map[string]bool{"name": true, "runs-on": true, "needs": true, "strategy": true, "env": true, "steps": true},
 		func(key, value *yaml.Node) {
 			switch key.Value {
 			case "name":
 				job.Name = p.scalarString(value, path+".name")
 			case "runs-on":
 				job.RunsOn = p.scalarString(value, path+".runs-on")
+			case "needs":
+				job.Needs = p.parseNeeds(value, path+".needs")
+			case "strategy":
+				job.Matrix = p.parseStrategy(value, path+".strategy")
 			case "env":
 				job.Env = p.envMap(value, path+".env")
 			case "steps":
@@ -169,6 +173,40 @@ func (p *parser) parseJob(node *yaml.Node, jobID string) *Job {
 			}
 		})
 	return job
+}
+
+// parseNeeds accepts `needs: job` and `needs: [a, b]`.
+func (p *parser) parseNeeds(node *yaml.Node, path string) []string {
+	if node.Kind == yaml.ScalarNode {
+		return []string{p.scalarString(node, path)}
+	}
+	return p.stringSeq(node, path)
+}
+
+// parseStrategy accepts only strategy.matrix {axis: [values]}; include and
+// exclude are explicitly out of the declared subset (spec 0001 FR-2.4).
+func (p *parser) parseStrategy(node *yaml.Node, path string) map[string][]string {
+	if node.Kind != yaml.MappingNode {
+		p.fail(node, path, "expected mapping with a matrix key")
+		return nil
+	}
+	var matrix map[string][]string
+	p.mapping(node, path, map[string]bool{"matrix": true}, func(_, v *yaml.Node) {
+		if v.Kind != yaml.MappingNode {
+			p.fail(v, path+".matrix", "expected mapping of axis name to value list")
+			return
+		}
+		matrix = map[string][]string{}
+		for i := 0; i+1 < len(v.Content); i += 2 {
+			axis, values := v.Content[i], v.Content[i+1]
+			if !isIdentifier(axis.Value) {
+				p.fail(axis, path+".matrix", "axis names must be identifiers")
+				continue
+			}
+			matrix[axis.Value] = p.stringSeq(values, path+".matrix."+axis.Value)
+		}
+	})
+	return matrix
 }
 
 func (p *parser) parseSteps(node *yaml.Node, jobID string) []*Step {

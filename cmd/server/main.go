@@ -20,7 +20,9 @@ import (
 
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
+	"github.com/shitamachi/forgelet/internal/run/scheduler"
 	"github.com/shitamachi/forgelet/internal/server"
+	"github.com/shitamachi/forgelet/internal/storage/postgres"
 )
 
 func main() {
@@ -28,6 +30,7 @@ func main() {
 		addr     = flag.String("addr", ":8080", "listen address")
 		secret   = flag.String("webhook-secret", "", "GitHub webhook secret (required)")
 		dir      = flag.String("workflows-dir", "./workflows", "workflow files directory (M0 local source)")
+		dbURL    = flag.String("database-url", "", "PostgreSQL DSN; empty uses the in-memory store (dev only)")
 		tokenKey = flag.String("token-key", "", "hex key for local executor identity (required)")
 		details  = flag.String("details-base-url", "http://localhost:8080", "base URL for check details links")
 	)
@@ -44,7 +47,23 @@ func main() {
 		os.Exit(2)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	var durable scheduler.DurableStore
+	if *dbURL != "" {
+		durable, err = postgres.New(ctx, *dbURL, nil, nil)
+		if err != nil {
+			logger.Error("postgres", "err", err.Error())
+			os.Exit(1)
+		}
+		logger.Info("durable store: postgresql")
+	} else {
+		logger.Warn("durable store: in-memory (dev only)")
+	}
+
 	srv, err := server.NewServer(server.Options{
+		Durable:        durable,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		TokenKey:       key,
@@ -58,8 +77,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 	srv.StartLoops(ctx)
 
 	httpSrv := &http.Server{

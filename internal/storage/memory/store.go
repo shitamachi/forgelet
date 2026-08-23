@@ -106,6 +106,8 @@ func (s *DurableStore) CreateRun(_ context.Context, seed model.RunSeed, now time
 			RunID:       runID,
 			JobKey:      intent.JobKey,
 			RunnerClass: intent.RunnerClass,
+			DependsOn:   append([]string(nil), intent.DependsOn...),
+			Matrix:      intent.Matrix,
 			PlanDigest:  intent.PlanDigest,
 			Status:      model.JobQueued,
 			Attempt:     1,
@@ -193,9 +195,61 @@ func (s *DurableStore) ClaimNextQueuedJob(context.Context) (model.JobRunRecord, 
 		}
 		return candidates[i].at.Before(candidates[j].at)
 	})
-	pick := candidates[0]
-	s.claimed[pick.id] = true
-	return s.jobs[pick.id], nil
+
+	for _, pick := range candidates {
+		switch s.dependencyStateLocked(pick.id) {
+		case depsBlocked:
+			continue // dependencies still running; try younger jobs
+		case depsFailed:
+			// Dependencies did not succeed: mark skipped and keep looking.
+			job := s.jobs[pick.id]
+			if next, err := model.TransitionJob(job.Status, model.JobSkipped); err == nil {
+				job.Status = next
+				t := s.clock()
+				job.FinishedAt = &t
+				s.jobs[pick.id] = job
+				s.refreshRunLocked(job.RunID, t)
+			}
+			continue
+		}
+		s.claimed[pick.id] = true
+		return s.jobs[pick.id], nil
+	}
+	return model.JobRunRecord{}, scheduler.ErrNoQueuedJob
+}
+
+type depState int
+
+const (
+	depsReady depState = iota
+	depsBlocked
+	depsFailed
+)
+
+// dependencyStateLocked evaluates a job's DependsOn against sibling job
+// records (jobs in the same run sharing the JobKey prefix are matched by
+// full key).
+func (s *DurableStore) dependencyStateLocked(id model.JobRunID) depState {
+	job, ok := s.jobs[id]
+	if !ok || len(job.DependsOn) == 0 {
+		return depsReady
+	}
+	state := depsReady
+	for _, depKey := range job.DependsOn {
+		depID, ok := s.byJobKey[job.RunID][depKey]
+		if !ok {
+			return depsBlocked
+		}
+		switch dep := s.jobs[depID]; dep.Status {
+		case model.JobSucceeded:
+			// ready so far
+		case model.JobFailed, model.JobCancelled, model.JobSkipped:
+			return depsFailed
+		default:
+			state = depsBlocked
+		}
+	}
+	return state
 }
 
 // ReleaseClaim implements scheduler.DurableStore.

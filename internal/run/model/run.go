@@ -75,9 +75,11 @@ type RunSeed struct {
 
 // JobIntent is one compiled job instance to persist as a JobRun.
 type JobIntent struct {
-	JobKey      string // workflow job id, e.g. "test" or "test[go=1.27]"
+	JobKey      string // workflow job id, e.g. "test" or "test[go=1.27,os=linux]"
 	RunnerClass string
-	PlanDigest  string // hex sha256 of the immutable Plan, may be empty in tests
+	DependsOn   []string          // job keys this instance waits for
+	Matrix      map[string]string // matrix combination (stable, keys sorted at compile time)
+	PlanDigest  string            // hex sha256 of the immutable Plan, may be empty in tests
 }
 
 // RunRecord is the durable record of a WorkflowRun.
@@ -96,6 +98,8 @@ type JobRunRecord struct {
 	RunID        RunID
 	JobKey       string
 	RunnerClass  string
+	DependsOn    []string
+	Matrix       map[string]string
 	PlanDigest   string
 	Status       JobRunStatus
 	Attempt      int

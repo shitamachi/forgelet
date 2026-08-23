@@ -44,7 +44,19 @@ func evalNode(n node, env *Env, expr string) (Value, error) {
 	case *binaryNode:
 		return evalBinary(t, env, expr)
 	case *callNode:
-		return Null, &NotSupportedError{What: "function " + t.name + "()"}
+		fn, ok := functions[strings.ToLower(t.name)]
+		if !ok {
+			return Null, &NotSupportedError{What: "function " + t.name + "()"}
+		}
+		args := make([]Value, 0, len(t.args))
+		for _, a := range t.args {
+			v, err := evalNode(a, env, expr)
+			if err != nil {
+				return Null, err
+			}
+			args = append(args, v)
+		}
+		return fn(env, args)
 	default:
 		return Null, &EvalError{Expr: expr, Msg: "unknown AST node"}
 	}

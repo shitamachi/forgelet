@@ -28,6 +28,7 @@ const (
 	ConclusionSuccess   CheckConclusion = "success"
 	ConclusionFailure   CheckConclusion = "failure"
 	ConclusionCancelled CheckConclusion = "cancelled"
+	ConclusionSkipped   CheckConclusion = "skipped"
 )
 
 // Check is one reportable state of a forgelet job.
@@ -80,6 +81,8 @@ func MapJobRun(job model.JobRunRecord, detailsBase string) (Check, error) {
 	case model.JobCancelled:
 		c.Status, c.Conclusion = StatusCompleted, ConclusionCancelled
 		c.CompletedAt = job.FinishedAt
+	case model.JobSkipped:
+		c.Status, c.Conclusion = StatusCompleted, ConclusionSkipped
 	default:
 		return Check{}, fmt.Errorf("report: unmapped job status %q", job.Status)
 	}

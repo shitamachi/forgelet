@@ -6,6 +6,6 @@
 - [x] T3 触发匹配：branches/branches-ignore glob + `!` 排除优先（FR-W2.3）
 - [x] T4 `model.JobIntent` 桥接（FR-W2.4）
 - [x] T5 AC-M0 测试矩阵（fixture + 精确行列断言 + import 纪律）
-- [ ] T6 V1 切片：`needs` DAG + 环检测、`pull_request/workflow_dispatch/schedule` 触发（P1）
-- [ ] T7 V1 切片：`matrix` 展开与稳定 ID、DisplayName 分离（FR-2.5）
+- [x] T6 V1 切片：`needs` DAG + 环检测（其余触发类型待 T6b）
+- [x] T7 V1 切片：`matrix` 展开与稳定 ID、DisplayName 分离（FR-2.5）
 - [ ] T8 表达式钩子接入 0007 evaluator（raw `${{ }}` → 求值）
