@@ -41,6 +41,20 @@ func AuthorizeExecution(id identity.Identity, jobRun model.JobRunID) error {
 	return nil
 }
 
+// AuthorizeObservation verifies that the identity may project an observed
+// phase for the given JobRun. Executor identities stay bound to their own
+// JobRun; identities holding observed:write (the controller) may observe
+// every JobRun — that scope exists only on control-plane tokens.
+func AuthorizeObservation(id identity.Identity, jobRun model.JobRunID) error {
+	if id.HasScope(identity.ScopeObservedWrite) {
+		return nil
+	}
+	if id.JobRunID == jobRun {
+		return nil
+	}
+	return fmt.Errorf("%w: identity bound to job run %s, requested %s", ErrNotAuthorized, id.JobRunID, jobRun)
+}
+
 // DeniedRef is a requested secret that was refused, with a reason that never
 // contains the secret value.
 type DeniedRef struct {

@@ -142,6 +142,11 @@ func TestReconcileCreatesExactlyOneWellFormedPod(t *testing.T) {
 	if pod.Spec.ServiceAccountName != ExecutorServiceAccount {
 		t.Errorf("serviceAccountName = %q, want %q", pod.Spec.ServiceAccountName, ExecutorServiceAccount)
 	}
+	// The executor learns its durable JobRun id from the command line.
+	if len(pod.Spec.Containers[0].Args) != 1 ||
+		pod.Spec.Containers[0].Args[0] != "--jobrun="+jr.Spec.PlanID {
+		t.Errorf("executor args = %v, want --jobrun=%s", pod.Spec.Containers[0].Args, jr.Spec.PlanID)
+	}
 	if len(pod.OwnerReferences) != 1 || pod.OwnerReferences[0].Kind != "JobRun" ||
 		pod.OwnerReferences[0].Name != jr.Name {
 		t.Errorf("ownerRef missing or wrong: %+v", pod.OwnerReferences)
@@ -188,8 +193,9 @@ func TestObservePodPhaseMatrix(t *testing.T) {
 	jr := testJobRun("jobrun-" + strings.ToLower(testULID))
 	r, c, proj := newReconciler(t, jr, testRunnerClass())
 	reconcile(t, r, jr.Name)
-	// The CR name protocol lowercases the ULID (model.JobRunID.CRName).
-	id := model.JobRunID(strings.ToLower(testULID))
+	// Projections address the durable JobRun by its spec plan id — the CR
+	// name lowercases the ULID and must never be used as an identity.
+	id := model.JobRunID(jr.Spec.PlanID)
 
 	pod, _ := getPod(t, c, jr.Name+PodSuffix)
 

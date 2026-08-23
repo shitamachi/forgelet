@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/shitamachi/forgelet/internal/observability/metrics"
 	"github.com/shitamachi/forgelet/internal/observability/tracing"
@@ -31,9 +32,11 @@ import (
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/run/scheduler"
+	"github.com/shitamachi/forgelet/internal/runtime/controller"
 	"github.com/shitamachi/forgelet/internal/security/identity"
 	"github.com/shitamachi/forgelet/internal/security/tokenreview"
 	"github.com/shitamachi/forgelet/internal/server"
+	"github.com/shitamachi/forgelet/internal/storage/memory"
 	"github.com/shitamachi/forgelet/internal/storage/postgres"
 )
 
@@ -54,8 +57,10 @@ func main() {
 		scheduledRepos = flag.String("scheduled-repos", "", "comma-separated owner/name repos whose default branches are cron-scanned")
 
 		executorAuth = flag.String("executor-auth", "local", "executor identity verification: local (HMAC dev tokens) or tokenreview (projected ServiceAccount tokens)")
-		kubeconfig   = flag.String("kubeconfig", "", "kubeconfig path for TokenReview; empty uses in-cluster config")
+		kubeconfig   = flag.String("kubeconfig-path", "", "kubeconfig path for TokenReview; empty uses in-cluster config")
 		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP HTTP collector host:port for tracing; empty disables tracing")
+		activeStore  = flag.String("active-store", "memory", "dispatch target: memory (dev) or kubernetes (JobRun CRDs in -jobs-namespace)")
+		jobsNS       = flag.String("jobs-namespace", "forgelet-jobs", "namespace executor JobRuns and pods are created in")
 	)
 	flag.Parse()
 
@@ -103,6 +108,9 @@ func main() {
 		}
 		logger.Info("durable store: postgresql")
 	} else {
+		// Built here (not inside NewServer) so the Kubernetes active store
+		// below shares the same instance.
+		durable = memory.NewDurableStore(nil, nil)
 		logger.Warn("durable store: in-memory (dev only)")
 	}
 
@@ -117,6 +125,23 @@ func main() {
 		DetailsBaseURL: *details,
 		SecretValues:   map[string]string{},
 		Log:            logger,
+	}
+	switch *activeStore {
+	case "kubernetes":
+		cfg := kubernetesConfig(*kubeconfig)
+		c, err := client.New(cfg, client.Options{Scheme: controller.NewScheme()})
+		if err != nil {
+			logger.Error("kubernetes client", "err", err.Error())
+			os.Exit(1)
+		}
+		opts.Active = controller.NewActiveStore(
+			c, controller.DurableJobRunSource{Durable: durable}, *jobsNS)
+		logger.Info("active store: kubernetes", "namespace", *jobsNS)
+	case "memory":
+		logger.Warn("active store: memory (dev only; no pods will be created)")
+	default:
+		fmt.Fprintf(os.Stderr, "server: unknown -active-store %q\n", *activeStore)
+		os.Exit(2)
 	}
 	if *executorAuth == "tokenreview" {
 		verifier, err := tokenReviewVerifier(*kubeconfig)
@@ -210,8 +235,25 @@ func tokenAuthMode(token string, appID int64) string {
 // the namespace minted identities carry.
 const jobNamespace = "forgelet-jobs"
 
-// tokenReviewVerifier builds the production executor identity verifier:
-// projected ServiceAccount tokens are checked through the TokenReview API
+// kubernetesConfig resolves the in-cluster or kubeconfig REST config.
+func kubernetesConfig(kubeconfig string) *rest.Config {
+	if kubeconfig != "" {
+		c, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "server: load kubeconfig: %v\n", err)
+			os.Exit(1)
+		}
+		return c
+	}
+	c, err := rest.InClusterConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server: in-cluster config: %v (run inside the cluster or pass -kubeconfig)\n", err)
+		os.Exit(1)
+	}
+	return c
+}
+
+// tokenReviewVerifier builds the production executor identity verifier:// projected ServiceAccount tokens are checked through the TokenReview API
 // and bound to JobRuns via the pod label (spec 0003 FR-S1.5).
 func tokenReviewVerifier(kubeconfig string) (identity.Verifier, error) {
 	var cfg *rest.Config

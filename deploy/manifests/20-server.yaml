@@ -19,17 +19,30 @@ spec:
       containers:
         - name: server
           image: ghcr.io/shitamachi/forgelet/server:dev
+          imagePullPolicy: IfNotPresent
           args:
             - --addr=:8080
             - --webhook-secret=$(WEBHOOK_SECRET)
             - --token-key=$(TOKEN_KEY)
             - --workflows-dir=/workflows
+            - --active-store=kubernetes
+            - --jobs-namespace=forgelet-jobs
+            - --executor-auth=tokenreview
           envFrom:
             - secretRef: {name: forgelet-server}
           ports:
             - containerPort: 8080
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
+          volumeMounts:
+            - name: workflows
+              mountPath: /workflows
+              readOnly: true
+      volumes:
+        # Dev/smoke source (spec 0011): workflow files from a ConfigMap.
+        # GitHub mode (--github-*) replaces this with the content API.
+        - name: workflows
+          configMap: {name: forgelet-workflows}
 ---
 apiVersion: v1
 kind: Service

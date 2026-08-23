@@ -24,10 +24,15 @@ import (
 	"github.com/shitamachi/forgelet/internal/security/identity"
 )
 
-// Extras set by TokenReview for tokens bound to a pod.
+// Extras set by TokenReview for tokens bound to a pod. Kubernetes 1.34
+// renamed the prefix from authentication.k8s.io to authentication.kubernetes.io
+// (both appear in the wild, so both are accepted).
 const (
 	PodUIDExtraKey  = "authentication.k8s.io/pod-uid"
 	PodNameExtraKey = "authentication.k8s.io/pod-name"
+
+	podUIDExtraKeyNew  = "authentication.kubernetes.io/pod-uid"
+	podNameExtraKeyNew = "authentication.kubernetes.io/pod-name"
 )
 
 // ErrInvalidToken re-exported for callers matching on verification failure.
@@ -145,18 +150,20 @@ func parseServiceAccount(username string) (ns, sa string, err error) {
 }
 
 func extras(extra map[string]authenticationv1.ExtraValue) (podUID, podName string, err error) {
-	single := func(key string) (string, error) {
-		vals := extra[key]
-		if len(vals) != 1 {
-			return "", fmt.Errorf("%w: extra %q must have exactly one value", ErrInvalidToken, key)
+	lookup := func(oldKey, newKey string) (string, bool) {
+		for _, key := range []string{oldKey, newKey} {
+			if vals := extra[key]; len(vals) == 1 {
+				return vals[0], true
+			}
 		}
-		return vals[0], nil
+		return "", false
 	}
-	if podUID, err = single(PodUIDExtraKey); err != nil {
-		return "", "", err
+	var ok bool
+	if podUID, ok = lookup(PodUIDExtraKey, podUIDExtraKeyNew); !ok {
+		return "", "", fmt.Errorf("%w: no pod uid extra", ErrInvalidToken)
 	}
-	if podName, err = single(PodNameExtraKey); err != nil {
-		return "", "", err
+	if podName, ok = lookup(PodNameExtraKey, podNameExtraKeyNew); !ok {
+		return "", "", fmt.Errorf("%w: no pod name extra", ErrInvalidToken)
 	}
 	return podUID, podName, nil
 }

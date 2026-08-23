@@ -16,6 +16,7 @@ spec:
       containers:
         - name: controller
           image: ghcr.io/shitamachi/forgelet/controller:dev
+          imagePullPolicy: IfNotPresent
           args:
             - --api-url=http://forgelet-server.forgelet-system.svc
             - --token=$(CONTROL_PLANE_TOKEN)

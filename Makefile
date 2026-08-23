@@ -1,7 +1,9 @@
 # forgelet development commands
 BIN_DIR := ./bin
+IMAGE_REGISTRY ?= ghcr.io/shitamachi/forgelet
+IMAGE_TAG ?= dev
 
-.PHONY: build test lint generate verify kind-up clean
+.PHONY: build test lint generate verify kind-up images clean
 
 build:
 	@packages="$$(go list ./cmd/...)"; status=$$?; \
@@ -53,6 +55,26 @@ verify: build test lint generate
 # specs 0010 and 0011 define the dependency and support matrix.
 kind-up:
 	./hack/kind-up.sh
+
+# Release-pipeline images (spec 0011 T8). The executor image ships bash:
+# job pods run user scripts in it.
+images: image-server image-controller image-executor image-minttoken
+
+image-server:
+	docker build --build-arg BIN=server \
+		-t "$(IMAGE_REGISTRY)/server:$(IMAGE_TAG)" .
+
+image-controller:
+	docker build --build-arg BIN=controller \
+		-t "$(IMAGE_REGISTRY)/controller:$(IMAGE_TAG)" .
+
+image-executor:
+	docker build --build-arg BIN=executor --build-arg PKGS="ca-certificates bash" \
+		-t "$(IMAGE_REGISTRY)/executor:$(IMAGE_TAG)" .
+
+image-minttoken:
+	docker build --build-arg BIN=minttoken \
+		-t "$(IMAGE_REGISTRY)/minttoken:$(IMAGE_TAG)" .
 
 clean:
 	rm -rf "$(BIN_DIR)"

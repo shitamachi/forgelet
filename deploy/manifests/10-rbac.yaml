@@ -45,3 +45,27 @@ kind: ServiceAccount
 metadata:
   name: forgelet-executor
   namespace: forgelet-jobs
+---
+# The control plane verifies executor projected tokens through TokenReview
+# (spec 0003 FR-S1.5). This is the server's only cluster-scoped permission.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: forgelet-tokenreview
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: forgelet-tokenreview
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: forgelet-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-controller
+    namespace: forgelet-system

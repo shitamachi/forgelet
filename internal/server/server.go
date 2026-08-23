@@ -447,7 +447,8 @@ func (s *Server) routes() {
 	s.mux.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	s.mux.Post("/webhooks/github", github.NewWebhookHandler(s.opts.WebhookSecret, s).ServeHTTP)
+	s.mux.Post("/webhooks/github",
+		github.NewWebhookHandlerWithLogger(s.opts.WebhookSecret, s, s.log).ServeHTTP)
 
 	s.mux.Group(func(r chi.Router) {
 		r.Use(s.auth)
@@ -583,8 +584,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleObserved(w http.ResponseWriter, r *http.Request) {
-	id, _, ok := s.jobFromPath(w, r)
+	id := model.JobRunID(chi.URLParam(r, "id"))
+	if id == "" {
+		http.Error(w, "missing job run id", http.StatusBadRequest)
+		return
+	}
+	ident, ok := identityFrom(r.Context())
 	if !ok {
+		http.Error(w, "missing identity", http.StatusUnauthorized)
+		return
+	}
+	// Observed-phase projection is the controller's job: it holds
+	// observed:write and is not bound to one JobRun (executors projecting
+	// their own terminal result use /status instead).
+	if err := policy.AuthorizeObservation(ident, id); err != nil {
+		http.Error(w, "identity may not observe this job run", http.StatusForbidden)
 		return
 	}
 	var body struct {
