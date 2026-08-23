@@ -250,8 +250,16 @@ func TestEvalParseErrors(t *testing.T) {
 	}
 }
 
-func TestEvalFunctionNotSupported(t *testing.T) {
+func TestEvalFunctionsVsUnsupported(t *testing.T) {
+	// V1: the documented function set is implemented (0007 T5); only
+	// unknown functions and hashFiles (workspace capability, T6) stay
+	// unsupported.
 	for _, expr := range []string{"success()", "contains('a', 'b')", "format('{0}', 1)"} {
+		if _, err := Eval(expr, fullEnv()); err != nil {
+			t.Errorf("%q: %v", expr, err)
+		}
+	}
+	for _, expr := range []string{"unknownFn(1)", "hashFiles('x')"} {
 		_, err := Eval(expr, fullEnv())
 		var nse *NotSupportedError
 		if !errors.As(err, &nse) {
