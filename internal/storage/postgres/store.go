@@ -436,7 +436,7 @@ func (s *Store) ApplyObserved(ctx context.Context, id model.JobRunID, phase mode
 					if job.StartedAt == nil {
 						job.StartedAt = &now
 					}
-				case model.JobSucceeded, model.JobFailed:
+				case model.JobSucceeded, model.JobFailed, model.JobSkipped:
 					if job.StartedAt == nil {
 						job.StartedAt = &now
 					}

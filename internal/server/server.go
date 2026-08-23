@@ -28,6 +28,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/security/policy"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
 	"github.com/shitamachi/forgelet/internal/workflow/compiler"
+	"github.com/shitamachi/forgelet/internal/workflow/expression"
 	"github.com/shitamachi/forgelet/internal/workflow/syntax"
 )
 
@@ -197,6 +198,25 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 		if inst == nil {
 			return fmt.Errorf("server: job %s missing from compiled set", rec.JobKey)
 		}
+		// Job-level condition (spec 0006 V1): evaluated scheduler-side with
+		// github/needs contexts. A false condition projects the instance to
+		// skipped; existing dependency gating propagates it to dependents.
+		if inst.If != "" {
+			if err := ensureEagerCondition(inst.If); err != nil {
+				return fmt.Errorf("server: job %s: %w", rec.JobKey, err)
+			}
+			run, err := expression.EvaluateCondition(inst.If, jobConditionEnv(d.Event, runs))
+			switch {
+			case err != nil:
+				return fmt.Errorf("server: job %s: invalid if %q: %w", rec.JobKey, inst.If, err)
+			case !run:
+				if perr := s.project.Project(ctx, rec.ID, model.PhaseSkipped); perr != nil {
+					return fmt.Errorf("server: skip job %s: %w", rec.ID, perr)
+				}
+				s.reportCheck(ctx, rec.ID)
+				continue
+			}
+		}
 		p := buildPlan(rec, d.Event, *inst)
 		if err := s.plans.Put(p); err != nil {
 			return fmt.Errorf("server: store plan for %s: %w", rec.ID, err)
@@ -207,6 +227,63 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 		s.reportCheck(ctx, rec.ID) // queued while waiting for dispatch
 	}
 	return nil
+}
+
+// ensureEagerCondition rejects conditions that cannot be evaluated
+// correctly at ingest time. needs results are not final until dependencies
+// finish, and failure()/cancelled() describe outcomes of earlier jobs —
+// both need dispatch-time evaluation; failing loudly beats guessing wrong.
+func ensureEagerCondition(cond string) error {
+	lower := strings.ToLower(cond)
+	if strings.Contains(lower, "needs.") || strings.Contains(lower, "failure(") || strings.Contains(lower, "cancelled(") {
+		return fmt.Errorf("if condition %q depends on other jobs' results; scheduler-side evaluation supports github-only conditions", cond)
+	}
+	return nil
+}
+
+// jobConditionEnv builds the scheduler-time evaluation environment for
+// `if:` conditions: github plus needs.<job>.result. env/secrets/steps are
+// unavailable here by design (GitHub evaluates job conditions pre-run).
+func jobConditionEnv(ev model.Event, runs []model.JobRunRecord) *expression.Env {
+	needs := map[string]expression.Value{}
+	for _, r := range runs {
+		needs[r.JobKey] = expression.ObjOf(map[string]expression.Value{
+			"result": expression.StrOf(githubResultName(r.Status)),
+		})
+	}
+	return expression.NewEnv().
+		With("github", githubContextValue(ev)).
+		With("needs", expression.ObjOf(needs))
+}
+
+// githubContextValue exposes the event as the `github` expression context.
+func githubContextValue(ev model.Event) expression.Value {
+	return expression.ObjOf(map[string]expression.Value{
+		"event_name": expression.StrOf(ev.Name),
+		"ref":        expression.StrOf(ev.Ref),
+		"sha":        expression.StrOf(ev.SHA),
+		"actor":      expression.StrOf(ev.Actor),
+		"repository": expression.ObjOf(map[string]expression.Value{
+			"owner":     expression.StrOf(ev.Repository.Owner),
+			"name":      expression.StrOf(ev.Repository.Name),
+			"full_name": expression.StrOf(ev.Repository.Owner + "/" + ev.Repository.Name),
+		}),
+	})
+}
+
+func githubResultName(s model.JobRunStatus) string {
+	switch s {
+	case model.JobSucceeded:
+		return "success"
+	case model.JobFailed:
+		return "failure"
+	case model.JobCancelled:
+		return "cancelled"
+	case model.JobSkipped:
+		return "skipped"
+	default:
+		return "pending"
+	}
 }
 
 // DispatchOnce drains the queue once and reports queued checks.
@@ -635,6 +712,8 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 	p := &plan.Plan{
 		JobRunID:    rec.ID,
 		Repository:  ev.Repository,
+		EventName:   ev.Name,
+		Actor:       ev.Actor,
 		SHA:         ev.SHA,
 		Ref:         ev.Ref,
 		RunnerClass: inst.RunnerClass,
@@ -648,7 +727,11 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 		p.Env[k] = v
 	}
 	for _, st := range inst.Steps {
-		p.Steps = append(p.Steps, plan.Step{ID: stDisplayName(st), Name: st.Name, Run: plan.RunStep{Script: st.Run, Env: st.Env}})
+		p.Steps = append(p.Steps, plan.Step{
+			ID: stDisplayName(st), Name: st.Name, If: st.If,
+			Run:             plan.RunStep{Script: st.Run, Env: st.Env},
+			ContinueOnError: st.ContinueOnError,
+		})
 	}
 	return p
 }

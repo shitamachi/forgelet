@@ -19,6 +19,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/runtime/executor/filecommand"
 	"github.com/shitamachi/forgelet/internal/runtime/executor/mask"
 	"github.com/shitamachi/forgelet/internal/security/identity"
+	"github.com/shitamachi/forgelet/internal/workflow/expression"
 )
 
 // ErrStepFailed marks a non-zero step exit.
@@ -66,6 +67,24 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 	env["GITHUB_SHA"] = p.SHA
 	env["GITHUB_REF"] = p.Ref
 	env["GITHUB_JOB"] = p.JobRunID.CRName()
+
+	states := map[string]*stepState{}
+	jobEnv := expression.NewEnv().With("github", githubOf(&p)).WithWorkspaceHasher(expression.NewDirHasher(e.WorkDir))
+
+	// Job-level env values may carry expressions (github/env contexts only
+	// at this point — steps do not exist yet).
+	for k, v := range env {
+		if !expression.HasExpression(v) {
+			continue
+		}
+		rendered, ierr := expression.Interpolate(v, jobEnv)
+		if ierr != nil {
+			result.Error = "job env " + k + ": " + ierr.Error()
+			e.report(ctx, id, result, logger)
+			return result, fmt.Errorf("%w: %s", ErrStepFailed, result.Error)
+		}
+		env[k] = rendered
+	}
 
 	if len(p.SecretRefs) > 0 {
 		secrets, err := e.CP.FetchSecrets(ctx, id, p.SecretRefs)
@@ -123,10 +142,49 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 			stepEnv["PATH"] = strings.Join(pathEntries, string(os.PathListSeparator)) + string(os.PathListSeparator) + stepEnv["PATH"]
 		}
 
+		exprEnv := e.exprEnv(&p, stepEnv, states)
+
+		// Step-level condition (spec 0006 V1): a false `if:` records the
+		// skipped outcome and the job keeps going.
+		if step.If != "" {
+			run, cerr := expression.EvaluateCondition(step.If, exprEnv)
+			if cerr != nil {
+				result.Error = "step " + step.ID + " if: " + cerr.Error()
+				return result, e.failJob(ctx, id, p, i, &result, logger)
+			}
+			if !run {
+				states[step.ID] = &stepState{outcome: outcomeSkipped, conclusion: conclusionSkip}
+				result.Steps = append(result.Steps, StepResult{StepID: step.ID, Outcome: outcomeSkipped, Conclusion: conclusionSkip})
+				continue
+			}
+		}
+
+		script := step.Run.Script
+		if expression.HasExpression(script) {
+			rendered, ierr := expression.Interpolate(script, exprEnv)
+			if ierr != nil {
+				result.Error = "step " + step.ID + ": " + ierr.Error()
+				return result, e.failJob(ctx, id, p, i, &result, logger)
+			}
+			script = rendered
+		}
+		for k, v := range step.Run.Env {
+			if !expression.HasExpression(v) {
+				continue
+			}
+			rendered, ierr := expression.Interpolate(v, exprEnv)
+			if ierr != nil {
+				result.Error = "step " + step.ID + " env " + k + ": " + ierr.Error()
+				return result, e.failJob(ctx, id, p, i, &result, logger)
+			}
+			stepEnv[k] = rendered
+		}
+
 		start := time.Now()
-		exit, err := e.runStep(ctx, id, step, stepEnv, masker, logger)
+		exit, err := e.runStepScript(ctx, id, step, script, stepEnv, masker, logger)
 		sr := StepResult{StepID: step.ID, ExitCode: exit, DurationMs: time.Since(start).Milliseconds()}
-		result.Steps = append(result.Steps, sr)
+		state := &stepState{outputs: map[string]string{}}
+		states[step.ID] = state
 
 		// Fold file commands into the runtime context regardless of exit.
 		if kvs, ferr := filecommand.ParseKVFile(mustRead(envFile)); ferr == nil {
@@ -136,6 +194,7 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 		}
 		if kvs, ferr := filecommand.ParseKVFile(mustRead(outFile)); ferr == nil {
 			for _, kv := range kvs {
+				state.outputs[kv.Key] = kv.Value
 				logger.Info("step output", "step", step.ID, "key", kv.Key, "value", kv.Value)
 			}
 		} else {
@@ -143,22 +202,42 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 		}
 		pathEntries = append(filecommand.ParsePathFile(mustRead(pathFile)), pathEntries...)
 
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, ErrCancelled) {
-				result.Cancelled = true
-				result.Error = fmt.Sprintf("step %s cancelled", step.ID)
-				e.report(ctx, id, result, logger)
-				return result, ErrCancelled
-			}
-			result.Error = fmt.Sprintf("step %s exited with code %d", step.ID, exit)
+		switch {
+		case err == nil:
+			sr.Outcome, sr.Conclusion = outcomeSuccess, conclusionOK
+		case errors.Is(err, context.Canceled) || errors.Is(err, ErrCancelled):
+			result.Cancelled = true
+			result.Error = fmt.Sprintf("step %s cancelled", step.ID)
 			e.report(ctx, id, result, logger)
-			return result, fmt.Errorf("%w: %s", ErrStepFailed, result.Error)
+			return result, ErrCancelled
+		case step.ContinueOnError:
+			// outcome failure, conclusion success: the job keeps going.
+			sr.Outcome, sr.Conclusion = outcomeFailure, conclusionOK
+			logger.Warn("step failed but continue-on-error is set",
+				"step", step.ID, "exitCode", exit)
+		default:
+			sr.Outcome, sr.Conclusion = outcomeFailure, conclusionFail
+			result.Steps = append(result.Steps, sr)
+			result.Error = fmt.Sprintf("step %s exited with code %d", step.ID, exit)
+			return result, e.failJob(ctx, id, p, i+1, &result, logger)
 		}
+		state.outcome, state.conclusion = sr.Outcome, sr.Conclusion
+		result.Steps = append(result.Steps, sr)
 	}
 
 	result.Success = true
 	e.report(ctx, id, result, logger)
 	return result, nil
+}
+
+// failJob records the remaining steps as skipped into result and reports
+// the failed job.
+func (e *Engine) failJob(ctx context.Context, id identity.Identity, p plan.Plan, from int, result *JobResult, logger *slog.Logger) error {
+	for _, step := range p.Steps[from:] {
+		result.Steps = append(result.Steps, StepResult{StepID: step.ID, Outcome: outcomeSkipped, Conclusion: conclusionSkip})
+	}
+	e.report(ctx, id, *result, logger)
+	return fmt.Errorf("%w: %s", ErrStepFailed, result.Error)
 }
 
 // report sends the terminal result; reporting problems are logged but never
@@ -170,10 +249,11 @@ func (e *Engine) report(ctx context.Context, id identity.Identity, result JobRes
 }
 
 // runStep executes one run step in its own process group, streaming output
-// lines through the masker into structured logs.
-func (e *Engine) runStep(ctx context.Context, id identity.Identity, step plan.Step, env map[string]string, masker *mask.Masker, logger *slog.Logger) (int, error) {
-	script := filepath.Join(e.WorkDir, ".forgelet", "step-"+step.ID+".sh")
-	if err := os.WriteFile(script, []byte(step.Run.Script), 0o755); err != nil {
+// lines through the masker into structured logs. The script has already
+// been expression-rendered by the caller.
+func (e *Engine) runStepScript(ctx context.Context, id identity.Identity, step plan.Step, script string, env map[string]string, masker *mask.Masker, logger *slog.Logger) (int, error) {
+	scriptPath := filepath.Join(e.WorkDir, ".forgelet", "step-"+step.ID+".sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		return 0, fmt.Errorf("executor: write script: %w", err)
 	}
 	workDir := e.WorkDir
@@ -188,7 +268,7 @@ func (e *Engine) runStep(ctx context.Context, id identity.Identity, step plan.St
 	//nolint:noctx // cancellation is handled below via the process group
 	// (SIGTERM/SIGKILL to -pgid); exec.CommandContext would only kill the
 	// direct child and orphan step subprocesses.
-	cmd := exec.Command(shell, "-e", "-o", "pipefail", script)
+	cmd := exec.Command(shell, "-e", "-o", "pipefail", scriptPath)
 	cmd.Dir = workDir
 	cmd.Env = envSlice(env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

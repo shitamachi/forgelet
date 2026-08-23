@@ -29,7 +29,11 @@ type RunStep struct {
 type Step struct {
 	ID   string  `json:"id"`
 	Name string  `json:"name,omitempty"`
+	If   string  `json:"if,omitempty"` // raw condition; evaluated by the executor
 	Run  RunStep `json:"run"`
+	// ContinueOnError keeps a failing step from failing the job (outcome
+	// failure, conclusion success).
+	ContinueOnError bool `json:"continueOnError,omitempty"`
 	// WorkingDir is relative to the workspace root.
 	WorkingDir string `json:"workingDir,omitempty"`
 }
@@ -39,6 +43,8 @@ type Step struct {
 type Plan struct {
 	JobRunID    model.JobRunID      `json:"jobRunId"`
 	Repository  model.RepositoryRef `json:"repository"`
+	EventName   string              `json:"eventName,omitempty"` // github.event_name
+	Actor       string              `json:"actor,omitempty"`     // github.actor
 	SHA         string              `json:"sha"`
 	Ref         string              `json:"ref"`
 	RunnerClass string              `json:"runnerClass"`

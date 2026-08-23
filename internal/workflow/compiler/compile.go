@@ -14,9 +14,11 @@ import (
 
 // Step is the IR run step.
 type Step struct {
-	Name string
-	Run  string
-	Env  map[string]string
+	Name            string
+	If              string // raw condition; evaluated at runtime by the executor
+	Run             string
+	ContinueOnError bool
+	Env             map[string]string
 }
 
 // JobInstance is one executable job of the compiled workflow. V1 matrix
@@ -25,6 +27,7 @@ type JobInstance struct {
 	Key         string // job id, or "test[go=1.27,os=linux]" with matrix
 	DisplayName string
 	RunnerClass string
+	If          string // raw condition; evaluated scheduler-side (github/needs contexts)
 	DependsOn   []string
 	Matrix      map[string]string
 	Env         map[string]string
@@ -67,6 +70,7 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			Key:         job.ID,
 			DisplayName: displayName(job),
 			RunnerClass: job.RunsOn,
+			If:          job.If,
 			DependsOn:   job.Needs,
 			Env:         job.Env,
 		}
@@ -77,7 +81,10 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			if strings.TrimSpace(step.Run) == "" {
 				return nil, fmt.Errorf("compile %s: job %q step %d: empty run", wf.File, job.ID, i)
 			}
-			inst.Steps = append(inst.Steps, Step{Name: step.Name, Run: step.Run, Env: step.Env})
+			inst.Steps = append(inst.Steps, Step{
+				Name: step.Name, If: step.If, Run: step.Run,
+				ContinueOnError: step.ContinueOnError, Env: step.Env,
+			})
 		}
 		expanded, err := expandMatrix(job, inst)
 		if err != nil {

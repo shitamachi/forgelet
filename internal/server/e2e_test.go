@@ -589,6 +589,111 @@ func TestV1TokenReviewExecutorAuth(t *testing.T) {
 	}
 }
 
+// TestV1StepConditionsEndToEnd drives a workflow whose steps use `if:`
+// and `continue-on-error` through the full chain: compile → dispatch →
+// real execution → projection. A continued failure keeps the job green;
+// skipped steps are recorded; outputs gate later conditions.
+func TestV1StepConditionsEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	workflows := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workflows, "cond.yml"), []byte(stepCondWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	durable := memory.NewDurableStore(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }, nil)
+	reporter := &capturedReporter{}
+	srv, err := server.NewServer(server.Options{
+		WebhookSecret: []byte("whsec"),
+		WorkflowsDir:  workflows,
+		CheckReporter: reporter,
+		Durable:       durable,
+		TokenKey:      bytes.Repeat([]byte{0x42}, 32),
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Log:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := postEvent(t, ctx, ts, "push", "stecond-d1", pushPayload)
+	if resp.code != http.StatusOK || !strings.Contains(resp.body, `"created":true`) {
+		t.Fatalf("webhook: %d %s", resp.code, resp.body)
+	}
+	jobs, err := durable.ListJobRuns(ctx, durable.Runs()[0].ID)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs=%d err=%v", len(jobs), err)
+	}
+	if n, err := srv.DispatchOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("dispatch: n=%d err=%v", n, err)
+	}
+	token, err := srv.MintJobToken(ctx, jobs[0].ID)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	cp := httpclient.New(ts.URL, token, ts.Client())
+	p, err := cp.FetchPlan(ctx, identityOf(jobs[0].ID))
+	if err != nil {
+		t.Fatalf("fetch plan: %v", err)
+	}
+	engine := &executor.Engine{CP: cp, WorkDir: t.TempDir(), Grace: 2 * time.Second,
+		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	result, rerr := engine.Run(ctx, identityOf(jobs[0].ID), p)
+	if rerr != nil || !result.Success {
+		t.Fatalf("run: %v %+v", rerr, result)
+	}
+
+	outcomes := map[string]string{}
+	for _, s := range result.Steps {
+		outcomes[s.StepID] = s.Outcome + "/" + s.Conclusion
+	}
+	want := map[string]string{
+		"flaky":          "failure/success", // continued failure stays green
+		"after-flaky":    "success/success",
+		"skipped-branch": "skipped/skipped",
+		"gated":          "success/success", // sees flaky's failure outcome via steps context
+	}
+	for id, o := range want {
+		if got := outcomes[id]; got != o {
+			t.Errorf("%s = %q, want %q", id, got, o)
+		}
+	}
+	finalRun, err := durable.GetRun(ctx, jobs[0].RunID)
+	if err != nil || finalRun.Status != model.RunSucceeded {
+		t.Fatalf("run status = %s err=%v, want succeeded", finalRun.Status, err)
+	}
+	c, ok := reporter.latestByExternal(string(jobs[0].ID))
+	if !ok || c.Conclusion != report.ConclusionSuccess {
+		t.Errorf("final check = %+v", c)
+	}
+}
+
+const stepCondWorkflow = `name: Step Conditions
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  cond:
+    runs-on: k3s-small
+    steps:
+      - name: flaky
+        run: exit 7
+        continue-on-error: true
+      - name: after-flaky
+        run: echo still-here
+      - name: skipped-branch
+        if: false
+        run: echo never
+      - name: gated
+        if: steps.flaky.outcome == 'failure'
+        run: test "$X" = failure
+        env:
+          X: ${{ steps.flaky.outcome }}
+`
+
 // TestM0NoMatchingWorkflow: a push to an unmatched branch creates no run.
 func TestM0NoMatchingWorkflow(t *testing.T) {
 	ctx := context.Background()

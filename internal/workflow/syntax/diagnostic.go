@@ -71,6 +71,7 @@ type Job struct {
 	Pos    Position
 	Name   string
 	RunsOn string
+	If     string // raw condition; `${{ }}`-less values are whole expressions
 	Needs  []string
 	Matrix map[string][]string // axis name -> values (V1: no include/exclude)
 	Env    map[string]string
@@ -79,10 +80,12 @@ type Job struct {
 
 // Step is one `run` step.
 type Step struct {
-	Pos  Position
-	Name string
-	Run  string
-	Env  map[string]string
+	Pos             Position
+	Name            string
+	If              string
+	Run             string
+	ContinueOnError bool
+	Env             map[string]string
 }
 
 const subsetMessage = "field is not in the supported subset"

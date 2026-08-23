@@ -17,6 +17,10 @@ type StepResult struct {
 	StepID     string `json:"stepId"`
 	ExitCode   int    `json:"exitCode"`
 	DurationMs int64  `json:"durationMs"`
+	// Outcome is what happened (success/failure/skipped); conclusion folds
+	// in continue-on-error (a continued failure concludes success).
+	Outcome    string `json:"outcome,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
 }
 
 // JobResult is the final report of a job run.

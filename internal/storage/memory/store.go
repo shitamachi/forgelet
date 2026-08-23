@@ -309,7 +309,7 @@ func (s *DurableStore) ApplyObserved(_ context.Context, id model.JobRunID, phase
 		case model.JobRunning:
 			t := now
 			job.StartedAt = &t
-		case model.JobSucceeded, model.JobFailed:
+		case model.JobSucceeded, model.JobFailed, model.JobSkipped:
 			t := now
 			job.StartedAt = orTime(job.StartedAt, t)
 			job.FinishedAt = &t
