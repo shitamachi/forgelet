@@ -1,0 +1,158 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: runnerclasses.ci.forgelet.dev
+spec:
+  group: ci.forgelet.dev
+  names:
+    kind: RunnerClass
+    listKind: RunnerClassList
+    plural: runnerclasses
+    shortNames:
+    - rclass
+    singular: runnerclass
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.image
+      name: Image
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RunnerClass is the infrastructure profile a job's `runs-on` resolves to.
+          It describes resources, not a runner machine (spec 0001 FR-4.3).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RunnerClassSpec is the execution profile referenced by `runs-on`.
+            properties:
+              image:
+                description: Image is the default job container image.
+                type: string
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: NodeSelector constrains scheduling.
+                type: object
+              resources:
+                description: Resources are applied to the job container.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              security:
+                description: Security is the trust profile of this class.
+                properties:
+                  allowSecrets:
+                    description: |-
+                      AllowSecrets gates secret delivery to jobs on this class; untrusted
+                      classes (fork PRs) set it to false (spec 0001 FR-9.4).
+                    type: boolean
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels select nodes reserved for this trust level,
+                      e.g. ci.security=sandbox.
+                    type: object
+                type: object
+              workspace:
+                description: Workspace configures the workspace volume.
+                properties:
+                  mode:
+                    description: Mode is auto, emptyDir or pvc. +kubebuilder:default=auto
+                    enum:
+                    - auto
+                    - emptyDir
+                    - pvc
+                    type: string
+                  size:
+                    description: Size is the pvc size, e.g. 10Gi.
+                    type: string
+                  storageClassName:
+                    description: StorageClassName applies to pvc mode only.
+                    type: string
+                type: object
+            required:
+            - image
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

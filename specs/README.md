@@ -51,3 +51,4 @@ specs/NNNN-<slug>/
 | [0001](0001-platform-overview/spec.md) | Platform Overview（总纲） | accepted |
 | [0002](0002-state-consistency-and-scheduler/spec.md) | State Consistency and Scheduler | accepted |
 | [0003](0003-security-identity-secrets/spec.md) | Security: Identity and Secrets | accepted |
+| [0004](0004-crd-api-and-controller/spec.md) | CRD API and Controller | accepted |
