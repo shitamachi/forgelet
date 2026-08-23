@@ -1,14 +1,23 @@
 # Tasks — Spec 0001 Platform Overview
 
-总纲 spec 本身不含实现任务；它通过子 spec 落地。此文件跟踪子 spec 的创建与完成。
+总纲通过子 spec 落地。此文件同时跟踪实现前门禁与子 spec 的创建/完成。
 
-- [ ] 0002-expression-engine（FR-3）
-- [ ] 0003-workflow-parser-compiler（FR-2）
-- [ ] 0004-crds-and-controller（FR-4）
-- [ ] 0005-executor-runtime（FR-5）
-- [ ] 0006-builtin-actions（FR-6）
-- [ ] 0007-github-provider（FR-1、FR-8）
-- [ ] 0008-state-and-scheduler（FR-7）
-- [ ] 0009-security-secrets（FR-9）
+- [x] 解决 schedule/webhook、replacement/coexistence mode 边界
+- [x] 定义 PG/CRD 状态所有权和非原子故障窗口要求
+- [x] 定义 Executor workload identity 与 Plan/secret 顶层边界
+- [x] 明确 M0、V1、P2 slice
+- [x] 建立 modular monorepo 模块边界
+- [x] 建立 docs-only 可通过的 `make verify` 与 CI 基线
+- [x] Spec 0001 accepted，并创建本 plan
+
+- [ ] 0002-state-consistency-and-scheduler（FR-1.4、FR-7）
+- [ ] 0003-security-identity-secrets（FR-5.1、FR-9）
+- [ ] 0004-crd-api-and-controller（FR-4）
+- [ ] 0005-github-events-and-checks（FR-1、FR-8）
+- [ ] 0006-workflow-syntax-and-compiler（FR-2）
+- [ ] 0007-expression-engine（FR-3）
+- [ ] 0008-executor-runtime（FR-5）
+- [ ] 0009-builtin-actions（FR-6）
 - [ ] 0010-observability（FR-10）
+- [ ] 0011-deployment-and-k3s-support（NFR-1）
 - [ ] M0 端到端闭环演示（push → Check Run success）
