@@ -54,3 +54,4 @@ specs/NNNN-<slug>/
 | [0004](0004-crd-api-and-controller/spec.md) | CRD API and Controller | accepted |
 | [0005](0005-github-events-and-checks/spec.md) | GitHub Events and Checks | accepted |
 | [0006](0006-workflow-syntax-and-compiler/spec.md) | Workflow Syntax and Compiler | accepted |
+| [0007](0007-expression-engine/spec.md) | Expression Engine | proposed |
