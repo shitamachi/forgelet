@@ -1,7 +1,8 @@
 # Plan — Spec 0005 GitHub Events and Checks
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0005-github-events-and-checks/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（provider/github 是 adapter，可依赖 application
   port；report 定义 port；核心模块无 SDK 依赖）

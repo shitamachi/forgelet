@@ -1,7 +1,8 @@
 # Spec 0005 — GitHub Events and Checks
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-1.1、FR-1.2、FR-1.3（replacement 部分）、FR-1.5、FR-1.6；FR-8.1、FR-8.2、FR-8.3
   （FR-8.4 rerequest 为 P1 任务）
