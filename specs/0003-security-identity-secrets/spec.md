@@ -1,7 +1,8 @@
 # Spec 0003 — Security: Identity and Secrets
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-5.1、FR-9.1、FR-9.2、FR-9.3；FR-9.4 的 deny 语义（fork 分类输入属 0005）
 - **Out of scope here**: Pod 内 token 的投影与 TokenReview/JWKS 的 Kubernetes adapter（0004/0011

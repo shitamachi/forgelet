@@ -11,7 +11,7 @@
 - [x] Spec 0001 accepted，并创建本 plan
 
 - [ ] 0002-state-consistency-and-scheduler（accepted，M0 已合入；T8 PG adapter、T9 schedule 见其 tasks.md）
-- [ ] 0003-security-identity-secrets（FR-5.1、FR-9）
+- [ ] 0003-security-identity-secrets（accepted，M0 已合入；T5–T7 见其 tasks.md）
 - [ ] 0004-crd-api-and-controller（FR-4）
 - [ ] 0005-github-events-and-checks（FR-1、FR-8）
 - [ ] 0006-workflow-syntax-and-compiler（FR-2）

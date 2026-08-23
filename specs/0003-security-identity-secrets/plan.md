@@ -1,7 +1,8 @@
 # Plan — Spec 0003 Security: Identity and Secrets
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0003-security-identity-secrets/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（security 模块；禁止依赖 workflow parser 具体实现）
 
