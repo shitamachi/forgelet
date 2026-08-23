@@ -56,5 +56,6 @@ specs/NNNN-<slug>/
 | [0006](0006-workflow-syntax-and-compiler/spec.md) | Workflow Syntax and Compiler | accepted |
 | [0007](0007-expression-engine/spec.md) | Expression Engine | accepted |
 | [0008](0008-executor-runtime/spec.md) | Executor Runtime | accepted |
+| [0009](0009-builtin-actions/spec.md) | Builtin Actions | proposed |
 | [0010](0010-observability/spec.md) | Observability | accepted（M0 切片） |
 | [0011](0011-deployment-and-k3s-support/spec.md) | Deployment and k3s Support | accepted（M0 切片） |
