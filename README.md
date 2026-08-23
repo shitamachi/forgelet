@@ -9,7 +9,13 @@ A Kubernetes-native CI/CD platform that runs **GitHub Actions-compatible workflo
 
 ## Status
 
-🚧 Pre-implementation. This repository currently contains architecture docs and specs only (spec-driven development). See:
+**M0 complete (in-process).** The full M0 loop runs green in tests: signed
+push webhook → durable dedupe → workflow compile → dispatch → authenticated
+plan/secret fetch → multi-step execution with secret masking → status
+projection → Check Run lifecycle → GC. Three binaries build
+(`make build`): server, controller, executor. Remaining M0→V1 work: real
+k3s smoke test, PostgreSQL adapter, TokenReview identity, GitHub content
+API workflow source (see specs/0011 tasks). See:
 
 - [docs/architecture.md](docs/architecture.md) — overall architecture & implementation plan
 - [docs/module-boundaries.md](docs/module-boundaries.md) — monorepo modules and allowed dependencies

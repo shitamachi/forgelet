@@ -87,6 +87,9 @@ func (s *DurableStore) CreateRun(_ context.Context, seed model.RunSeed, now time
 	if _, ok := s.deliveries[seed.Delivery]; !ok {
 		return model.RunRecord{}, false, fmt.Errorf("memory: delivery %s not recorded", seed.Delivery)
 	}
+	if len(seed.Jobs) == 0 {
+		return model.RunRecord{}, false, fmt.Errorf("memory: run for delivery %s has no jobs", seed.Delivery)
+	}
 
 	runID := s.ids.NewRunID()
 	run := model.RunRecord{ID: runID, Event: seed.Event, Delivery: seed.Delivery, Status: model.RunQueued, CreatedAt: now}

@@ -74,6 +74,10 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "ingest failed", http.StatusInternalServerError)
 			return
 		}
+		if runID == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"ignored": true, "reason": "no matching workflow"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"runId": string(runID), "created": created})
 	default:
 		// Unknown/unhandled event types are acknowledged (no GitHub retry

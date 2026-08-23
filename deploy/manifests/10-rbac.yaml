@@ -1,0 +1,47 @@
+# Controller identity: least privilege on JobRun/RunnerClass/Pods in the
+# jobs namespace. The executor ServiceAccount intentionally has NO RBAC —
+# its only credential is the audience-bound projected token checked by the
+# forgelet control plane, not Kubernetes (spec 0001 FR-9.1).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgelet-controller
+  namespace: forgelet-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgelet-controller
+  namespace: forgelet-jobs
+rules:
+  - apiGroups: ["ci.forgelet.dev"]
+    resources: ["jobruns", "jobruns/status", "runnerclasses", "workflowruns"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgelet-controller
+  namespace: forgelet-jobs
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-controller
+    namespace: forgelet-system
+roleRef:
+  kind: Role
+  name: forgelet-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Executor service account: exists only so projected tokens reference it; it
+# must never be granted RBAC (automount is disabled on the pods).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgelet-executor
+  namespace: forgelet-jobs

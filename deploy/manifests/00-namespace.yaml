@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgelet-system
+  labels:
+    app.kubernetes.io/part-of: forgelet
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgelet-jobs
+  labels:
+    app.kubernetes.io/part-of: forgelet
