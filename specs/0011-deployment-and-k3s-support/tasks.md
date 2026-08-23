@@ -7,7 +7,6 @@
 - [x] T4 M0：进程内端到端闭环测试（FR-D3 全链路）
 - [x] T5 M0：部署件（namespace/SA/RBAC/deployment 骨架）+ `hack/kind-up.sh`（实验性）
 - [x] T6 V1：PostgreSQL adapter 替换内存 store（0002 T8 语义）
-- [ ] T7 V1：TokenReview verifier、GitHub content API workflow 源、真实 Check Run 联调
-      （content API 源 + `pull_request` 解码/fork 信任 + Check Run reporter 与 server 接线已落地；
-      TokenReview verifier 未做）
+- [x] T7 V1：TokenReview verifier、GitHub content API workflow 源、真实 Check Run 联调
+      （adapter 与 server 接线全部落地；真实环境联调随 T8 k3s smoke）
 - [ ] T8 V1：k3s 支持矩阵 + 真实集群 M0 smoke + 镜像发布流程

@@ -18,11 +18,17 @@ import (
 	"testing"
 	"time"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/runtime/executor"
 	"github.com/shitamachi/forgelet/internal/runtime/executor/httpclient"
 	"github.com/shitamachi/forgelet/internal/security/identity"
+	"github.com/shitamachi/forgelet/internal/security/tokenreview"
 	"github.com/shitamachi/forgelet/internal/server"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
 )
@@ -451,6 +457,136 @@ func postEvent(t *testing.T, ctx context.Context, ts *httptest.Server, event, de
 	b, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	return webhookResponse{code: resp.StatusCode, body: string(b)}
+}
+
+// TestV1TokenReviewExecutorAuth drives the production executor identity
+// path (spec 0003 FR-S1.5): the presented projected ServiceAccount token is
+// verified through the TokenReview API, bound to its JobRun via the pod
+// label, and only then authorized against the requested JobRun.
+func TestV1TokenReviewExecutorAuth(t *testing.T) {
+	ctx := context.Background()
+	workflows := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workflows, "ci.yml"), []byte(e2eWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	durable := memory.NewDurableStore(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }, nil)
+
+	// Fake Kubernetes API: TokenReview authenticates both executor pods;
+	// Pods expose the job-run label used for binding. Labels are filled in
+	// once the real run exists.
+	podLabels := map[string]string{
+		"pod-uid-a": "", "pod-uid-b": "01HUNBOUND00000000000000000X",
+	}
+	writePodFor := func(w http.ResponseWriter, name, uid string) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":       "Pod",
+			"apiVersion": "v1",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": "forgelet-jobs",
+				"uid":       uid,
+				"labels":    map[string]any{"ci.forgelet.dev/jobrun-id": podLabels[uid]},
+			},
+		})
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/tokenreviews"):
+			var review authenticationv1.TokenReview
+			_ = json.NewDecoder(r.Body).Decode(&review)
+			review.TypeMeta = metav1.TypeMeta{APIVersion: "authentication.k8s.io/v1", Kind: "TokenReview"}
+			podUID := map[string]string{"sa-token-a": "pod-uid-a", "sa-token-b": "pod-uid-b"}[review.Spec.Token]
+			if podUID == "" {
+				review.Status.Error = "token not recognized"
+			} else {
+				review.Status.Authenticated = true
+				review.Status.User.Username = "system:serviceaccount:forgelet-jobs:forgelet-executor"
+				review.Status.User.Extra = map[string]authenticationv1.ExtraValue{
+					"authentication.k8s.io/pod-name": {"pod-" + strings.TrimPrefix(podUID, "pod-uid-") + "-pod"},
+					"authentication.k8s.io/pod-uid":  {podUID},
+				}
+			}
+			_ = json.NewEncoder(w).Encode(review)
+		case strings.HasSuffix(r.URL.Path, "/pods/pod-a-pod"):
+			writePodFor(w, "pod-a-pod", "pod-uid-a")
+		case strings.HasSuffix(r.URL.Path, "/pods/pod-b-pod"):
+			writePodFor(w, "pod-b-pod", "pod-uid-b")
+		default:
+			http.Error(w, "not found "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	client, err := kubernetes.NewForConfig(&rest.Config{
+		Host: api.URL, AcceptContentTypes: "application/json", ContentType: "application/json",
+	})
+	if err != nil {
+		t.Fatalf("k8s client: %v", err)
+	}
+	verifier := &tokenreview.Verifier{
+		Client:    client,
+		Audience:  identity.Audience,
+		Namespace: "forgelet-jobs",
+		SAName:    "forgelet-executor",
+		Scopes:    []string{identity.ScopePlanRead, identity.ScopeSecretsRead, identity.ScopeStatusWrite},
+		Bindings:  tokenreview.NewPodLabelBindings(client),
+	}
+
+	srv, err := server.NewServer(server.Options{
+		WebhookSecret: []byte("whsec"),
+		WorkflowsDir:  workflows,
+		CheckReporter: &capturedReporter{},
+		Durable:       durable,
+		TokenKey:      bytes.Repeat([]byte{0x42}, 32),
+		Verifier:      verifier,
+		Now:           func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Log:           slog.New(slog.NewJSONHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := postEvent(t, ctx, ts, "push", "tr-d1", pushPayload)
+	if resp.code != http.StatusOK || !strings.Contains(resp.body, `"created":true`) {
+		t.Fatalf("webhook: %d %s", resp.code, resp.body)
+	}
+	jobs, err := durable.ListJobRuns(ctx, durable.Runs()[0].ID)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("jobs=%d err=%v", len(jobs), err)
+	}
+	if _, err := srv.DispatchOnce(ctx); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	jobA := jobs[0].ID
+	podLabels["pod-uid-a"] = string(jobA) // pod A executes job A
+
+	getPlan := func(token string) int {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+			ts.URL+"/internal/jobruns/"+string(jobA)+"/plan", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("plan fetch: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+
+	// Pod A is bound to job A: plan access granted.
+	if code := getPlan("sa-token-a"); code != http.StatusOK {
+		t.Errorf("own job plan status = %d, want 200", code)
+	}
+	// Pod B is bound to a different job run: cross-job access denied.
+	if code := getPlan("sa-token-b"); code != http.StatusForbidden {
+		t.Errorf("cross-job plan status = %d, want 403", code)
+	}
+	// Unknown tokens fail verification.
+	if code := getPlan("garbage"); code != http.StatusUnauthorized {
+		t.Errorf("unknown token status = %d, want 401", code)
+	}
 }
 
 // TestM0NoMatchingWorkflow: a push to an unmatched branch creates no run.
