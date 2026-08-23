@@ -1,7 +1,8 @@
 # Plan — Spec 0004 CRD API and Controller
 
-- **Status**: draft
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner
 - **Spec**: `specs/0004-crd-api-and-controller/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（runtime/controller：禁止 provider SDK、PG adapter）
 
