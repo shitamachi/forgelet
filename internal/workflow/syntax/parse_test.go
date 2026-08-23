@@ -112,8 +112,8 @@ jobs:
 `
 
 const unsupportedTrigger = `on:
-  schedule:
-    - cron: "0 9 * * 1"
+  deployment:
+    environments: [production]
 jobs:
   test:
     runs-on: small
@@ -132,7 +132,7 @@ func TestParseUnknownFieldsReportLocation(t *testing.T) {
 	}{
 		{"job timeout", unknownJobField, ".jobs.test", `"timeout-minutes"`, 8, 5},
 		{"step uses", unknownStepField, ".steps[0]", `"uses"`, 7, 9},
-		{"schedule trigger", unsupportedTrigger, ".on", `"schedule"`, 2, 3},
+		{"deployment trigger", unsupportedTrigger, ".on", `"deployment"`, 2, 3},
 	}
 	for _, tc := range cases {
 		_, err := Parse("wf.yml", []byte(tc.src))
@@ -173,7 +173,7 @@ func TestParseTypeErrors(t *testing.T) {
 	}{
 		{"steps as string", "on: push\njobs:\n  a:\n    runs-on: x\n    steps: go test\n", "expected sequence"},
 		{"env int value", "on: push\njobs:\n  a:\n    runs-on: x\n    env:\n      N: 3\n    steps:\n      - run: x\n", "expected string"},
-		{"on as sequence", "on:\n  - push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: x\n", "expected `push`"},
+		{"on as sequence", "on:\n  - push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: x\n", "expected a trigger name"},
 		{"bad job id", "on: push\njobs:\n  1bad:\n    runs-on: x\n    steps:\n      - run: x\n", "job id"},
 		{"invalid yaml", "\ton: push\n", "invalid YAML"},
 	}
@@ -217,8 +217,11 @@ jobs:
 		t.Errorf("branches-ignore = %+v", wf.On.Push)
 	}
 
-	if _, err := Parse("x.yml", []byte("on: pull_request\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: x\n")); err == nil {
-		t.Error("pull_request must be rejected as outside the subset")
+	if _, err := Parse("x.yml", []byte("on: pull_request\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: x\n")); err != nil {
+		t.Errorf("pull_request is in the V1 subset: %v", err)
+	}
+	if _, err := Parse("x.yml", []byte("on: workflow_dispatch\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: x\n")); err == nil {
+		t.Error("workflow_dispatch must be rejected as outside the subset")
 	}
 }
 

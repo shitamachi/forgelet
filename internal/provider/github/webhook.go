@@ -90,6 +90,75 @@ func DecodePush(body []byte, deliveryID string) (model.Event, error) {
 	}, nil
 }
 
+// PullRequestInfo summarizes a pull_request payload for trust decisions.
+type PullRequestInfo struct {
+	Action  string // payload action ("opened", "synchronize", ...)
+	Fork    bool   // head came from a fork
+	BaseRef string // base branch short name
+	HeadRef string // head branch short name
+}
+
+type prPayload struct {
+	Action string `json:"action"`
+	Number int    `json:"number"`
+	Pr     struct {
+		Head struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				Fork  bool   `json:"fork"`
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repo"`
+		} `json:"base"`
+	} `json:"pull_request"`
+}
+
+// Actions that trigger a run; closed/completed ones are ignored.
+var prRunActions = map[string]bool{"opened": true, "synchronize": true, "reopened": true}
+
+// DecodePull turns a pull_request payload into an event plus trust info.
+// The event's repository/SHA/ref point at the PR head (what gets built).
+func DecodePull(body []byte, deliveryID string) (model.Event, PullRequestInfo, error) {
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return model.Event{}, PullRequestInfo{}, fmt.Errorf("%w: %w", ErrMalformedPayload, err)
+	}
+	if p.Action == "" {
+		return model.Event{}, PullRequestInfo{}, fmt.Errorf("%w: pull_request payload missing action", ErrMalformedPayload)
+	}
+	info := PullRequestInfo{Action: p.Action}
+	if !prRunActions[p.Action] {
+		return model.Event{}, info, ErrIgnoredPush
+	}
+	head := p.Pr.Head
+	if head.SHA == "" || head.Repo.Name == "" || head.Repo.Owner.Login == "" || p.Pr.Base.Repo.Name == "" {
+		return model.Event{}, PullRequestInfo{}, fmt.Errorf("%w: pull_request payload missing head/base fields", ErrMalformedPayload)
+	}
+	ev := model.Event{
+		Provider:   "github",
+		Name:       "pull_request",
+		DeliveryID: deliveryID,
+		Repository: model.RepositoryRef{Provider: "github", Owner: head.Repo.Owner.Login, Name: head.Repo.Name},
+		Ref:        "refs/heads/" + head.Ref,
+		SHA:        head.SHA,
+		Actor:      head.Repo.Owner.Login,
+	}
+	info.Fork, info.BaseRef, info.HeadRef = head.Repo.Fork, p.Pr.Base.Ref, head.Ref
+	return ev, info, nil
+}
+
 func isZeroSHA(s string) bool {
 	for _, r := range s {
 		if r != '0' {

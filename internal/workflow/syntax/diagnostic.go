@@ -51,9 +51,12 @@ type Workflow struct {
 	Jobs []*Job // document order
 }
 
-// Triggers holds the declared triggers. M0 supports push only.
+// Triggers holds the declared triggers. V1 supports push, pull_request
+// (base-branch filters) and schedule (cron expressions).
 type Triggers struct {
-	Push *PushTrigger
+	Push        *PushTrigger
+	PullRequest *PushTrigger // same filter shape, applied to the base branch
+	Schedule    []string     // cron expressions
 }
 
 // PushTrigger is the `on.push` filter set.
