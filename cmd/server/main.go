@@ -1,9 +1,12 @@
-// Command server is the forgelet control plane for M0: GitHub webhook
-// ingestion, scheduling and the executor-facing internal API (spec 0011).
+// Command server is the forgelet control plane: GitHub webhook ingestion,
+// scheduling, the executor-facing internal API and check reporting.
 //
-// M0 runs with an in-memory durable store, local identity tokens and a
-// local workflow directory; those are ports swapped by the V1 tasks
-// (PostgreSQL adapter, TokenReview verifier, GitHub content API).
+// Two provider modes:
+//   - GitHub mode (any -github-* credential flag set): workflows are read
+//     from the repository through the content API and checks are reported
+//     as real Check Runs (spec 0005/0011).
+//   - Dev mode (default): a local workflow directory and log-only checks;
+//     the durable store falls back to memory unless -database-url is set.
 package main
 
 import (
@@ -18,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/report"
 	"github.com/shitamachi/forgelet/internal/run/model"
 	"github.com/shitamachi/forgelet/internal/run/scheduler"
@@ -29,10 +33,17 @@ func main() {
 	var (
 		addr     = flag.String("addr", ":8080", "listen address")
 		secret   = flag.String("webhook-secret", "", "GitHub webhook secret (required)")
-		dir      = flag.String("workflows-dir", "./workflows", "workflow files directory (M0 local source)")
+		dir      = flag.String("workflows-dir", "./workflows", "workflow files directory (dev source)")
 		dbURL    = flag.String("database-url", "", "PostgreSQL DSN; empty uses the in-memory store (dev only)")
 		tokenKey = flag.String("token-key", "", "hex key for local executor identity (required)")
 		details  = flag.String("details-base-url", "http://localhost:8080", "base URL for check details links")
+
+		apiBaseURL     = flag.String("github-api-base-url", github.DefaultBaseURL, "GitHub API base URL (GitHub Enterprise override)")
+		ghToken        = flag.String("github-token", "", "static GitHub token enabling GitHub mode")
+		appID          = flag.Int64("github-app-id", 0, "GitHub App id (with -github-installation-id/-github-app-key)")
+		installationID = flag.Int64("github-installation-id", 0, "GitHub App installation id")
+		appKeyPath     = flag.String("github-app-key", "", "GitHub App private key PEM path")
+		scheduledRepos = flag.String("scheduled-repos", "", "comma-separated owner/name repos whose default branches are cron-scanned")
 	)
 	flag.Parse()
 
@@ -44,6 +55,17 @@ func main() {
 	key, err := hex.DecodeString(*tokenKey)
 	if err != nil || len(key) < 32 {
 		fmt.Fprintln(os.Stderr, "server: -token-key must be at least 32 bytes of hex")
+		os.Exit(2)
+	}
+
+	tokens, err := githubTokens(*ghToken, *appID, *installationID, *appKeyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server: %v\n", err)
+		os.Exit(2)
+	}
+	repos, err := parseRepos(*scheduledRepos)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		os.Exit(2)
 	}
 
@@ -62,16 +84,29 @@ func main() {
 		logger.Warn("durable store: in-memory (dev only)")
 	}
 
-	srv, err := server.NewServer(server.Options{
+	opts := server.Options{
 		Durable:        durable,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
+		ScheduledRepos: repos,
 		TokenKey:       key,
 		DetailsBaseURL: *details,
-		CheckReporter:  logReporter{logger},
 		SecretValues:   map[string]string{},
 		Log:            logger,
-	})
+	}
+	if tokens != nil {
+		opts.WorkflowFetcher = githubSource{github.NewContentClient(*apiBaseURL, nil, tokens)}
+		opts.CheckReporter = github.NewCheckReporter(*apiBaseURL, nil, tokens)
+		logger.Info("provider: github", "auth", tokenAuthMode(*ghToken, *appID), "scheduledRepos", len(repos))
+	} else {
+		if len(repos) > 0 {
+			logger.Warn("scheduled-repos without GitHub credentials scan the local workflows dir (dev only)")
+		}
+		opts.CheckReporter = logReporter{logger}
+		logger.Info("provider: local dev (no -github-* flags)")
+	}
+
+	srv, err := server.NewServer(opts)
 	if err != nil {
 		logger.Error("wire server", "err", err.Error())
 		os.Exit(1)
@@ -98,12 +133,41 @@ func main() {
 	}
 }
 
-// logReporter is the M0 development CheckReporter: it logs checks instead
-// of calling GitHub (real adapter wiring is spec 0011 T7).
+// logReporter is the dev-mode CheckReporter: it logs checks instead of
+// calling GitHub; GitHub mode wires the real Check Run adapter.
 type logReporter struct{ log *slog.Logger }
 
 func (l logReporter) Report(_ context.Context, _ model.RunRecord, c report.Check) error {
 	l.log.Info("check", "job", c.Name, "externalId", c.ExternalID,
 		"status", string(c.Status), "conclusion", string(c.Conclusion), "details", c.DetailsURL)
 	return nil
+}
+
+// githubTokens resolves the provider credential from the flags: either a
+// static token or full App auth, never both (spec 0005 FR-G2).
+func githubTokens(token string, appID, installationID int64, keyPath string) (github.TokenSource, error) {
+	switch {
+	case token != "" && (appID != 0 || installationID != 0 || keyPath != ""):
+		return nil, fmt.Errorf("set either -github-token or -github-app-id/-github-installation-id/-github-app-key, not both")
+	case token != "":
+		return staticToken(token), nil
+	case appID != 0 || installationID != 0 || keyPath != "":
+		if appID == 0 || installationID == 0 || keyPath == "" {
+			return nil, fmt.Errorf("-github-app-id, -github-installation-id and -github-app-key are required together")
+		}
+		appKey, err := loadAppKey(keyPath)
+		if err != nil {
+			return nil, err
+		}
+		return github.NewAppAuth(appID, installationID, appKey, "", nil, nil), nil
+	default:
+		return nil, nil
+	}
+}
+
+func tokenAuthMode(token string, appID int64) string {
+	if token != "" {
+		return "static-token"
+	}
+	return "github-app"
 }

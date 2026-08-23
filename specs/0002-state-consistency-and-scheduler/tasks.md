@@ -11,5 +11,5 @@
 - [x] T7 四故障窗口 + 并发领取 + 重放收敛测试（AC-M0 1–4、6）
 - [x] T8 PostgreSQL adapter：pgx 实现 DurableStore、唯一约束、事务、SKIP LOCKED 领取；
       integration test（跳过条件：无 FORGELET_TEST_POSTGRES）
-- [ ] T9 FR-E 内部 schedule：cron 注册、幂等键 `(repo, workflow, cron, fire time)`、
-      missed fire/重叠/时区语义与测试（V1）
+- [x] T9 FR-E 内部 schedule：cron 注册、幂等键 `(repo, workflow, cron, fire time)`、
+      missed fire/重叠/时区语义与测试（V1）；server 接线 + `--scheduled-repos`

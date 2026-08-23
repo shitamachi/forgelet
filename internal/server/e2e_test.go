@@ -274,6 +274,185 @@ func reqWithDelivery(ctx context.Context, ts *httptest.Server, delivery string) 
 	return req
 }
 
+// TestV1PullRequestEndToEnd covers the V1 pull_request path: signed PR
+// webhook → fork trust classification → compile from the base-branch filter
+// → dispatch → execution where fork PRs are denied secrets (FR-9.4) while
+// same-repo PRs get them → check lifecycle. Non-run actions are ignored.
+func TestV1PullRequestEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	workflows := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workflows, "pr.yml"), []byte(prWorkflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clock := func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
+	durable := memory.NewDurableStore(clock, nil)
+	reporter := &capturedReporter{}
+	logs := &bytes.Buffer{}
+
+	srv, err := server.NewServer(server.Options{
+		WebhookSecret:  []byte("whsec"),
+		WorkflowsDir:   workflows,
+		SecretValues:   map[string]string{"repository/GREETING": "hello-pr"},
+		CheckReporter:  reporter,
+		Durable:        durable,
+		TokenKey:       bytes.Repeat([]byte{0x42}, 32),
+		DetailsBaseURL: "https://ci.example.com",
+		Now:            clock,
+		Log:            slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	forkBody := prPayload("opened", true, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
+	resp := postEvent(t, ctx, ts, "pull_request", "pr-d1", forkBody)
+	if resp.code != http.StatusOK || !strings.Contains(resp.body, `"created":true`) || !strings.Contains(resp.body, `"fork":true`) {
+		t.Fatalf("fork pr webhook: %d %s", resp.code, resp.body)
+	}
+
+	// Ignored actions never create runs.
+	closed := postEvent(t, ctx, ts, "pull_request", "pr-d2", prPayload("closed", true, "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"))
+	if closed.code != http.StatusOK || !strings.Contains(closed.body, `"ignored":true`) ||
+		!strings.Contains(closed.body, `"reason":"action closed"`) {
+		t.Fatalf("closed action: %d %s", closed.code, closed.body)
+	}
+
+	runs := durable.Runs()
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1 (only the fork PR)", len(runs))
+	}
+	jobs, err := durable.ListJobRuns(ctx, runs[0].ID)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs=%d err=%v", len(jobs), err)
+	}
+
+	// Execute as the executor would: the plan carries a secret reference,
+	// but the fork trust level denies every secret, so the step fails.
+	if n, err := srv.DispatchOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("dispatch: n=%d err=%v", n, err)
+	}
+	token, err := srv.MintJobToken(ctx, jobs[0].ID)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	cp := httpclient.New(ts.URL, token, ts.Client())
+	p, err := cp.FetchPlan(ctx, identityOf(jobs[0].ID))
+	if err != nil {
+		t.Fatalf("fetch plan: %v", err)
+	}
+	if len(p.SecretRefs) != 1 || p.SecretRefs[0].Name != "GREETING" {
+		t.Errorf("plan secret refs = %+v", p.SecretRefs)
+	}
+	engine := &executor.Engine{CP: cp, WorkDir: t.TempDir(), Grace: 2 * time.Second,
+		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	if result, rerr := engine.Run(ctx, identityOf(jobs[0].ID), p); rerr == nil || result.Success {
+		t.Fatalf("fork job must fail on denied secrets: %v %+v", rerr, result)
+	}
+	forkRun, err := durable.GetRun(ctx, runs[0].ID)
+	if err != nil || forkRun.Status != model.RunFailed {
+		t.Fatalf("fork run status = %s err=%v, want failed", forkRun.Status, err)
+	}
+	if c, ok := reporter.latestByExternal(string(jobs[0].ID)); !ok || c.Conclusion != report.ConclusionFailure {
+		t.Errorf("fork check = %+v", c)
+	}
+
+	// Same-repo PR: same workflow, secrets allowed, job succeeds.
+	sameRepo := postEvent(t, ctx, ts, "pull_request", "pr-d3",
+		prPayload("synchronize", false, "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"))
+	if sameRepo.code != http.StatusOK || !strings.Contains(sameRepo.body, `"fork":false`) {
+		t.Fatalf("same-repo pr webhook: %d %s", sameRepo.code, sameRepo.body)
+	}
+	runs = durable.Runs()
+	if len(runs) != 2 {
+		t.Fatalf("runs = %d, want 2", len(runs))
+	}
+	jobs2, err := durable.ListJobRuns(ctx, runs[1].ID)
+	if err != nil || len(jobs2) != 1 {
+		t.Fatalf("jobs2=%d err=%v", len(jobs2), err)
+	}
+	if n, err := srv.DispatchOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("dispatch 2: n=%d err=%v", n, err)
+	}
+	token2, err := srv.MintJobToken(ctx, jobs2[0].ID)
+	if err != nil {
+		t.Fatalf("mint token 2: %v", err)
+	}
+	cp2 := httpclient.New(ts.URL, token2, ts.Client())
+	p2, err := cp2.FetchPlan(ctx, identityOf(jobs2[0].ID))
+	if err != nil {
+		t.Fatalf("fetch plan 2: %v", err)
+	}
+	engine2 := &executor.Engine{CP: cp2, WorkDir: t.TempDir(), Grace: 2 * time.Second,
+		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+	if result, rerr := engine2.Run(ctx, identityOf(jobs2[0].ID), p2); rerr != nil || !result.Success {
+		t.Fatalf("same-repo job must pass: %v %+v", rerr, result)
+	}
+	sameRun, err := durable.GetRun(ctx, runs[1].ID)
+	if err != nil || sameRun.Status != model.RunSucceeded {
+		t.Fatalf("same-repo run status = %s err=%v, want succeeded", sameRun.Status, err)
+	}
+	c2, ok := reporter.latestByExternal(string(jobs2[0].ID))
+	if !ok || c2.Status != report.StatusCompleted || c2.Conclusion != report.ConclusionSuccess {
+		t.Errorf("same-repo check = %+v", c2)
+	}
+
+	// The denied secret plaintext never appears anywhere in the logs.
+	if strings.Contains(logs.String(), "hello-pr") {
+		t.Error("secret plaintext leaked into server logs")
+	}
+}
+
+const prWorkflow = `name: PR CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  gated:
+    runs-on: k3s-small
+    env:
+      GREETING: ${{ secrets.GREETING }}
+    steps:
+      - name: needs-secret
+        run: test "$GREETING" = hello-pr
+`
+
+func prPayload(action string, fork bool, sha string) string {
+	headRepo := `"repo": {"fork": true, "name": "fork-repo", "owner": {"login": "contributor"}}`
+	if !fork {
+		headRepo = `"repo": {"fork": false, "name": "forgelet", "owner": {"login": "shitamachi"}}`
+	}
+	return `{"action": "` + action + `", "number": 7,
+	  "pull_request": {
+	    "head": {"ref": "feature", "sha": "` + sha + `", ` + headRepo + `},
+	    "base": {"ref": "main", "repo": {"name": "forgelet", "owner": {"login": "shitamachi"}}}
+	  }}`
+}
+
+type webhookResponse struct {
+	code int
+	body string
+}
+
+func postEvent(t *testing.T, ctx context.Context, ts *httptest.Server, event, delivery, body string) webhookResponse {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/webhooks/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", event)
+	req.Header.Set("X-GitHub-Delivery", delivery)
+	req.Header.Set("X-Hub-Signature-256", signBody("whsec", body))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("%s webhook: %v", event, err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	return webhookResponse{code: resp.StatusCode, body: string(b)}
+}
+
 // TestM0NoMatchingWorkflow: a push to an unmatched branch creates no run.
 func TestM0NoMatchingWorkflow(t *testing.T) {
 	ctx := context.Background()

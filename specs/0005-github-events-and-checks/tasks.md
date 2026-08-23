@@ -6,6 +6,6 @@
 - [x] T4 GitHub App auth：RS256 JWT + installation token + 缓存 TokenSource（FR-G2）
 - [x] T5 Check Run adapter：按 external_id 幂等 upsert、details_url、生命周期（FR-G3.2/3.3）
 - [x] T6 AC-M0 测试矩阵（签名/重放/payload 一致/映射/生命周期）
-- [ ] T7 `pull_request` 解码 + fork 判定字段（P1）
+- [x] T7 `pull_request` 解码 + fork 判定字段（P1）；server 信任分级与 e2e
 - [ ] T8 rerequest → 新 attempt 追踪（FR-8.4，P1）
 - [ ] T9 替换 chi 路由接入 cmd/server 装配（随 0008/0011 wiring）
