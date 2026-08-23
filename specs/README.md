@@ -55,3 +55,4 @@ specs/NNNN-<slug>/
 | [0005](0005-github-events-and-checks/spec.md) | GitHub Events and Checks | accepted |
 | [0006](0006-workflow-syntax-and-compiler/spec.md) | Workflow Syntax and Compiler | accepted |
 | [0007](0007-expression-engine/spec.md) | Expression Engine | accepted |
+| [0008](0008-executor-runtime/spec.md) | Executor Runtime | accepted |
