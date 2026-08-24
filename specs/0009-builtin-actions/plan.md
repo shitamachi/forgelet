@@ -1,8 +1,9 @@
 # Plan — Spec 0009 Builtin Actions
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-23
 - **Approved**: 2026-08-23, project owner（与 spec 同批授权）
+- **Completed**: 2026-08-24, v1-wave5 实现并通过验证
 
 ## 1. 总体形态
 
