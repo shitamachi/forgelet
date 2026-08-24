@@ -107,7 +107,7 @@ jobs:
     runs-on: small
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        working-directory: sub
       - run: echo hi
 `
 
@@ -131,7 +131,7 @@ func TestParseUnknownFieldsReportLocation(t *testing.T) {
 		column   int
 	}{
 		{"job timeout", unknownJobField, ".jobs.test", `"timeout-minutes"`, 8, 5},
-		{"step uses", unknownStepField, ".steps[0]", `"uses"`, 7, 9},
+		{"step working-directory", unknownStepField, ".steps[0]", `"working-directory"`, 7, 9},
 		{"deployment trigger", unsupportedTrigger, ".on", `"deployment"`, 2, 3},
 	}
 	for _, tc := range cases {
@@ -231,7 +231,7 @@ func TestParseNoPartialASTOnError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	// Multiple problems in one document are all reported together.
-	src := "on: push\njobs:\n  a:\n    runs-on: x\n    timeout-minutes: 5\n    steps:\n      - uses: u\n"
+	src := "on: push\njobs:\n  a:\n    runs-on: x\n    timeout-minutes: 5\n    steps:\n      - id: one\n"
 	_, err = Parse("multi.yml", []byte(src))
 	var serr *Error
 	if !errors.As(err, &serr) {

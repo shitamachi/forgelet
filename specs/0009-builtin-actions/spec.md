@@ -1,7 +1,8 @@
 # Spec 0009 — Builtin Actions
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-08-23
+- **Accepted**: 2026-08-23, project owner（会话指令「提交然后继续任务」，唯一待批任务即本 spec）
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted；FR-6、FR-5.2）
 - **Covers**: FR-6.1、FR-6.2；FR-5.2 中 Builtin Action 的 `uses:` 语义
 - **Out of scope**: JavaScript Action 与 Composite Action 的运行时（后续 spec）、Docker Action

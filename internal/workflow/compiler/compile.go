@@ -17,6 +17,7 @@ type Step struct {
 	Name            string
 	If              string // raw condition; evaluated at runtime by the executor
 	Run             string
+	Uses            *BuiltinCall // set for `uses:` steps; Run is empty then
 	ContinueOnError bool
 	Env             map[string]string
 }
@@ -35,10 +36,11 @@ type JobInstance struct {
 }
 
 // Compiled is the compiled workflow. It carries the trigger filters needed
-// for event matching but no syntax AST nodes.
+// for event matching, non-blocking warnings, and no syntax AST nodes.
 type Compiled struct {
-	Name string
-	Jobs []JobInstance // document order
+	Name     string
+	Jobs     []JobInstance // document order
+	Warnings []Warning
 
 	push     *syntax.PushTrigger
 	pr       *syntax.PushTrigger
@@ -78,13 +80,27 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			inst.Env = map[string]string{}
 		}
 		for i, step := range job.Steps {
-			if strings.TrimSpace(step.Run) == "" {
+			switch {
+			case strings.TrimSpace(step.Run) == "" && step.Uses == "":
 				return nil, fmt.Errorf("compile %s: job %q step %d: empty run", wf.File, job.ID, i)
+			case step.Uses != "":
+				call, warn, berr := compileBuiltin(job.ID, i, step)
+				if berr != nil {
+					return nil, fmt.Errorf("compile %s: job %q step %d: %w", wf.File, job.ID, i, berr)
+				}
+				if warn.Msg != "" {
+					out.Warnings = append(out.Warnings, warn)
+				}
+				inst.Steps = append(inst.Steps, Step{
+					Name: step.Name, If: step.If, Uses: call,
+					ContinueOnError: step.ContinueOnError, Env: step.Env,
+				})
+			default:
+				inst.Steps = append(inst.Steps, Step{
+					Name: step.Name, If: step.If, Run: step.Run,
+					ContinueOnError: step.ContinueOnError, Env: step.Env,
+				})
 			}
-			inst.Steps = append(inst.Steps, Step{
-				Name: step.Name, If: step.If, Run: step.Run,
-				ContinueOnError: step.ContinueOnError, Env: step.Env,
-			})
 		}
 		expanded, err := expandMatrix(job, inst)
 		if err != nil {

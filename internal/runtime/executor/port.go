@@ -44,4 +44,14 @@ type ControlPlane interface {
 
 	// ReportJob reports the terminal result; idempotent on the server side.
 	ReportJob(ctx context.Context, id identity.Identity, result JobResult) error
+
+	// ResolveCache attempts to restore a cache entry. hit indicates whether
+	// getURL is usable; putURL is always a presigned PUT for the exact key.
+	ResolveCache(ctx context.Context, id identity.Identity, key string, restoreKeys []string) (hit bool, getURL string, putURL string, err error)
+
+	// ArtifactUploadURL returns a presigned PUT URL for uploading an artifact.
+	ArtifactUploadURL(ctx context.Context, id identity.Identity, name string) (string, error)
+
+	// ArtifactDownloadURL returns a presigned GET URL for downloading an artifact.
+	ArtifactDownloadURL(ctx context.Context, id identity.Identity, name string) (string, error)
 }

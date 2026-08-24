@@ -86,6 +86,7 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 		env[k] = rendered
 	}
 
+	withSecrets := map[string]string{}
 	if len(p.SecretRefs) > 0 {
 		secrets, err := e.CP.FetchSecrets(ctx, id, p.SecretRefs)
 		if err != nil {
@@ -97,6 +98,10 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 				continue
 			}
 			masker.Add(val)
+			if strings.HasPrefix(ref.Env, "$with:") {
+				withSecrets[ref.Env] = val
+				continue
+			}
 			if ref.Env != "" {
 				env[ref.Env] = val
 			}
@@ -157,6 +162,97 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 				result.Steps = append(result.Steps, StepResult{StepID: step.ID, Outcome: outcomeSkipped, Conclusion: conclusionSkip})
 				continue
 			}
+		}
+
+		if step.Builtin != nil {
+			// Builtin step: resolve inputs (interpolate + overlay secrets).
+			finalInputs := make(map[string]string, len(step.Builtin.Inputs))
+			for k, v := range step.Builtin.Inputs {
+				if expression.HasExpression(v) {
+					rendered, ierr := expression.Interpolate(v, exprEnv)
+					if ierr != nil {
+						result.Error = "step " + step.ID + " with." + k + ": " + ierr.Error()
+						return result, e.failJob(ctx, id, p, i, &result, logger)
+					}
+					finalInputs[k] = rendered
+				} else {
+					finalInputs[k] = v
+				}
+			}
+			prefix := "$with:" + step.ID + ":"
+			for envKey, secVal := range withSecrets {
+				if strings.HasPrefix(envKey, prefix) {
+					k := strings.TrimPrefix(envKey, prefix)
+					finalInputs[k] = secVal
+				}
+			}
+			// Interpolate any newly injected secret-derived values that may contain expressions (unlikely but safe)
+			// Secret values are not interpolated.
+
+			outputs := map[string]string{}
+			bc := BuiltinContext{
+				Ctx:       ctx,
+				Workspace: e.WorkDir,
+				Inputs:    finalInputs,
+				Env:       stepEnv,
+				Logger:    logger,
+				SetOutput: func(k, v string) { outputs[k] = v },
+				CP:        e.CP,
+				Identity:  id,
+			}
+			handler, ok := builtinRegistry[step.Builtin.Action]
+			if !ok {
+				result.Error = "builtin " + step.Builtin.Action + " not found"
+				return result, e.failJob(ctx, id, p, i, &result, logger)
+			}
+			start := time.Now()
+			berr := handler(ctx, bc)
+			sr := StepResult{StepID: step.ID, DurationMs: time.Since(start).Milliseconds()}
+			state := &stepState{outputs: outputs}
+			states[step.ID] = state
+			if berr == nil {
+				sr.ExitCode = 0
+			} else {
+				sr.ExitCode = 1
+			}
+			// Fold file commands (builtin may have written to GITHUB_ENV/OUTPUT via files)
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(envFile)); ferr == nil {
+				_ = filecommand.Apply(env, kvs)
+			} else {
+				logger.Warn("malformed GITHUB_ENV", "step", step.ID, "err", ferr.Error())
+			}
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(outFile)); ferr == nil {
+				for _, kv := range kvs {
+					state.outputs[kv.Key] = kv.Value
+					logger.Info("step output", "step", step.ID, "key", kv.Key, "value", kv.Value)
+				}
+			} else {
+				logger.Warn("malformed GITHUB_OUTPUT", "step", step.ID, "err", ferr.Error())
+			}
+			// Merge SetOutput outputs into state (already there) and also persist to file for consistency
+			// Already in state.outputs.
+			pathEntries = append(filecommand.ParsePathFile(mustRead(pathFile)), pathEntries...)
+
+			switch {
+			case berr == nil:
+				sr.Outcome, sr.Conclusion = outcomeSuccess, conclusionOK
+			case errors.Is(berr, context.Canceled) || errors.Is(berr, ErrCancelled):
+				result.Cancelled = true
+				result.Error = fmt.Sprintf("step %s cancelled", step.ID)
+				e.report(ctx, id, result, logger)
+				return result, ErrCancelled
+			case step.ContinueOnError:
+				sr.Outcome, sr.Conclusion = outcomeFailure, conclusionOK
+				logger.Warn("step failed but continue-on-error is set", "step", step.ID, "err", berr.Error())
+			default:
+				sr.Outcome, sr.Conclusion = outcomeFailure, conclusionFail
+				result.Steps = append(result.Steps, sr)
+				result.Error = fmt.Sprintf("step %s failed: %v", step.ID, berr)
+				return result, e.failJob(ctx, id, p, i+1, &result, logger)
+			}
+			state.outcome, state.conclusion = sr.Outcome, sr.Conclusion
+			result.Steps = append(result.Steps, sr)
+			continue
 		}
 
 		script := step.Run.Script

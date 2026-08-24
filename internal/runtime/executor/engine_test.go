@@ -53,6 +53,18 @@ func (f *fakeCP) ReportJob(_ context.Context, _ identity.Identity, r JobResult) 
 	return nil
 }
 
+func (f *fakeCP) ResolveCache(_ context.Context, _ identity.Identity, _ string, _ []string) (bool, string, string, error) {
+	return false, "", "", nil
+}
+
+func (f *fakeCP) ArtifactUploadURL(_ context.Context, _ identity.Identity, _ string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeCP) ArtifactDownloadURL(_ context.Context, _ identity.Identity, _ string) (string, error) {
+	return "", nil
+}
+
 type capturedLogs struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -256,6 +268,15 @@ func (failCP) FetchSecrets(context.Context, identity.Identity, []plan.SecretRef)
 	return nil, errors.New("injected")
 }
 func (failCP) ReportJob(context.Context, identity.Identity, JobResult) error { return nil }
+func (failCP) ResolveCache(context.Context, identity.Identity, string, []string) (bool, string, string, error) {
+	return false, "", "", nil
+}
+func (failCP) ArtifactUploadURL(context.Context, identity.Identity, string) (string, error) {
+	return "", nil
+}
+func (failCP) ArtifactDownloadURL(context.Context, identity.Identity, string) (string, error) {
+	return "", nil
+}
 
 // ReportJob failures are logged but do not change the outcome.
 func TestReportFailureTolerated(t *testing.T) {
@@ -271,6 +292,15 @@ type reportFailCP struct{ *fakeCP }
 
 func (reportFailCP) ReportJob(context.Context, identity.Identity, JobResult) error {
 	return errors.New("injected report failure")
+}
+func (reportFailCP) ResolveCache(context.Context, identity.Identity, string, []string) (bool, string, string, error) {
+	return false, "", "", nil
+}
+func (reportFailCP) ArtifactUploadURL(context.Context, identity.Identity, string) (string, error) {
+	return "", nil
+}
+func (reportFailCP) ArtifactDownloadURL(context.Context, identity.Identity, string) (string, error) {
+	return "", nil
 }
 
 // Sanity: the JSON log lines parse and carry identity fields.

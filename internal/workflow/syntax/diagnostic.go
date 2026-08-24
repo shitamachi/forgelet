@@ -78,12 +78,14 @@ type Job struct {
 	Steps  []*Step
 }
 
-// Step is one `run` step.
+// Step is one `run` or `uses` step.
 type Step struct {
 	Pos             Position
 	Name            string
 	If              string
 	Run             string
+	Uses            string
+	With            map[string]string
 	ContinueOnError bool
 	Env             map[string]string
 }
