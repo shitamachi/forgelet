@@ -83,6 +83,45 @@ func (c *Client) ReportJob(ctx context.Context, id identity.Identity, result exe
 	return c.do(ctx, http.MethodPost, path, result, nil)
 }
 
+// ResolveCache implements executor.ControlPlane.
+func (c *Client) ResolveCache(ctx context.Context, id identity.Identity, key string, restoreKeys []string) (bool, string, string, error) {
+	req := map[string]any{"key": key, "restoreKeys": restoreKeys}
+	var resp struct {
+		Hit    bool   `json:"hit"`
+		GetURL string `json:"getUrl"`
+		PutURL string `json:"putUrl"`
+	}
+	path := fmt.Sprintf("/internal/jobruns/%s/cache/resolve", id.JobRunID)
+	if err := c.do(ctx, http.MethodPost, path, req, &resp); err != nil {
+		return false, "", "", err
+	}
+	return resp.Hit, resp.GetURL, resp.PutURL, nil
+}
+
+// ArtifactUploadURL implements executor.ControlPlane.
+func (c *Client) ArtifactUploadURL(ctx context.Context, id identity.Identity, name string) (string, error) {
+	var resp struct {
+		UploadURL string `json:"uploadUrl"`
+	}
+	path := fmt.Sprintf("/internal/jobruns/%s/artifacts/%s", id.JobRunID, name)
+	if err := c.do(ctx, http.MethodPost, path, map[string]string{}, &resp); err != nil {
+		return "", err
+	}
+	return resp.UploadURL, nil
+}
+
+// ArtifactDownloadURL implements executor.ControlPlane.
+func (c *Client) ArtifactDownloadURL(ctx context.Context, id identity.Identity, name string) (string, error) {
+	var resp struct {
+		DownloadURL string `json:"downloadUrl"`
+	}
+	path := fmt.Sprintf("/internal/jobruns/%s/artifacts/%s", id.JobRunID, name)
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return "", err
+	}
+	return resp.DownloadURL, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {

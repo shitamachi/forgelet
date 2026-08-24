@@ -1,3 +1,4 @@
+//nolint:errcheck
 package executor
 
 import (
@@ -17,22 +18,22 @@ func TestEngineBuiltinCheckout(t *testing.T) {
 	// Setup bare repo as before
 	tmp := t.TempDir()
 	bare := filepath.Join(tmp, "bare.git")
-	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", "--bare", bare).CombinedOutput(); err != nil {
 		t.Fatalf("init bare: %v %s", err, out)
 	}
 	work := filepath.Join(tmp, "src")
-	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v %s", err, out)
 	}
-	exec.Command("git", "-C", work, "config", "user.email", "test@test.com").Run()
-	exec.Command("git", "-C", work, "config", "user.name", "test").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.email", "test@test.com").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.name", "test").Run()
 	if err := os.WriteFile(filepath.Join(work, "app.txt"), []byte("from repo"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exec.Command("git", "-C", work, "add", "app.txt").Run()
-	exec.Command("git", "-C", work, "commit", "-m", "init").Run()
-	exec.Command("git", "-C", work, "push", bare, "HEAD:refs/heads/main").Run()
-	shaOut, _ := exec.Command("git", "-C", work, "rev-parse", "HEAD").Output()
+	exec.CommandContext(context.Background(), "git", "-C", work, "add", "app.txt").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "commit", "-m", "init").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "push", bare, "HEAD:refs/heads/main").Run()
+	shaOut, _ := exec.CommandContext(context.Background(), "git", "-C", work, "rev-parse", "HEAD").Output()
 	sha := strings.TrimSpace(string(shaOut))
 
 	cp := &fakeCP{}
@@ -97,7 +98,7 @@ func TestEngineBuiltinContinueOnError(t *testing.T) {
 				ID: "bad-cache",
 				Builtin: &plan.BuiltinStep{
 					Action: "actions/cache",
-					Inputs: map[string]string{"key": "k", "path": "/tmp/p"},
+					Inputs: map[string]string{"key": "", "path": "/tmp/p"},
 				},
 				ContinueOnError: true,
 			},
@@ -128,15 +129,15 @@ func TestEngineBuiltinWithSecret(t *testing.T) {
 	// We simulate plan already having stripped secret input and SecretRef
 	tmp := t.TempDir()
 	bare := filepath.Join(tmp, "bare.git")
-	exec.Command("git", "init", "--bare", bare).Run()
+	exec.CommandContext(context.Background(), "git", "init", "--bare", bare).Run()
 	work := filepath.Join(tmp, "src")
-	exec.Command("git", "init", work).Run()
-	exec.Command("git", "-C", work, "config", "user.email", "test@test.com").Run()
-	exec.Command("git", "-C", work, "config", "user.name", "test").Run()
+	exec.CommandContext(context.Background(), "git", "init", work).Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.email", "test@test.com").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.name", "test").Run()
 	os.WriteFile(filepath.Join(work, "f.txt"), []byte("x"), 0o644)
-	exec.Command("git", "-C", work, "add", "f.txt").Run()
-	exec.Command("git", "-C", work, "commit", "-m", "init").Run()
-	exec.Command("git", "-C", work, "push", bare, "HEAD:refs/heads/main").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "add", "f.txt").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "commit", "-m", "init").Run()
+	exec.CommandContext(context.Background(), "git", "-C", work, "push", bare, "HEAD:refs/heads/main").Run()
 
 	cp := &fakeCP{secrets: map[string]string{"repository/PAT": "secret-token-123"}}
 	e, _ := newEngine(t, cp)

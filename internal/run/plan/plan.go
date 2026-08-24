@@ -36,10 +36,10 @@ type BuiltinStep struct {
 
 // Step is one executable step of the Plan.
 type Step struct {
-	ID      string `json:"id"`
-	Name    string `json:"name,omitempty"`
-	If      string `json:"if,omitempty"` // raw condition; evaluated by the executor
-	Run     RunStep `json:"run"`
+	ID      string       `json:"id"`
+	Name    string       `json:"name,omitempty"`
+	If      string       `json:"if,omitempty"` // raw condition; evaluated by the executor
+	Run     RunStep      `json:"run"`
 	Builtin *BuiltinStep `json:"builtin,omitempty"`
 	// ContinueOnError keeps a failing step from failing the job (outcome
 	// failure, conclusion success).

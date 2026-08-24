@@ -197,6 +197,8 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 				Env:       stepEnv,
 				Logger:    logger,
 				SetOutput: func(k, v string) { outputs[k] = v },
+				CP:        e.CP,
+				Identity:  id,
 			}
 			handler, ok := builtinRegistry[step.Builtin.Action]
 			if !ok {

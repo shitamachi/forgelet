@@ -6,8 +6,8 @@
 - [x] T3 plan：`BuiltinStep` 字段与 digest 兼容（FR-A4）
 - [x] T4 executor：BuiltinContext/handler 表接入 step 循环；checkout handler（本地 git
        fixture 测试）（FR-A2）
-- [ ] T5 server：cache/resolve 与 artifact URL 端点 + S3/MinIO presign 适配器 + repo-scope
+- [x] T5 server：cache/resolve 与 artifact URL 端点 + S3/MinIO presign 适配器 + repo-scope
       隔离集成测试（FR-A3）
-- [ ] T6 executor：cache（restore-keys 回退、best-effort save）与 artifact 上传下载
+- [x] T6 executor：cache（restore-keys 回退、best-effort save）与 artifact 上传下载
       handler（FR-A3）
 - [ ] T7 AC-V1 全链路 fixture：Go CI（checkout→cache→test）进 k3s smoke 可选阶段

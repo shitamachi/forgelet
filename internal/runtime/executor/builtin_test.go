@@ -14,34 +14,34 @@ func TestCheckoutClonesFile(t *testing.T) {
 	// Create a bare repo with one commit
 	tmp := t.TempDir()
 	bare := filepath.Join(tmp, "bare.git")
-	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", "--bare", bare).CombinedOutput(); err != nil {
 		t.Fatalf("init bare: %v %s", err, out)
 	}
 	work := filepath.Join(tmp, "src")
-	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "init", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v %s", err, out)
 	}
 	// Configure git in work
-	if out, err := exec.Command("git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
 		t.Fatalf("config email: %v %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.name", "test").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", work, "config", "user.name", "test").CombinedOutput(); err != nil {
 		t.Fatalf("config name: %v %s", err, out)
 	}
 	if err := os.WriteFile(filepath.Join(work, "hello.txt"), []byte("hello checkout"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", work, "add", "hello.txt").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", work, "add", "hello.txt").CombinedOutput(); err != nil {
 		t.Fatalf("add: %v %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", work, "commit", "-m", "init").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", work, "commit", "-m", "init").CombinedOutput(); err != nil {
 		t.Fatalf("commit: %v %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", work, "push", bare, "HEAD:refs/heads/main").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "git", "-C", work, "push", bare, "HEAD:refs/heads/main").CombinedOutput(); err != nil {
 		t.Fatalf("push: %v %s", err, out)
 	}
 	// Get SHA
-	shaOut, _ := exec.Command("git", "-C", work, "rev-parse", "HEAD").Output()
+	shaOut, _ := exec.CommandContext(context.Background(), "git", "-C", work, "rev-parse", "HEAD").Output()
 	sha := strings.TrimSpace(string(shaOut))
 
 	ws := t.TempDir()
@@ -52,8 +52,8 @@ func TestCheckoutClonesFile(t *testing.T) {
 			"repository": bare,
 			"ref":        sha,
 		},
-		Env:    map[string]string{},
-		Logger: slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+		Env:       map[string]string{},
+		Logger:    slog.New(slog.NewJSONHandler(os.Stderr, nil)),
 		SetOutput: func(k, v string) {},
 	}
 	if err := checkoutHandler(context.Background(), bc); err != nil {
@@ -107,7 +107,7 @@ func TestCheckoutInputValidation(t *testing.T) {
 		Ctx:       context.Background(),
 		Workspace: t.TempDir(),
 		Inputs: map[string]string{
-			"repository":         "/tmp/x",
+			"repository":          "/tmp/x",
 			"persist-credentials": "maybe",
 		},
 		Env:    map[string]string{},
@@ -119,9 +119,16 @@ func TestCheckoutInputValidation(t *testing.T) {
 }
 
 func TestBuiltinNotImplemented(t *testing.T) {
+	if _, ok := builtinRegistry["actions/unknown"]; ok {
+		t.Error("unknown action should not be registered")
+	}
 	h := builtinRegistry["actions/cache"]
-	err := h(context.Background(), BuiltinContext{})
-	if err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("expected not implemented, got %v", err)
+	err := h(context.Background(), BuiltinContext{
+		Inputs:    map[string]string{"key": "", "path": ""},
+		Logger:    slog.New(slog.NewJSONHandler(os.Stderr, nil)),
+		SetOutput: func(k, v string) {},
+	})
+	if err == nil || !strings.Contains(err.Error(), "key is required") {
+		t.Errorf("expected key required, got %v", err)
 	}
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/security/identity"
 	"github.com/shitamachi/forgelet/internal/security/policy"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
+	"github.com/shitamachi/forgelet/internal/storage/s3"
 	"github.com/shitamachi/forgelet/internal/workflow/compiler"
 	"github.com/shitamachi/forgelet/internal/workflow/expression"
 	"github.com/shitamachi/forgelet/internal/workflow/syntax"
@@ -54,6 +55,7 @@ type Options struct {
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
 	Metrics        *metrics.Metrics       // Prometheus instrumentation; default instance when nil
 	TracerProvider trace.TracerProvider   // OpenTelemetry; no-op when nil
+	S3             *s3.Store              // S3/MinIO presigned URLs for cache/artifacts; nil disables
 	Verifier       identity.Verifier
 	Issuer         identity.Issuer
 	TokenKey       []byte // used when Verifier/Issuer are nil (local dev identity)
@@ -456,6 +458,9 @@ func (s *Server) routes() {
 		r.Post("/internal/jobruns/{id}/secrets", s.handleSecrets)
 		r.Post("/internal/jobruns/{id}/status", s.handleStatus)
 		r.Post("/internal/jobruns/{id}/observed", s.handleObserved)
+		r.Post("/internal/jobruns/{id}/cache/resolve", s.handleCacheResolve)
+		r.Post("/internal/jobruns/{id}/artifacts/{name}", s.handleArtifactUpload)
+		r.Get("/internal/jobruns/{id}/artifacts/{name}", s.handleArtifactDownload)
 	})
 }
 
@@ -614,6 +619,136 @@ func (s *Server) handleObserved(w http.ResponseWriter, r *http.Request) {
 	}
 	s.reportCheck(r.Context(), id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleCacheResolve(w http.ResponseWriter, r *http.Request) {
+	id, ident, ok := s.jobFromPath(w, r)
+	if !ok {
+		return
+	}
+	if !ident.HasScope(identity.ScopePlanRead) && !ident.HasScope(identity.ScopeStatusWrite) {
+		http.Error(w, "missing scope", http.StatusForbidden)
+		return
+	}
+	if s.opts.S3 == nil {
+		http.Error(w, "cache storage not configured", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		Key         string   `json:"key"`
+		RestoreKeys []string `json:"restoreKeys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "malformed body", http.StatusBadRequest)
+		return
+	}
+	if body.Key == "" {
+		http.Error(w, "key is required", http.StatusBadRequest)
+		return
+	}
+	job, err := s.durable.GetJobRun(r.Context(), id)
+	if err != nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	run, err := s.durable.GetRun(r.Context(), job.RunID)
+	if err != nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	repo := run.Event.Repository
+	hit, hitKey, err := s.opts.S3.CacheResolve(r.Context(), repo, body.Key, body.RestoreKeys)
+	if err != nil {
+		http.Error(w, "cache resolve failed", http.StatusInternalServerError)
+		return
+	}
+	putURL, err := s.opts.S3.CachePutURL(r.Context(), repo, body.Key)
+	if err != nil {
+		http.Error(w, "presign put failed", http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]any{"hit": hit, "putUrl": putURL}
+	if hit {
+		getURL, err := s.opts.S3.CacheGetURL(r.Context(), hitKey)
+		if err != nil {
+			http.Error(w, "presign get failed", http.StatusInternalServerError)
+			return
+		}
+		resp["getUrl"] = getURL
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
+	id, ident, ok := s.jobFromPath(w, r)
+	if !ok {
+		return
+	}
+	if !ident.HasScope(identity.ScopeStatusWrite) {
+		http.Error(w, "missing scope status:write", http.StatusForbidden)
+		return
+	}
+	if s.opts.S3 == nil {
+		http.Error(w, "artifact storage not configured", http.StatusNotImplemented)
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
+		http.Error(w, "invalid artifact name", http.StatusBadRequest)
+		return
+	}
+	job, err := s.durable.GetJobRun(r.Context(), id)
+	if err != nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	run, err := s.durable.GetRun(r.Context(), job.RunID)
+	if err != nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	u, err := s.opts.S3.ArtifactPutURL(r.Context(), run.Event.Repository, job.RunID, name)
+	if err != nil {
+		http.Error(w, "presign failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"uploadUrl": u})
+}
+
+func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) {
+	id, ident, ok := s.jobFromPath(w, r)
+	if !ok {
+		return
+	}
+	if !ident.HasScope(identity.ScopePlanRead) {
+		http.Error(w, "missing scope plan:read", http.StatusForbidden)
+		return
+	}
+	if s.opts.S3 == nil {
+		http.Error(w, "artifact storage not configured", http.StatusNotImplemented)
+		return
+	}
+	name := chi.URLParam(r, "name")
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
+		http.Error(w, "invalid artifact name", http.StatusBadRequest)
+		return
+	}
+	job, err := s.durable.GetJobRun(r.Context(), id)
+	if err != nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+	run, err := s.durable.GetRun(r.Context(), job.RunID)
+	if err != nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	u, err := s.opts.S3.ArtifactGetURL(r.Context(), run.Event.Repository, job.RunID, name)
+	if err != nil {
+		http.Error(w, "presign failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"downloadUrl": u})
 }
 
 // reportCheck pushes the current durable job state to the provider.

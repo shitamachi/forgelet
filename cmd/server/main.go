@@ -38,6 +38,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/server"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
 	"github.com/shitamachi/forgelet/internal/storage/postgres"
+	s3store "github.com/shitamachi/forgelet/internal/storage/s3"
 )
 
 func main() {
@@ -61,6 +62,12 @@ func main() {
 		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP HTTP collector host:port for tracing; empty disables tracing")
 		activeStore  = flag.String("active-store", "memory", "dispatch target: memory (dev) or kubernetes (JobRun CRDs in -jobs-namespace)")
 		jobsNS       = flag.String("jobs-namespace", "forgelet-jobs", "namespace executor JobRuns and pods are created in")
+
+		s3Endpoint  = flag.String("s3-endpoint", "", "S3/MinIO endpoint host:port for cache/artifacts (empty disables)")
+		s3Bucket    = flag.String("s3-bucket", "forgelet", "S3 bucket for cache/artifacts")
+		s3AccessKey = flag.String("s3-access-key", "", "S3 access key")
+		s3SecretKey = flag.String("s3-secret-key", "", "S3 secret key")
+		s3UseSSL    = flag.Bool("s3-use-ssl", false, "use TLS for S3")
 	)
 	flag.Parse()
 
@@ -114,10 +121,30 @@ func main() {
 		logger.Warn("durable store: in-memory (dev only)")
 	}
 
+	var s3Store *s3store.Store
+	if *s3Endpoint != "" {
+		if *s3AccessKey == "" || *s3SecretKey == "" {
+			fmt.Fprintln(os.Stderr, "server: -s3-access-key and -s3-secret-key are required with -s3-endpoint")
+			os.Exit(2)
+		}
+		s, err := s3store.New(*s3Endpoint, *s3AccessKey, *s3SecretKey, *s3Bucket, *s3UseSSL)
+		if err != nil {
+			logger.Error("s3", "err", err.Error())
+			os.Exit(1)
+		}
+		if err := s.EnsureBucket(ctx); err != nil {
+			logger.Error("s3 ensure bucket", "err", err.Error())
+			os.Exit(1)
+		}
+		s3Store = s
+		logger.Info("s3 store: enabled", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
+	}
+
 	opts := server.Options{
 		Durable:        durable,
 		Metrics:        metrics.New(),
 		TracerProvider: tp,
+		S3:             s3Store,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		ScheduledRepos: repos,
