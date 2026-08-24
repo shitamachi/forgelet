@@ -8,4 +8,4 @@
 - [x] T6 AC-M0 测试矩阵（签名/重放/payload 一致/映射/生命周期）
 - [x] T7 `pull_request` 解码 + fork 判定字段（P1）；server 信任分级与 e2e
 - [ ] T8 rerequest → 新 attempt 追踪（FR-8.4，P1）
-- [ ] T9 替换 chi 路由接入 cmd/server 装配（随 0008/0011 wiring）
+- [x] T9 chi 路由已接入 `cmd/server`（`chi.NewRouter` 装配，`T8` 待做）
