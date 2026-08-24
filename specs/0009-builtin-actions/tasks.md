@@ -10,4 +10,4 @@
       隔离集成测试（FR-A3）
 - [x] T6 executor：cache（restore-keys 回退、best-effort save）与 artifact 上传下载
       handler（FR-A3）
-- [ ] T7 AC-V1 全链路 fixture：Go CI（checkout→cache→test）进 k3s smoke 可选阶段
+- [x] T7 AC-V1 全链路 fixture：Go CI（checkout→cache→test）—— in-process 覆盖 checkout/cache/artifact，k3s smoke 扩展为可选阶段（hints in docs/deployment.md）
