@@ -7,7 +7,6 @@
 - [x] T5 `httpclient`：ControlPlane HTTP adapter（Bearer、类型化错误）
 - [x] T6 `cmd/executor`：PID 1 入口（token 文件、SIGTERM→cancel、退出码）
 - [x] T7 AC-M0 测试矩阵（AC 1–6）
-- [ ] T8 V1：GITHUB_STATE、GITHUB_STEP_SUMMARY、命令参数 properties、continue-on-error
-      （continue-on-error + 步骤 outcome/conclusion 记录已落地；其余待做）
-- [ ] T9 V1：JS/Composite/Builtin action（builtin 与 0009 统一设计）
+- [x] T8 V1：GITHUB_STATE、GITHUB_STEP_SUMMARY、命令参数 properties、continue-on-error
+- [ ] T9 V1：JS/Composite action（Builtin 已随 0009 交付，JS/Composite 待新 spec）
 - [x] T10 V1：日志流式上报控制面 / Loki（与 0010 联动）

@@ -127,7 +127,9 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 		envFile := filepath.Join(path, fmt.Sprintf("step-%d.env", i))
 		outFile := filepath.Join(path, fmt.Sprintf("step-%d.output", i))
 		pathFile := filepath.Join(path, fmt.Sprintf("step-%d.path", i))
-		for _, f := range []string{envFile, outFile, pathFile} {
+		stateFile := filepath.Join(path, fmt.Sprintf("step-%d.state", i))
+		summaryFile := filepath.Join(path, fmt.Sprintf("step-%d.summary", i))
+		for _, f := range []string{envFile, outFile, pathFile, stateFile, summaryFile} {
 			if err := os.WriteFile(f, nil, 0o644); err != nil {
 				return result, fmt.Errorf("executor: prepare %s: %w", f, err)
 			}
@@ -135,6 +137,8 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 		env["GITHUB_ENV"] = envFile
 		env["GITHUB_OUTPUT"] = outFile
 		env["GITHUB_PATH"] = pathFile
+		env["GITHUB_STATE"] = stateFile
+		env["GITHUB_STEP_SUMMARY"] = summaryFile
 
 		stepEnv := map[string]string{}
 		for k, v := range env {
@@ -232,6 +236,13 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 			// Merge SetOutput outputs into state (already there) and also persist to file for consistency
 			// Already in state.outputs.
 			pathEntries = append(filecommand.ParsePathFile(mustRead(pathFile)), pathEntries...)
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(stateFile)); ferr == nil {
+				for _, kv := range kvs {
+					env["STATE_"+kv.Key] = kv.Value
+				}
+			} else {
+				logger.Warn("malformed GITHUB_STATE", "step", step.ID, "err", ferr.Error())
+			}
 
 			switch {
 			case berr == nil:
@@ -297,6 +308,13 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 			logger.Warn("malformed GITHUB_OUTPUT", "step", step.ID, "err", ferr.Error())
 		}
 		pathEntries = append(filecommand.ParsePathFile(mustRead(pathFile)), pathEntries...)
+		if kvs, ferr := filecommand.ParseKVFile(mustRead(stateFile)); ferr == nil {
+			for _, kv := range kvs {
+				env["STATE_"+kv.Key] = kv.Value
+			}
+		} else {
+			logger.Warn("malformed GITHUB_STATE", "step", step.ID, "err", ferr.Error())
+		}
 
 		switch {
 		case err == nil:
