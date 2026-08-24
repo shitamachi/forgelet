@@ -34,6 +34,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/run/scheduler"
 	"github.com/shitamachi/forgelet/internal/runtime/controller"
 	"github.com/shitamachi/forgelet/internal/security/identity"
+	secretpkg "github.com/shitamachi/forgelet/internal/security/secret"
 	"github.com/shitamachi/forgelet/internal/security/tokenreview"
 	"github.com/shitamachi/forgelet/internal/server"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
@@ -68,6 +69,8 @@ func main() {
 		s3AccessKey = flag.String("s3-access-key", "", "S3 access key")
 		s3SecretKey = flag.String("s3-secret-key", "", "S3 secret key")
 		s3UseSSL    = flag.Bool("s3-use-ssl", false, "use TLS for S3")
+
+		secretKeyFile = flag.String("secret-key-file", "", "path to 32-byte master key file for sealed PG secrets (hex or raw)")
 	)
 	flag.Parse()
 
@@ -140,11 +143,28 @@ func main() {
 		logger.Info("s3 store: enabled", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
 	}
 
+	var secretStore server.SecretStore
+	if *secretKeyFile != "" {
+		kr, err := secretpkg.NewFileKeyring(*secretKeyFile)
+		if err != nil {
+			logger.Error("secret key file", "err", err.Error())
+			os.Exit(1)
+		}
+		cipher := secretpkg.NewCipher(kr, nil)
+		if pgStore, ok := durable.(*postgres.Store); ok {
+			secretStore = postgres.NewSecretStore(pgStore, cipher)
+			logger.Info("secret store: postgres (sealed)", "keyFile", *secretKeyFile)
+		} else {
+			logger.Warn("secret-key-file without postgres; using in-memory secrets only")
+		}
+	}
+
 	opts := server.Options{
 		Durable:        durable,
 		Metrics:        metrics.New(),
 		TracerProvider: tp,
 		S3:             s3Store,
+		SecretStore:    secretStore,
 		WebhookSecret:  []byte(*secret),
 		WorkflowsDir:   *dir,
 		ScheduledRepos: repos,

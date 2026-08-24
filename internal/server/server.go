@@ -50,6 +50,7 @@ type Options struct {
 	// for these repositories' default branches.
 	ScheduledRepos []ScheduledRepo
 	SecretValues   map[string]string // "scope/name" -> plaintext (M0 demo source)
+	SecretStore    SecretStore       // PG-backed sealed secrets; nil falls back to SecretValues (dev)
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
@@ -552,6 +553,14 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	decision := policy.DecideSecrets(ident, requested, planRefs, trust)
 	out := map[string]string{}
 	for _, allowed := range decision.Allowed {
+		if s.opts.SecretStore != nil {
+			if v, err := s.opts.SecretStore.GetSecret(r.Context(), allowed.Scope, allowed.Name); err == nil {
+				out[allowed.Scope+"/"+allowed.Name] = v
+				continue
+			} else {
+				s.log.Warn("secret store miss", "scope", allowed.Scope, "name", allowed.Name, "err", err.Error())
+			}
+		}
 		if v, okv := s.opts.SecretValues[allowed.Scope+"/"+allowed.Name]; okv {
 			out[allowed.Scope+"/"+allowed.Name] = v
 		}
@@ -790,6 +799,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// SecretStore resolves sealed secrets at request time (spec 0003 T6).
+type SecretStore interface {
+	GetSecret(ctx context.Context, scope, name string) (string, error)
 }
 
 // WorkflowFetcher is the repository workflow source port (the GitHub
