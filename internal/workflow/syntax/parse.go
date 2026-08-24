@@ -267,7 +267,8 @@ func (p *parser) parseSteps(node *yaml.Node, jobID string) []*Step {
 	for idx, item := range node.Content {
 		path := fmt.Sprintf(".jobs.%s.steps[%d]", jobID, idx)
 		step := &Step{Pos: Position{Line: item.Line, Column: item.Column}}
-		p.mapping(item, path, map[string]bool{"name": true, "if": true, "run": true, "continue-on-error": true, "env": true},
+		hasRun, hasUses := false, false
+		p.mapping(item, path, map[string]bool{"name": true, "if": true, "run": true, "uses": true, "with": true, "continue-on-error": true, "env": true},
 			func(key, value *yaml.Node) {
 				switch key.Value {
 				case "name":
@@ -276,6 +277,12 @@ func (p *parser) parseSteps(node *yaml.Node, jobID string) []*Step {
 					step.If = p.conditionString(value, path+".if")
 				case "run":
 					step.Run = p.scalarString(value, path+".run")
+					hasRun = true
+				case "uses":
+					step.Uses = p.scalarString(value, path+".uses")
+					hasUses = true
+				case "with":
+					step.With = p.envMap(value, path+".with")
 				case "continue-on-error":
 					if value.Tag != "!!bool" {
 						p.fail(value, path+".continue-on-error", "expected boolean")
@@ -286,6 +293,12 @@ func (p *parser) parseSteps(node *yaml.Node, jobID string) []*Step {
 					step.Env = p.envMap(value, path+".env")
 				}
 			})
+		if hasRun && hasUses {
+			p.fail(item, path, "`run` and `uses` are mutually exclusive")
+		}
+		if !hasRun && !hasUses {
+			p.fail(item, path, `expected "run" or "uses"`)
+		}
 		steps = append(steps, step)
 	}
 	return steps

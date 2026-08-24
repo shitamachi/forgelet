@@ -804,11 +804,28 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 		p.Env[k] = v
 	}
 	for _, st := range inst.Steps {
-		p.Steps = append(p.Steps, plan.Step{
+		ps := plan.Step{
 			ID: stDisplayName(st), Name: st.Name, If: st.If,
-			Run:             plan.RunStep{Script: st.Run, Env: st.Env},
 			ContinueOnError: st.ContinueOnError,
-		})
+		}
+		if st.Uses != nil {
+			inputs := make(map[string]string, len(st.Uses.Inputs))
+			for k, v := range st.Uses.Inputs {
+				if name, ok := secretRefName(v); ok {
+					// `with:` values that are exactly a secret reference
+					// resolve through the secret channel; the executor
+					// injects them back into the handler inputs.
+					p.SecretRefs = append(p.SecretRefs,
+						plan.SecretRef{Scope: "repository", Name: name, Env: "$with:" + k})
+					continue
+				}
+				inputs[k] = v
+			}
+			ps.Builtin = &plan.BuiltinStep{Action: st.Uses.Action, Version: st.Uses.Version, Inputs: inputs}
+		} else {
+			ps.Run = plan.RunStep{Script: st.Run, Env: st.Env}
+		}
+		p.Steps = append(p.Steps, ps)
 	}
 	return p
 }
@@ -816,6 +833,13 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 func stDisplayName(st compiler.Step) string {
 	if st.Name != "" {
 		return st.Name
+	}
+	if st.Uses != nil {
+		// `actions/checkout` → "checkout" keeps step ids short and stable.
+		if _, base, ok := strings.Cut(st.Uses.Action, "/"); ok {
+			return base
+		}
+		return st.Uses.Action
 	}
 	// Steps without names are identified by their script's first token.
 	return truncate(strings.Fields(st.Run)[0], 24)
