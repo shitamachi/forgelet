@@ -4,8 +4,8 @@
 - [x] T2 compiler：Registry 白名单（checkout/cache/upload-artifact/download-artifact）、
       输入校验与警告诊断、UnknownActionError；plan SecretRef 转换（FR-A1）
 - [x] T3 plan：`BuiltinStep` 字段与 digest 兼容（FR-A4）
-- [ ] T4 executor：BuiltinContext/handler 表接入 step 循环；checkout handler（本地 git
-      fixture 测试）（FR-A2）
+- [x] T4 executor：BuiltinContext/handler 表接入 step 循环；checkout handler（本地 git
+       fixture 测试）（FR-A2）
 - [ ] T5 server：cache/resolve 与 artifact URL 端点 + S3/MinIO presign 适配器 + repo-scope
       隔离集成测试（FR-A3）
 - [ ] T6 executor：cache（restore-keys 回退、best-effort save）与 artifact 上传下载

@@ -804,8 +804,9 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 		p.Env[k] = v
 	}
 	for _, st := range inst.Steps {
+		id := stDisplayName(st)
 		ps := plan.Step{
-			ID: stDisplayName(st), Name: st.Name, If: st.If,
+			ID: id, Name: st.Name, If: st.If,
 			ContinueOnError: st.ContinueOnError,
 		}
 		if st.Uses != nil {
@@ -816,7 +817,7 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 					// resolve through the secret channel; the executor
 					// injects them back into the handler inputs.
 					p.SecretRefs = append(p.SecretRefs,
-						plan.SecretRef{Scope: "repository", Name: name, Env: "$with:" + k})
+						plan.SecretRef{Scope: "repository", Name: name, Env: "$with:" + id + ":" + k})
 					continue
 				}
 				inputs[k] = v
