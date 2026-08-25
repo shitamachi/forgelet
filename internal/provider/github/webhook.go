@@ -167,3 +167,29 @@ func isZeroSHA(s string) bool {
 	}
 	return len(s) > 0
 }
+
+// checkRunPayload carries the fields needed for rerequest handling.
+type checkRunPayload struct {
+	Action   string `json:"action"`
+	CheckRun struct {
+		ExternalID string `json:"external_id"`
+		HeadSHA    string `json:"head_sha"`
+	} `json:"check_run"`
+}
+
+// DecodeCheckRunRerequest extracts the JobRunID to rerequest from a
+// check_run payload. Only action "rerequested" is accepted; others return
+// ErrIgnoredPush.
+func DecodeCheckRunRerequest(body []byte) (model.JobRunID, error) {
+	var p checkRunPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrMalformedPayload, err)
+	}
+	if p.Action != "rerequested" {
+		return "", ErrIgnoredPush
+	}
+	if p.CheckRun.ExternalID == "" {
+		return "", fmt.Errorf("%w: check_run missing external_id", ErrMalformedPayload)
+	}
+	return model.JobRunID(p.CheckRun.ExternalID), nil
+}

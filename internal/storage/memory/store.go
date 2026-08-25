@@ -388,6 +388,46 @@ func (s *DurableStore) CancelRun(_ context.Context, id model.RunID, now time.Tim
 	return nil
 }
 
+// RerequestJob implements scheduler.DurableStore.
+func (s *DurableStore) RerequestJob(_ context.Context, id model.JobRunID, now time.Time) (model.JobRunID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	orig, ok := s.jobs[id]
+	if !ok {
+		return "", scheduler.ErrJobRunNotFound
+	}
+	// Idempotency: if a newer attempt already exists for this JobKey, return it.
+	for _, jid := range s.runJobs[orig.RunID] {
+		if j := s.jobs[jid]; j.JobKey == orig.JobKey && j.Attempt == orig.Attempt+1 {
+			return j.ID, nil
+		}
+	}
+	newID := s.ids.NewJobRunID()
+	newJob := model.JobRunRecord{
+		ID:          newID,
+		RunID:       orig.RunID,
+		JobKey:      orig.JobKey,
+		RunnerClass: orig.RunnerClass,
+		DependsOn:   append([]string(nil), orig.DependsOn...),
+		Matrix:      orig.Matrix,
+		PlanDigest:  orig.PlanDigest,
+		Condition:   orig.Condition,
+		Status:      model.JobQueued,
+		Attempt:     orig.Attempt + 1,
+		CreatedAt:   now,
+	}
+	s.jobs[newID] = newJob
+	s.runJobs[orig.RunID] = append(s.runJobs[orig.RunID], newID)
+	s.byJobKey[orig.RunID][orig.JobKey] = newID // point to latest attempt for dependency resolution? Actually dependencies should still point to the latest attempt? For simplicity, keep mapping to latest.
+	// If the run was terminal, reopen it.
+	if run, ok := s.runs[orig.RunID]; ok && run.Status.IsTerminal() {
+		run.Status = model.RunQueued
+		run.FinishedAt = nil
+		s.runs[orig.RunID] = run
+	}
+	return newID, nil
+}
+
 // MarkCollected implements scheduler.DurableStore.
 func (s *DurableStore) MarkCollected(_ context.Context, id model.JobRunID, now time.Time) error {
 	s.mu.Lock()

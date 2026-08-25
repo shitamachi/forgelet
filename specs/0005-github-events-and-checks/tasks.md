@@ -7,5 +7,5 @@
 - [x] T5 Check Run adapter：按 external_id 幂等 upsert、details_url、生命周期（FR-G3.2/3.3）
 - [x] T6 AC-M0 测试矩阵（签名/重放/payload 一致/映射/生命周期）
 - [x] T7 `pull_request` 解码 + fork 判定字段（P1）；server 信任分级与 e2e
-- [ ] T8 rerequest → 新 attempt 追踪（FR-8.4，P1）
-- [x] T9 chi 路由已接入 `cmd/server`（`chi.NewRouter` 装配，`T8` 待做）
+- [x] T8 rerequest → 新 attempt 追踪（FR-8.4，P1）—— `check_run:rerequested` → `RerequestJob`（`attempt+1`，run 重开，`external_id` 幂等）+ `plan`/`trust` 复制
+- [x] T9 chi 路由已接入 `cmd/server`

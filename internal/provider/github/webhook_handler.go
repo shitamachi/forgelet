@@ -17,6 +17,12 @@ type IngestPort interface {
 	Ingest(ctx context.Context, d model.Delivery) (model.RunID, bool, error)
 }
 
+// RerequestPort creates a new attempt for a JobRun when its check is
+// rerequested (FR-8.4, spec 0005 T8).
+type RerequestPort interface {
+	Rerequest(ctx context.Context, id model.JobRunID) (model.JobRunID, error)
+}
+
 // MaxWebhookBody bounds webhook payload reads (GitHub payloads are small).
 const MaxWebhookBody = 10 << 20 // 10 MiB
 
@@ -24,9 +30,10 @@ const MaxWebhookBody = 10 << 20 // 10 MiB
 // before any durable write and deduplicates deliveries through the ingest
 // port (0002 FR-B).
 type WebhookHandler struct {
-	secret []byte
-	ingest IngestPort
-	log    *slog.Logger // nil-safe: failures stay unlogged when absent
+	secret    []byte
+	ingest    IngestPort
+	rerequest RerequestPort
+	log       *slog.Logger // nil-safe: failures stay unlogged when absent
 }
 
 // NewWebhookHandler wires the handler. secret is the GitHub App webhook
@@ -43,6 +50,12 @@ func NewWebhookHandlerWithLogger(secret []byte, ingest IngestPort, log *slog.Log
 		ingest: ingest,
 		log:    log,
 	}
+}
+
+// WithRerequest wires the rerequest port for check_run handling.
+func (h *WebhookHandler) WithRerequest(r RerequestPort) *WebhookHandler {
+	h.rerequest = r
+	return h
 }
 
 func (h *WebhookHandler) errorf(w http.ResponseWriter, status int, msg string, err error) {
@@ -118,6 +131,26 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"runId": string(runID), "created": created})
+	case "check_run":
+		jobID, err := DecodeCheckRunRerequest(body)
+		switch {
+		case errors.Is(err, ErrIgnoredPush):
+			writeJSON(w, http.StatusOK, map[string]any{"ignored": true, "reason": "action not rerequested"})
+			return
+		case err != nil:
+			http.Error(w, "malformed check_run payload", http.StatusBadRequest)
+			return
+		}
+		if h.rerequest == nil {
+			http.Error(w, "rerequest not configured", http.StatusNotImplemented)
+			return
+		}
+		newID, err := h.rerequest.Rerequest(r.Context(), jobID)
+		if err != nil {
+			h.errorf(w, http.StatusInternalServerError, "rerequest failed", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobRunId": string(jobID), "newJobRunId": string(newID)})
 	default:
 		// Unknown/unhandled event types are acknowledged (no GitHub retry
 		// storm); FR-G1.4 keeps a durable receipt without compiling.

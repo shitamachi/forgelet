@@ -176,6 +176,28 @@ func (s *Server) Ingest(ctx context.Context, d model.Delivery) (model.RunID, boo
 	return runID, created, nil
 }
 
+// Rerequest creates a new attempt for a JobRun (spec 0005 T8, FR-8.4).
+// It copies the plan and trust level so the new attempt is immediately
+// dispatchable.
+func (s *Server) Rerequest(ctx context.Context, id model.JobRunID) (model.JobRunID, error) {
+	newID, err := s.durable.RerequestJob(ctx, id, s.now())
+	if err != nil {
+		return "", err
+	}
+	if oldPlan, err := s.plans.Get(id); err == nil {
+		newPlan := *oldPlan
+		newPlan.JobRunID = newID
+		_ = s.plans.Put(&newPlan)
+	}
+	s.jobMu.Lock()
+	if trust, ok := s.trust[id]; ok {
+		s.trust[newID] = trust
+	}
+	s.jobMu.Unlock()
+	s.reportCheck(ctx, newID)
+	return newID, nil
+}
+
 // trustFor classifies a delivery: pushes are trusted; pull requests are
 // same-repo or fork based on the head repository (spec 0001 FR-9.4).
 func trustFor(d model.Delivery) policy.TrustLevel {
@@ -529,7 +551,7 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	s.mux.Post("/webhooks/github",
-		github.NewWebhookHandlerWithLogger(s.opts.WebhookSecret, s, s.log).ServeHTTP)
+		github.NewWebhookHandlerWithLogger(s.opts.WebhookSecret, s, s.log).WithRerequest(s).ServeHTTP)
 
 	s.mux.Group(func(r chi.Router) {
 		r.Use(s.auth)

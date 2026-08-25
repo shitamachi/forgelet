@@ -86,6 +86,9 @@ func (f *failingDurable) ListGCReadyJobs(ctx context.Context) ([]model.JobRunRec
 func (f *failingDurable) MarkCollected(ctx context.Context, id model.JobRunID, now time.Time) error {
 	return f.inner.MarkCollected(ctx, id, now)
 }
+func (f *failingDurable) RerequestJob(ctx context.Context, id model.JobRunID, now time.Time) (model.JobRunID, error) {
+	return f.inner.RerequestJob(ctx, id, now)
+}
 
 func dispatchAll(t *testing.T, d *scheduler.Dispatcher) model.JobRunID {
 	t.Helper()
