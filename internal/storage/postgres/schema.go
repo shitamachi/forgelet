@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS job_runs (
 );
 CREATE INDEX IF NOT EXISTS job_runs_run_id ON job_runs(run_id);
 CREATE INDEX IF NOT EXISTS job_runs_claim ON job_runs(status, created_at) WHERE status = 'queued';
+
+CREATE TABLE IF NOT EXISTS secrets (
+  scope              TEXT NOT NULL,
+  name               TEXT NOT NULL,
+  nonce              BYTEA NOT NULL,
+  ciphertext         BYTEA NOT NULL,
+  wrapped_dek        BYTEA NOT NULL,
+  master_key_version INT  NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL,
+  updated_at         TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (scope, name)
+);
 `
 
 // queryer is satisfied by both *pgxpool.Pool and pgx.Tx.

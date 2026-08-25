@@ -1,8 +1,9 @@
 # Plan — Spec 0003 Security: Identity and Secrets
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave7 实现并通过验证
 - **Spec**: `specs/0003-security-identity-secrets/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（security 模块；禁止依赖 workflow parser 具体实现）
 

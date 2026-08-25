@@ -32,6 +32,7 @@ import (
 	"github.com/shitamachi/forgelet/internal/runtime/executor"
 	"github.com/shitamachi/forgelet/internal/security/identity"
 	"github.com/shitamachi/forgelet/internal/security/policy"
+	"github.com/shitamachi/forgelet/internal/security/secret"
 	"github.com/shitamachi/forgelet/internal/storage/memory"
 	"github.com/shitamachi/forgelet/internal/storage/s3"
 	"github.com/shitamachi/forgelet/internal/workflow/compiler"
@@ -50,6 +51,7 @@ type Options struct {
 	// for these repositories' default branches.
 	ScheduledRepos []ScheduledRepo
 	SecretValues   map[string]string // "scope/name" -> plaintext (M0 demo source)
+	SecretStore    secret.Store      // PG-backed sealed secrets; nil falls back to SecretValues (dev)
 	CheckReporter  report.CheckReporter
 	Active         scheduler.ActiveExecutionStore
 	Durable        scheduler.DurableStore // memory adapter by default; PostgreSQL in production
@@ -462,6 +464,12 @@ func (s *Server) routes() {
 		r.Post("/internal/jobruns/{id}/artifacts/{name}", s.handleArtifactUpload)
 		r.Get("/internal/jobruns/{id}/artifacts/{name}", s.handleArtifactDownload)
 	})
+	// Management API for sealed secrets (spec 0003 T7). Plaintext values are
+	// sealed server-side and never logged. No separate auth in dev; production
+	// should front this with an admin token or mTLS (tracked separately).
+	s.mux.Get("/api/secrets", s.handleSecretList)
+	s.mux.Post("/api/secrets", s.handleSecretPut)
+	s.mux.Delete("/api/secrets/{scope}/{name}", s.handleSecretDelete)
 }
 
 // auth verifies the executor/controller identity token.
@@ -552,6 +560,14 @@ func (s *Server) handleSecrets(w http.ResponseWriter, r *http.Request) {
 	decision := policy.DecideSecrets(ident, requested, planRefs, trust)
 	out := map[string]string{}
 	for _, allowed := range decision.Allowed {
+		if s.opts.SecretStore != nil {
+			if v, err := s.opts.SecretStore.GetSecret(r.Context(), allowed.Scope, allowed.Name); err == nil {
+				out[allowed.Scope+"/"+allowed.Name] = v
+				continue
+			} else {
+				s.log.Warn("secret store miss", "scope", allowed.Scope, "name", allowed.Name, "err", err.Error())
+			}
+		}
 		if v, okv := s.opts.SecretValues[allowed.Scope+"/"+allowed.Name]; okv {
 			out[allowed.Scope+"/"+allowed.Name] = v
 		}
@@ -749,6 +765,62 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"downloadUrl": u})
+}
+
+func (s *Server) handleSecretPut(w http.ResponseWriter, r *http.Request) {
+	if s.opts.SecretStore == nil {
+		http.Error(w, "secret storage not configured", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		Scope string `json:"scope"`
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "malformed body", http.StatusBadRequest)
+		return
+	}
+	if body.Scope == "" || body.Name == "" || body.Value == "" {
+		http.Error(w, "scope, name and value are required", http.StatusBadRequest)
+		return
+	}
+	if err := s.opts.SecretStore.PutSecret(r.Context(), body.Scope, body.Name, body.Value); err != nil {
+		http.Error(w, "put secret failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSecretList(w http.ResponseWriter, r *http.Request) {
+	if s.opts.SecretStore == nil {
+		http.Error(w, "secret storage not configured", http.StatusNotImplemented)
+		return
+	}
+	list, err := s.opts.SecretStore.ListSecrets(r.Context())
+	if err != nil {
+		http.Error(w, "list secrets failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
+	if s.opts.SecretStore == nil {
+		http.Error(w, "secret storage not configured", http.StatusNotImplemented)
+		return
+	}
+	scope := chi.URLParam(r, "scope")
+	name := chi.URLParam(r, "name")
+	if scope == "" || name == "" {
+		http.Error(w, "scope and name are required", http.StatusBadRequest)
+		return
+	}
+	if err := s.opts.SecretStore.DeleteSecret(r.Context(), scope, name); err != nil {
+		http.Error(w, "delete secret failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // reportCheck pushes the current durable job state to the provider.
