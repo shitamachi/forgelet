@@ -13,7 +13,7 @@
 - [x] 0002-state-consistency-and-scheduler（implemented；T1–T9 全绿）
 - [x] 0003-security-identity-secrets（implemented；T1–T7 全绿）
 - [ ] 0004-crd-api-and-controller（accepted，M0 已合入；T7 已落地，T6 envtest 待补）
-- [ ] 0005-github-events-and-checks（accepted，M0 已合入；T9 已落地，T8 待做）
+- [x] 0005-github-events-and-checks（implemented；T1–T9 全绿）
 - [x] 0006-workflow-syntax-and-compiler（implemented；T1–T8 全绿）
 - [x] 0007-expression-engine（implemented；T1–T7 全绿）
 - [ ] 0008-executor-runtime（accepted，M0 已合入；T8 已落地，T9 部分落地）

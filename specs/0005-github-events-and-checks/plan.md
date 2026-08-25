@@ -1,8 +1,9 @@
 # Plan — Spec 0005 GitHub Events and Checks
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave8 实现并通过验证
 - **Spec**: `specs/0005-github-events-and-checks/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（provider/github 是 adapter，可依赖 application
   port；report 定义 port；核心模块无 SDK 依赖）

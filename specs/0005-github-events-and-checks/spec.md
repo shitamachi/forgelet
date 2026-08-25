@@ -1,8 +1,9 @@
 # Spec 0005 — GitHub Events and Checks
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Implemented**: 2026-08-24, v1-wave8（T8 rerequest 全量交付并通过验证）
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-1.1、FR-1.2、FR-1.3（replacement 部分）、FR-1.5、FR-1.6；FR-8.1、FR-8.2、FR-8.3
   （FR-8.4 rerequest 为 P1 任务）
