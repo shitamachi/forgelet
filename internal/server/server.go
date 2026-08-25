@@ -226,14 +226,11 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 		if inst == nil {
 			return fmt.Errorf("server: job %s missing from compiled set", rec.JobKey)
 		}
-		// Job-level condition (spec 0006 V1): evaluated scheduler-side with
-		// github/needs contexts. A false condition projects the instance to
-		// skipped; existing dependency gating propagates it to dependents.
-		if inst.If != "" {
-			if err := ensureEagerCondition(inst.If); err != nil {
-				return fmt.Errorf("server: job %s: %w", rec.JobKey, err)
-			}
-			run, err := expression.EvaluateCondition(inst.If, jobConditionEnv(d.Event, runs))
+		// Job-level condition (spec 0006 V1): github-only conditions are
+		// evaluated eagerly here; needs/status conditions are deferred to
+		// dispatch time when dependency results are final.
+		if inst.If != "" && !isDeferredCondition(inst.If) {
+			run, err := expression.EvaluateCondition(inst.If, jobConditionEnv(d.Event, rec, runs))
 			switch {
 			case err != nil:
 				return fmt.Errorf("server: job %s: invalid if %q: %w", rec.JobKey, inst.If, err)
@@ -257,31 +254,45 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 	return nil
 }
 
-// ensureEagerCondition rejects conditions that cannot be evaluated
-// correctly at ingest time. needs results are not final until dependencies
-// finish, and failure()/cancelled() describe outcomes of earlier jobs —
-// both need dispatch-time evaluation; failing loudly beats guessing wrong.
-func ensureEagerCondition(cond string) error {
+// isDeferredCondition reports whether cond must be evaluated at dispatch time
+// because it references needs results or status functions that are not final
+// until dependencies finish. Such conditions are not rejected at ingest.
+func isDeferredCondition(cond string) bool {
 	lower := strings.ToLower(cond)
-	if strings.Contains(lower, "needs.") || strings.Contains(lower, "failure(") || strings.Contains(lower, "cancelled(") {
-		return fmt.Errorf("if condition %q depends on other jobs' results; scheduler-side evaluation supports github-only conditions", cond)
-	}
-	return nil
+	return strings.Contains(lower, "needs.") ||
+		strings.Contains(lower, "success(") || strings.Contains(lower, "failure(") ||
+		strings.Contains(lower, "cancelled(") || strings.Contains(lower, "always(")
 }
 
 // jobConditionEnv builds the scheduler-time evaluation environment for
 // `if:` conditions: github plus needs.<job>.result. env/secrets/steps are
 // unavailable here by design (GitHub evaluates job conditions pre-run).
-func jobConditionEnv(ev model.Event, runs []model.JobRunRecord) *expression.Env {
+func jobConditionEnv(ev model.Event, rec model.JobRunRecord, runs []model.JobRunRecord) *expression.Env {
 	needs := map[string]expression.Value{}
 	for _, r := range runs {
 		needs[r.JobKey] = expression.ObjOf(map[string]expression.Value{
 			"result": expression.StrOf(githubResultName(r.Status)),
 		})
 	}
-	return expression.NewEnv().
+	jobStatus := "success"
+	for _, depKey := range rec.DependsOn {
+		for _, r := range runs {
+			if r.JobKey == depKey && (r.Status == model.JobFailed || r.Status == model.JobCancelled) {
+				jobStatus = "failure"
+				if r.Status == model.JobCancelled {
+					jobStatus = "cancelled"
+				}
+				break
+			}
+		}
+	}
+	env := expression.NewEnv().
 		With("github", githubContextValue(ev)).
-		With("needs", expression.ObjOf(needs))
+		With("needs", expression.ObjOf(needs)).
+		With("job", expression.ObjOf(map[string]expression.Value{
+			"status": expression.StrOf(jobStatus),
+		}))
+	return env.WithJobStatus(jobStatus)
 }
 
 // githubContextValue exposes the event as the `github` expression context.
@@ -297,6 +308,71 @@ func githubContextValue(ev model.Event) expression.Value {
 			"full_name": expression.StrOf(ev.Repository.Owner + "/" + ev.Repository.Name),
 		}),
 	})
+}
+
+// evaluateDeferredConditions scans queued jobs whose `if:` was deferred
+// (needs/status) and marks those whose condition is now false as skipped.
+// It loops until stable to handle transitive skips.
+func (s *Server) evaluateDeferredConditions(ctx context.Context) {
+	for {
+		queued, err := s.durable.ListQueuedJobs(ctx)
+		if err != nil || len(queued) == 0 {
+			return
+		}
+		// Group queued jobs by run for needs context.
+		byRun := map[model.RunID][]model.JobRunRecord{}
+		for _, j := range queued {
+			byRun[j.RunID] = append(byRun[j.RunID], j)
+		}
+		progress := false
+		for runID, qs := range byRun {
+			// Need the run's event for github context and all jobs for needs.
+			run, err := s.durable.GetRun(ctx, runID)
+			if err != nil {
+				continue
+			}
+			all, err := s.durable.ListJobRuns(ctx, runID)
+			if err != nil {
+				continue
+			}
+			for _, rec := range qs {
+				if rec.Condition == "" || !isDeferredCondition(rec.Condition) {
+					continue
+				}
+				// Only evaluate when dependencies are terminal (or no deps).
+				// If any dependency is still pending/running, defer again.
+				ready := true
+				for _, depKey := range rec.DependsOn {
+					for _, sibling := range all {
+						if sibling.JobKey == depKey && !sibling.Status.IsTerminal() {
+							ready = false
+							break
+						}
+					}
+				}
+				if !ready {
+					continue
+				}
+				runCond, err := expression.EvaluateCondition(rec.Condition, jobConditionEnv(run.Event, rec, all))
+				if err != nil {
+					// Invalid condition at dispatch time: fail the job so it
+					// does not hang forever. The run will be marked failed.
+					_ = s.projectObserved(ctx, rec.ID, model.PhaseFailed)
+					s.reportCheck(ctx, rec.ID)
+					progress = true
+					continue
+				}
+				if !runCond {
+					_ = s.projectObserved(ctx, rec.ID, model.PhaseSkipped)
+					s.reportCheck(ctx, rec.ID)
+					progress = true
+				}
+			}
+		}
+		if !progress {
+			return
+		}
+	}
 }
 
 func githubResultName(s model.JobRunStatus) string {
@@ -319,6 +395,7 @@ func githubResultName(s model.JobRunStatus) string {
 func (s *Server) DispatchOnce(ctx context.Context) (int, error) {
 	ctx, span := s.opts.tracer.Start(ctx, "server.dispatch_drain")
 	defer span.End()
+	s.evaluateDeferredConditions(ctx)
 	n := 0
 	for {
 		job, err := s.dispatch.DispatchNext(ctx)
@@ -892,7 +969,7 @@ func (w *workflowSource) Compile(ctx context.Context, ev model.Event, payload []
 	}
 	intents := make([]model.JobIntent, 0, len(jobs))
 	for _, j := range jobs {
-		intent := model.JobIntent{JobKey: j.Key, RunnerClass: j.RunnerClass, DependsOn: j.DependsOn, Matrix: j.Matrix}
+		intent := model.JobIntent{JobKey: j.Key, RunnerClass: j.RunnerClass, DependsOn: j.DependsOn, Matrix: j.Matrix, Condition: j.If}
 		intents = append(intents, intent)
 	}
 	return intents, nil

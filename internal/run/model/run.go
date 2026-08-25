@@ -80,6 +80,7 @@ type JobIntent struct {
 	DependsOn   []string          // job keys this instance waits for
 	Matrix      map[string]string // matrix combination (stable, keys sorted at compile time)
 	PlanDigest  string            // hex sha256 of the immutable Plan, may be empty in tests
+	Condition   string            // raw `if:` condition; empty means `success()` (spec 0006)
 }
 
 // RunRecord is the durable record of a WorkflowRun.
@@ -101,6 +102,7 @@ type JobRunRecord struct {
 	DependsOn    []string
 	Matrix       map[string]string
 	PlanDigest   string
+	Condition    string // raw `if:` condition for dispatch-time evaluation
 	Status       JobRunStatus
 	Attempt      int
 	ActiveName   string // deterministic Kubernetes resource name, set on dispatch
