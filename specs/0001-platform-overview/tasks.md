@@ -11,7 +11,7 @@
 - [x] Spec 0001 accepted，并创建本 plan
 
 - [x] 0002-state-consistency-and-scheduler（implemented；T1–T9 全绿）
-- [ ] 0003-security-identity-secrets（accepted，M0 已合入；T7 见其 tasks.md — T5–T6 已落地）
+- [x] 0003-security-identity-secrets（implemented；T1–T7 全绿）
 - [ ] 0004-crd-api-and-controller（accepted，M0 已合入；T7 已落地，T6 envtest 待补）
 - [ ] 0005-github-events-and-checks（accepted，M0 已合入；T9 已落地，T8 待做）
 - [ ] 0006-workflow-syntax-and-compiler（accepted，M0 已合入；T6–T7 已落地，T8 部分落地）

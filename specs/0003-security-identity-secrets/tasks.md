@@ -10,4 +10,4 @@
       —— TokenReview adapter（Pod label 绑定源）+ `--executor-auth=tokenreview` 接线 +
       协议/授权链测试已落地；envtest/真实 k3s 验证随 0011 T8 已在烟雾中通过
 - [x] T6 K8s Secret/Vault keyring adapter；PG `secrets` 表与迁移（V1）—— `FileKeyring`（K8s Secret 挂载文件，hex/raw 32B）+ `postgres.SecretStore`（`Seal`/`Open` 封存，`ON CONFLICT` upsert，AAD 绑定）+ `server.SecretStore` 回退链与 `--secret-key-file` 接线
-- [ ] T7 secrets 管理 API/CLI（set/list/delete、key rotation 运维流程）（V1）
+- [x] T7 secrets 管理 API/CLI（set/list/delete、key rotation 运维流程）（V1）—— `POST/GET/DELETE /api/secrets` + `cmd/secretctl`（`set`/`list`/`delete`，`--value-file`/stdin）+ `memStore` 测试

@@ -143,7 +143,7 @@ func main() {
 		logger.Info("s3 store: enabled", "endpoint", *s3Endpoint, "bucket", *s3Bucket)
 	}
 
-	var secretStore server.SecretStore
+	var secretStore secretpkg.Store
 	if *secretKeyFile != "" {
 		kr, err := secretpkg.NewFileKeyring(*secretKeyFile)
 		if err != nil {

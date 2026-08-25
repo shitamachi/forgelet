@@ -99,11 +99,34 @@ func NewSecretStore(store *Store, cipher *secret.Cipher) *SecretStore {
 	return &SecretStore{store: store, cipher: cipher}
 }
 
-// GetSecret implements server.SecretStore.
+// GetSecret implements secret.Store.
 func (s *SecretStore) GetSecret(ctx context.Context, scope, name string) (string, error) {
 	b, err := s.store.GetSecret(ctx, s.cipher, scope, name)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// PutSecret implements secret.Store.
+func (s *SecretStore) PutSecret(ctx context.Context, scope, name, value string) error {
+	return s.store.PutSecret(ctx, s.cipher, scope, name, []byte(value))
+}
+
+// DeleteSecret implements secret.Store.
+func (s *SecretStore) DeleteSecret(ctx context.Context, scope, name string) error {
+	return s.store.DeleteSecret(ctx, scope, name)
+}
+
+// ListSecrets implements secret.Store.
+func (s *SecretStore) ListSecrets(ctx context.Context) ([]secret.Info, error) {
+	raw, err := s.store.ListSecrets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]secret.Info, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, secret.Info{Scope: r.Scope, Name: r.Name})
+	}
+	return out, nil
 }
