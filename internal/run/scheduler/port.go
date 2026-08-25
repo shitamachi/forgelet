@@ -42,6 +42,9 @@ type DurableStore interface {
 	// (observability: queue depth, spec 0010 FR-O3).
 	CountQueuedJobs(ctx context.Context) (int, error)
 
+	// ListQueuedJobs returns all queued JobRuns (for dispatch-time condition evaluation).
+	ListQueuedJobs(ctx context.Context) ([]model.JobRunRecord, error)
+
 	// ClaimNextQueuedJob returns the oldest queued JobRun without changing
 	// its status. Concurrent claims must not hand the same JobRun to two
 	// callers before the claim is released. Returns ErrNoQueuedJob when idle.
@@ -74,6 +77,11 @@ type DurableStore interface {
 	// been deleted, so it is not re-scanned. If the delete succeeded but the
 	// mark failed, the next pass repeats the idempotent delete and marks again.
 	MarkCollected(ctx context.Context, id model.JobRunID, now time.Time) error
+
+	// RerequestJob creates a new attempt for the given JobRun. It is
+	// idempotent: a second call for the same job returns the existing new
+	// attempt without creating a duplicate.
+	RerequestJob(ctx context.Context, id model.JobRunID, now time.Time) (model.JobRunID, error)
 }
 
 // ActiveExecutionStore is the Kubernetes-side port (implemented by the CRD

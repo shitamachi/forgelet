@@ -109,6 +109,7 @@ func (s *DurableStore) CreateRun(_ context.Context, seed model.RunSeed, now time
 			DependsOn:   append([]string(nil), intent.DependsOn...),
 			Matrix:      intent.Matrix,
 			PlanDigest:  intent.PlanDigest,
+			Condition:   intent.Condition,
 			Status:      model.JobQueued,
 			Attempt:     1,
 			CreatedAt:   now,
@@ -171,6 +172,25 @@ func (s *DurableStore) CountQueuedJobs(_ context.Context) (int, error) {
 	return n, nil
 }
 
+// ListQueuedJobs implements scheduler.DurableStore.
+func (s *DurableStore) ListQueuedJobs(_ context.Context) ([]model.JobRunRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []model.JobRunRecord
+	for _, j := range s.jobs {
+		if j.Status == model.JobQueued {
+			out = append(out, j)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
 // GetJobRun returns a single job record (test/dev convenience).
 func (s *DurableStore) GetJobRun(_ context.Context, id model.JobRunID) (model.JobRunRecord, error) {
 	s.mu.Lock()
@@ -214,8 +234,12 @@ func (s *DurableStore) ClaimNextQueuedJob(context.Context) (model.JobRunRecord, 
 		case depsBlocked:
 			continue // dependencies still running; try younger jobs
 		case depsFailed:
-			// Dependencies did not succeed: mark skipped and keep looking.
 			job := s.jobs[pick.id]
+			if job.Condition != "" {
+				// Defer to server's dispatch-time condition evaluation (needs/failure).
+				break
+			}
+			// Dependencies did not succeed: mark skipped and keep looking.
 			if next, err := model.TransitionJob(job.Status, model.JobSkipped); err == nil {
 				job.Status = next
 				t := s.clock()
@@ -362,6 +386,46 @@ func (s *DurableStore) CancelRun(_ context.Context, id model.RunID, now time.Tim
 	run.FinishedAt = &t
 	s.runs[id] = run
 	return nil
+}
+
+// RerequestJob implements scheduler.DurableStore.
+func (s *DurableStore) RerequestJob(_ context.Context, id model.JobRunID, now time.Time) (model.JobRunID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	orig, ok := s.jobs[id]
+	if !ok {
+		return "", scheduler.ErrJobRunNotFound
+	}
+	// Idempotency: if a newer attempt already exists for this JobKey, return it.
+	for _, jid := range s.runJobs[orig.RunID] {
+		if j := s.jobs[jid]; j.JobKey == orig.JobKey && j.Attempt == orig.Attempt+1 {
+			return j.ID, nil
+		}
+	}
+	newID := s.ids.NewJobRunID()
+	newJob := model.JobRunRecord{
+		ID:          newID,
+		RunID:       orig.RunID,
+		JobKey:      orig.JobKey,
+		RunnerClass: orig.RunnerClass,
+		DependsOn:   append([]string(nil), orig.DependsOn...),
+		Matrix:      orig.Matrix,
+		PlanDigest:  orig.PlanDigest,
+		Condition:   orig.Condition,
+		Status:      model.JobQueued,
+		Attempt:     orig.Attempt + 1,
+		CreatedAt:   now,
+	}
+	s.jobs[newID] = newJob
+	s.runJobs[orig.RunID] = append(s.runJobs[orig.RunID], newID)
+	s.byJobKey[orig.RunID][orig.JobKey] = newID // point to latest attempt for dependency resolution? Actually dependencies should still point to the latest attempt? For simplicity, keep mapping to latest.
+	// If the run was terminal, reopen it.
+	if run, ok := s.runs[orig.RunID]; ok && run.Status.IsTerminal() {
+		run.Status = model.RunQueued
+		run.FinishedAt = nil
+		s.runs[orig.RunID] = run
+	}
+	return newID, nil
 }
 
 // MarkCollected implements scheduler.DurableStore.

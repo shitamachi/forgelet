@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS job_runs (
   depends_on          TEXT[] NOT NULL DEFAULT '{}',
   matrix              JSONB,
   plan_digest         TEXT NOT NULL DEFAULT '',
+  condition           TEXT NOT NULL DEFAULT '',
   status              TEXT NOT NULL,
   attempt             INT NOT NULL DEFAULT 1,
   active_name         TEXT NOT NULL DEFAULT '',
@@ -79,6 +80,10 @@ type queryer interface {
 func Migrate(ctx context.Context, db queryer) error {
 	if _, err := db.Exec(ctx, schema); err != nil {
 		return fmt.Errorf("postgres migrate: %w", err)
+	}
+	// Backfill for DBs created before the condition column existed.
+	if _, err := db.Exec(ctx, `ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS condition TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("postgres migrate condition: %w", err)
 	}
 	return nil
 }

@@ -155,10 +155,10 @@ func (s *Store) CreateRun(ctx context.Context, seed model.RunSeed, now time.Time
 			matrixJSON = m
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO job_runs (id, run_id, job_key, runner_class, depends_on, matrix, plan_digest, status, attempt, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)`,
+			INSERT INTO job_runs (id, run_id, job_key, runner_class, depends_on, matrix, plan_digest, condition, status, attempt, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)`,
 			jobID, runID, intent.JobKey, intent.RunnerClass, dependsOn, matrixJSON,
-			intent.PlanDigest, model.JobQueued, now); err != nil {
+			intent.PlanDigest, intent.Condition, model.JobQueued, now); err != nil {
 			return model.RunRecord{}, false, fmt.Errorf("postgres: insert job: %w", err)
 		}
 	}
@@ -244,7 +244,20 @@ func (s *Store) CountQueuedJobs(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-const jobCols = `SELECT id, run_id, job_key, runner_class, depends_on, matrix, plan_digest,
+// ListQueuedJobs implements scheduler.DurableStore.
+func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.JobRunRecord, error) {
+	rows, err := s.pool.Query(ctx, jobCols+` WHERE status='queued' ORDER BY created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list queued: %w", err)
+	}
+	jobs, err := pgx.CollectRows(rows, scanJob)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list queued: %w", err)
+	}
+	return jobs, nil
+}
+
+const jobCols = `SELECT id, run_id, job_key, runner_class, depends_on, matrix, plan_digest, condition,
 	status, attempt, active_name, active_uid, created_at, dispatched_at, started_at, finished_at, active_collected_at
 	FROM job_runs`
 
@@ -253,7 +266,7 @@ func scanJob(row pgx.CollectableRow) (model.JobRunRecord, error) {
 		j          model.JobRunRecord
 		matrixJSON []byte
 	)
-	err := row.Scan(&j.ID, &j.RunID, &j.JobKey, &j.RunnerClass, &j.DependsOn, &matrixJSON, &j.PlanDigest,
+	err := row.Scan(&j.ID, &j.RunID, &j.JobKey, &j.RunnerClass, &j.DependsOn, &matrixJSON, &j.PlanDigest, &j.Condition,
 		&j.Status, &j.Attempt, &j.ActiveName, &j.ActiveUID,
 		&j.CreatedAt, &j.DispatchedAt, &j.StartedAt, &j.FinishedAt, &j.ActiveCollectedAt)
 	if err != nil {
@@ -300,6 +313,9 @@ func (s *Store) ClaimNextQueuedJob(ctx context.Context) (model.JobRunRecord, err
 		case depsBlocked:
 			continue
 		case depsFailed:
+			if job, err := s.jobIn(ctx, tx, id); err == nil && job.Condition != "" {
+				break
+			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE job_runs SET status=$2, finished_at=$3 WHERE id=$1 AND status='queued'`,
 				id, model.JobSkipped, now); err != nil {
@@ -348,8 +364,11 @@ func (s *Store) depState(ctx context.Context, q queryer, id model.JobRunID) depS
 	if err != nil || len(job.DependsOn) == 0 {
 		return depsReady
 	}
-	rows, err := q.Query(ctx, `SELECT status FROM job_runs WHERE run_id=$1 AND job_key = ANY($2)`,
-		job.RunID, job.DependsOn)
+	rows, err := q.Query(ctx, `
+		SELECT status FROM job_runs WHERE (run_id, job_key, attempt) IN (
+			SELECT run_id, job_key, MAX(attempt) FROM job_runs
+			WHERE run_id=$1 AND job_key = ANY($2) GROUP BY run_id, job_key
+		)`, job.RunID, job.DependsOn)
 	if err != nil {
 		return depsBlocked
 	}
@@ -527,6 +546,62 @@ func (s *Store) ListGCReadyJobs(ctx context.Context) ([]model.JobRunRecord, erro
 		return nil, fmt.Errorf("postgres: gc list: %w", err)
 	}
 	return jobs, nil
+}
+
+// RerequestJob implements scheduler.DurableStore.
+func (s *Store) RerequestJob(ctx context.Context, id model.JobRunID, now time.Time) (model.JobRunID, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("postgres: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	orig, err := s.jobIn(ctx, tx, id)
+	if errors.Is(err, scheduler.ErrJobRunNotFound) {
+		return "", err
+	}
+	if err != nil {
+		return "", err
+	}
+	// Idempotency: if a newer attempt already exists, return it.
+	var existingID *string
+	err = tx.QueryRow(ctx, `SELECT id FROM job_runs WHERE run_id=$1 AND job_key=$2 AND attempt=$3`, orig.RunID, orig.JobKey, orig.Attempt+1).Scan(&existingID)
+	if err == nil && existingID != nil {
+		return model.JobRunID(*existingID), nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("postgres: check existing attempt: %w", err)
+	}
+	newID := s.ids.NewJobRunID()
+	dependsOn := orig.DependsOn
+	if dependsOn == nil {
+		dependsOn = []string{}
+	}
+	var matrixJSON any
+	if orig.Matrix != nil {
+		m, merr := json.Marshal(orig.Matrix)
+		if merr != nil {
+			return "", fmt.Errorf("postgres: encode matrix: %w", merr)
+		}
+		matrixJSON = m
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_runs (id, run_id, job_key, runner_class, depends_on, matrix, plan_digest, condition, status, attempt, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, $10, $11)`,
+		newID, orig.RunID, orig.JobKey, orig.RunnerClass, dependsOn, matrixJSON, orig.PlanDigest, orig.Condition, model.JobQueued, orig.Attempt+1, now); err != nil {
+		return "", fmt.Errorf("postgres: insert rerequest: %w", err)
+	}
+	// If the run was terminal, reopen it.
+	var runStatus model.WorkflowRunStatus
+	if err := tx.QueryRow(ctx, `SELECT status FROM workflow_runs WHERE id=$1 FOR UPDATE`, orig.RunID).Scan(&runStatus); err == nil && runStatus.IsTerminal() {
+		if _, err := tx.Exec(ctx, `UPDATE workflow_runs SET status=$2, finished_at=NULL WHERE id=$1`, orig.RunID, model.RunQueued); err != nil {
+			return "", fmt.Errorf("postgres: reopen run: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("postgres: commit rerequest: %w", err)
+	}
+	return newID, nil
 }
 
 // MarkCollected implements scheduler.DurableStore.

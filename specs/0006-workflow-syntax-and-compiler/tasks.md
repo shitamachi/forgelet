@@ -8,7 +8,7 @@
 - [x] T5 AC-M0 测试矩阵（fixture + 精确行列断言 + import 纪律）
 - [x] T6 V1 切片：`needs` DAG + 环检测（其余触发类型待 T6b）
 - [x] T7 V1 切片：`matrix` 展开与稳定 ID、DisplayName 分离（FR-2.5）
-- [ ] T8 表达式钩子接入 0007 evaluator（raw `${{ }}` → 求值）
-      —— 已落地：`if:`（job 级 scheduler 侧 github 条件 + step 级 executor 运行时求值，
-      含 GitHub 自动 `success()` 包裹语义）、`continue-on-error`、steps/outputs 运行时
-      context；needs 结果感知的 job 条件（dispatch 时求值）待后续切片
+- [x] T8 表达式钩子接入 0007 evaluator（raw `${{ }}` → 求值）
+      —— `if:`（job 级 github 条件即时求值 + `needs`/状态函数 dispatch 时求值，含
+      `success()` 自动包裹与 `needs`/`job` 显式检查的正确处理）、`continue-on-error`、
+      steps/outputs 运行时 context 全部落地

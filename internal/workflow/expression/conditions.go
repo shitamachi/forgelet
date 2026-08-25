@@ -28,7 +28,7 @@ func EvaluateCondition(raw string, env *Env) (bool, error) {
 		if cond == "" {
 			return true, nil
 		}
-	} else if !mentionsStatusFunction(cond) {
+	} else if !mentionsStatusFunction(cond) && !strings.Contains(strings.ToLower(cond), "needs.") && !strings.Contains(strings.ToLower(cond), "job.") {
 		cond = "success() && (" + cond + ")"
 	}
 	v, err := Eval(cond, env)
