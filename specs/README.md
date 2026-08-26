@@ -49,13 +49,14 @@ specs/NNNN-<slug>/
 | 编号 | 标题 | 状态 |
 |------|------|------|
 | [0001](0001-platform-overview/spec.md) | Platform Overview（总纲） | accepted |
-| [0002](0002-state-consistency-and-scheduler/spec.md) | State Consistency and Scheduler | accepted |
+| [0002](0002-state-consistency-and-scheduler/spec.md) | State Consistency and Scheduler | implemented |
 | [0003](0003-security-identity-secrets/spec.md) | Security: Identity and Secrets | implemented |
 | [0004](0004-crd-api-and-controller/spec.md) | CRD API and Controller | implemented |
 | [0005](0005-github-events-and-checks/spec.md) | GitHub Events and Checks | implemented |
 | [0006](0006-workflow-syntax-and-compiler/spec.md) | Workflow Syntax and Compiler | implemented |
-| [0007](0007-expression-engine/spec.md) | Expression Engine | accepted |
-| [0008](0008-executor-runtime/spec.md) | Executor Runtime | accepted |
+| [0007](0007-expression-engine/spec.md) | Expression Engine | implemented |
+| [0008](0008-executor-runtime/spec.md) | Executor Runtime | implemented |
 | [0009](0009-builtin-actions/spec.md) | Builtin Actions | implemented |
-| [0010](0010-observability/spec.md) | Observability | accepted（M0 切片） |
-| [0011](0011-deployment-and-k3s-support/spec.md) | Deployment and k3s Support | accepted（M0 切片） |
+| [0010](0010-observability/spec.md) | Observability | implemented |
+| [0011](0011-deployment-and-k3s-support/spec.md) | Deployment and k3s Support | implemented |
+| [0012](0012-js-composite-actions/spec.md) | JS and Composite Actions | draft |

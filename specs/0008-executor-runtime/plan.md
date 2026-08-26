@@ -1,8 +1,9 @@
 # Plan — Spec 0008 Executor Runtime
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave9 实现并通过验证
 - **Spec**: `specs/0008-executor-runtime/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（runtime/executor：禁止 Kubernetes client、
   provider SDK、直接访问 PG）
