@@ -1,8 +1,9 @@
 # Spec 0011 — Deployment and k3s Support（M0 wiring 切片）
 
-- **Status**: accepted（M0 切片；真实 k3s 冒烟与支持矩阵为 V1 任务）
+ - **Status**: implemented
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner（M0 收尾整体授权）
+- **Implemented**: 2026-08-24, v1-wave9~10 全量交付
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）；覆盖 NFR-1 的 M0 部分与
   0001 plan §2 M0 integration order
 - **Depends on**: 0002–0008 全部 M0 切片

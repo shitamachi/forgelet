@@ -1,8 +1,9 @@
 # Plan — Spec 0002 State Consistency and Scheduler
 
-- **Status**: accepted
+ - **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave9~10 实现并通过验证
 - **Spec**: `specs/0002-state-consistency-and-scheduler/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（run 模块：`run/model`、`run/scheduler`、`run/plan`；
   adapter：`storage/memory`）

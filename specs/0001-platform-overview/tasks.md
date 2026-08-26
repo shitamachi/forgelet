@@ -16,7 +16,7 @@
 - [x] 0005-github-events-and-checks（implemented；T1–T9 全绿）
 - [x] 0006-workflow-syntax-and-compiler（implemented；T1–T8 全绿）
 - [x] 0007-expression-engine（implemented；T1–T7 全绿）
-- [ ] 0008-executor-runtime（accepted，M0 已合入；T8 已落地，T9 部分落地）
+- [x] 0008-executor-runtime（implemented；T1–T10 全绿，JS/Composite 另立 0012）
 - [x] 0009-builtin-actions（implemented；T1–T7 全绿）
 - [x] 0010-observability（implemented；T1–T5 全绿）
 - [x] 0011-deployment-and-k3s-support（implemented；T1–T8 全绿）

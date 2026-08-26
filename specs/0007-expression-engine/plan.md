@@ -1,8 +1,9 @@
 # Plan — Spec 0007 Expression Engine
 
-- **Status**: accepted
+ - **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave9~10 实现并通过验证
 - **Spec**: `specs/0007-expression-engine/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（workflow 纯逻辑模块）
 

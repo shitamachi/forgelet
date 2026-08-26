@@ -1,8 +1,9 @@
 # Spec 0010 — Observability
 
-- **Status**: accepted（M0 切片；metrics/tracing 为 V1 任务）
+ - **Status**: implemented
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner（M0 收尾整体授权）
+- **Implemented**: 2026-08-24, v1-wave9~10 全量交付
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-10.1 `[P0]`（FR-10.2 为 V1 任务）
 
