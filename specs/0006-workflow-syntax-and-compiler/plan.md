@@ -1,8 +1,9 @@
 # Plan — Spec 0006 Workflow Syntax and Compiler
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Completed**: 2026-08-24, v1-wave8 实现并通过验证
 - **Spec**: `specs/0006-workflow-syntax-and-compiler/spec.md`（proposed）
 - **Boundaries**: `docs/module-boundaries.md`（workflow：纯逻辑，禁止 k8s/DB/HTTP/provider SDK）
 
