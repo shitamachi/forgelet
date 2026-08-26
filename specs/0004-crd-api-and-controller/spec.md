@@ -1,8 +1,9 @@
 # Spec 0004 — CRD API and Controller
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-08-23
 - **Accepted**: 2026-08-23, project owner
+- **Implemented**: 2026-08-24, v1-wave9（T6 `fake`+烟雾链路，T7 部署件）
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted）
 - **Covers**: FR-4（P0 全部；FR-4.5 为 P2 仅登记边界）、FR-7.1/7.3 的 CRD 侧所有权、FR-12.3
   模块边界（runtime/controller 不依赖 provider SDK、不直接访问 PG）

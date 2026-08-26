@@ -51,7 +51,7 @@ specs/NNNN-<slug>/
 | [0001](0001-platform-overview/spec.md) | Platform Overview（总纲） | accepted |
 | [0002](0002-state-consistency-and-scheduler/spec.md) | State Consistency and Scheduler | accepted |
 | [0003](0003-security-identity-secrets/spec.md) | Security: Identity and Secrets | implemented |
-| [0004](0004-crd-api-and-controller/spec.md) | CRD API and Controller | accepted |
+| [0004](0004-crd-api-and-controller/spec.md) | CRD API and Controller | implemented |
 | [0005](0005-github-events-and-checks/spec.md) | GitHub Events and Checks | implemented |
 | [0006](0006-workflow-syntax-and-compiler/spec.md) | Workflow Syntax and Compiler | implemented |
 | [0007](0007-expression-engine/spec.md) | Expression Engine | accepted |
