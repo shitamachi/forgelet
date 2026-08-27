@@ -20,4 +20,5 @@
 - [x] 0009-builtin-actions（implemented；T1–T7 全绿）
 - [x] 0010-observability（implemented；T1–T5 全绿）
 - [x] 0011-deployment-and-k3s-support（implemented；T1–T8 全绿）
+- [ ] 0012-js-composite-actions（accepted；T1–T6 见其 tasks.md）
 - [x] M0 端到端闭环（进程内 e2e 全链路绿：push→去重→编译→dispatch→认证执行→状态投影→Check Run→GC；真实 k3s 冒烟待 0011 T8）
