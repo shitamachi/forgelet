@@ -34,13 +34,30 @@ type BuiltinStep struct {
 	Inputs  map[string]string `json:"inputs,omitempty"`
 }
 
+// JSStep is a JS action (runs.using: node) executed via goja.
+type JSStep struct {
+	Repo   string            `json:"repo"`
+	Ref    string            `json:"ref"`
+	Path   string            `json:"path,omitempty"`
+	Main   string            `json:"main"`
+	Script string            `json:"script,omitempty"`
+	Inputs map[string]string `json:"inputs,omitempty"`
+}
+
+// CompositeStep is a composite action's expanded steps.
+type CompositeStep struct {
+	Steps []Step `json:"steps"`
+}
+
 // Step is one executable step of the Plan.
 type Step struct {
-	ID      string       `json:"id"`
-	Name    string       `json:"name,omitempty"`
-	If      string       `json:"if,omitempty"` // raw condition; evaluated by the executor
-	Run     RunStep      `json:"run"`
-	Builtin *BuiltinStep `json:"builtin,omitempty"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name,omitempty"`
+	If        string         `json:"if,omitempty"` // raw condition; evaluated by the executor
+	Run       RunStep        `json:"run"`
+	Builtin   *BuiltinStep   `json:"builtin,omitempty"`
+	JS        *JSStep        `json:"js,omitempty"`
+	Composite *CompositeStep `json:"composite,omitempty"`
 	// ContinueOnError keeps a failing step from failing the job (outcome
 	// failure, conclusion success).
 	ContinueOnError bool `json:"continueOnError,omitempty"`

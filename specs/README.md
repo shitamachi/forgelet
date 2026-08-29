@@ -59,4 +59,4 @@ specs/NNNN-<slug>/
 | [0009](0009-builtin-actions/spec.md) | Builtin Actions | implemented |
 | [0010](0010-observability/spec.md) | Observability | implemented |
 | [0011](0011-deployment-and-k3s-support/spec.md) | Deployment and k3s Support | implemented |
-| [0012](0012-js-composite-actions/spec.md) | JS and Composite Actions | accepted |
+| [0012](0012-js-composite-actions/spec.md) | JS and Composite Actions | implemented |

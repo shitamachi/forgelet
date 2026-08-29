@@ -1,8 +1,9 @@
 # Plan — Spec 0012 JS and Composite Actions
 
-- **Status**: accepted
+- **Status**: complete
 - **Date**: 2026-08-24
 - **Approved**: 2026-08-24, project owner（与 spec 同批授权）
+- **Completed**: 2026-08-24, v1-wave11 实现并通过验证
 
 ## 1. 总体形态
 

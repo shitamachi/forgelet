@@ -141,6 +141,9 @@ func NewServer(opts Options) (*Server, error) {
 	}
 
 	source := &workflowSource{dir: opts.WorkflowsDir, fetcher: opts.WorkflowFetcher, log: opts.Log}
+	if af, ok := opts.WorkflowFetcher.(github.ActionFetcher); ok {
+		source.actionFetcher = af
+	}
 	s.src = source
 	ids := scheduler.NewIDGen(opts.Now, nil)
 	s.ingest = scheduler.NewIngestor(opts.Durable, source, ids, opts.Now)
@@ -264,7 +267,10 @@ func (s *Server) buildPlans(ctx context.Context, d model.Delivery, runID model.R
 				continue
 			}
 		}
-		p := buildPlan(rec, d.Event, *inst)
+		p, err := s.buildPlan(ctx, rec, d.Event, *inst)
+		if err != nil {
+			return fmt.Errorf("server: build plan for %s: %w", rec.ID, err)
+		}
 		if err := s.plans.Put(p); err != nil {
 			return fmt.Errorf("server: store plan for %s: %w", rec.ID, err)
 		}
@@ -978,9 +984,10 @@ type WorkflowFile struct {
 // workflowSource compiles workflows from a repository fetcher or a local
 // directory.
 type workflowSource struct {
-	dir     string
-	fetcher WorkflowFetcher
-	log     *slog.Logger
+	dir           string
+	fetcher       WorkflowFetcher
+	actionFetcher github.ActionFetcher
+	log           *slog.Logger
 }
 
 // Compile implements scheduler.Compiler.
@@ -1091,7 +1098,7 @@ func listYAML(dir string) ([]yamlFile, error) {
 // Environment values that are exactly `${{ secrets.NAME }}` become secret
 // references resolved at execution time (minimal M0 interpolation; the full
 // template engine is 0007 T7).
-func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance) *plan.Plan {
+func (s *Server) buildPlan(ctx context.Context, rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance) (*plan.Plan, error) {
 	p := &plan.Plan{
 		JobRunID:    rec.ID,
 		Repository:  ev.Repository,
@@ -1115,13 +1122,11 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 			ID: id, Name: st.Name, If: st.If,
 			ContinueOnError: st.ContinueOnError,
 		}
-		if st.Uses != nil {
+		switch {
+		case st.Uses != nil:
 			inputs := make(map[string]string, len(st.Uses.Inputs))
 			for k, v := range st.Uses.Inputs {
 				if name, ok := secretRefName(v); ok {
-					// `with:` values that are exactly a secret reference
-					// resolve through the secret channel; the executor
-					// injects them back into the handler inputs.
 					p.SecretRefs = append(p.SecretRefs,
 						plan.SecretRef{Scope: "repository", Name: name, Env: "$with:" + id + ":" + k})
 					continue
@@ -1129,12 +1134,87 @@ func buildPlan(rec model.JobRunRecord, ev model.Event, inst compiler.JobInstance
 				inputs[k] = v
 			}
 			ps.Builtin = &plan.BuiltinStep{Action: st.Uses.Action, Version: st.Uses.Version, Inputs: inputs}
-		} else {
+		case st.RawUses != "":
+			owner, repo, subpath, ref, err := github.ParseUses(st.RawUses)
+			if err != nil {
+				owner, repo, subpath, ref = "", st.RawUses, "", "main"
+			}
+			inputs := make(map[string]string, len(st.RawWith))
+			for k, v := range st.RawWith {
+				if name, ok := secretRefName(v); ok {
+					p.SecretRefs = append(p.SecretRefs,
+						plan.SecretRef{Scope: "repository", Name: name, Env: "$with:" + id + ":" + k})
+					continue
+				}
+				inputs[k] = v
+			}
+			// Try to fetch action.yml to decide JS vs composite when a
+			// fetcher is available (GitHub mode). Otherwise fall back to JS.
+			if s.src.actionFetcher != nil {
+				if meta, err := s.src.actionFetcher.FetchAction(ctx, owner, repo, ref, subpath); err == nil {
+					if strings.HasPrefix(meta.RunsUsing, "composite") {
+						// Expand composite steps inline.
+						steps, err := s.expandComposite(meta.Steps, inputs, id)
+						if err == nil {
+							// Composite expansion replaces the single step with its inner steps.
+							p.Steps = append(p.Steps, steps...)
+							continue
+						}
+					} else if strings.HasPrefix(meta.RunsUsing, "node") {
+						ps.JS = &plan.JSStep{Repo: owner + "/" + repo, Ref: ref, Path: subpath, Main: meta.Main, Inputs: inputs}
+						// For actions/github-script the script is in with.script
+						if s, ok := inputs["script"]; ok {
+							ps.JS.Script = s
+						}
+						break
+					}
+				}
+			}
+			ps.JS = &plan.JSStep{Repo: owner + "/" + repo, Ref: ref, Path: subpath, Inputs: inputs}
+			if s, ok := inputs["script"]; ok {
+				ps.JS.Script = s
+			}
+		default:
 			ps.Run = plan.RunStep{Script: st.Run, Env: st.Env}
 		}
 		p.Steps = append(p.Steps, ps)
 	}
-	return p
+	return p, nil
+}
+
+// expandComposite turns a composite action's runs.steps into plan steps.
+func (s *Server) expandComposite(steps []github.CompositeActionStep, outerInputs map[string]string, outerID string) ([]plan.Step, error) {
+	var out []plan.Step
+	for i, cs := range steps {
+		id := fmt.Sprintf("%s-%d", outerID, i)
+		// Interpolate inputs.* in the composite step's run/uses/with
+		// For V1 we handle simple ${{ inputs.* }} substitution.
+		ps := plan.Step{ID: id, Name: cs.Name}
+		if cs.Run != "" {
+			script := cs.Run
+			for k, v := range outerInputs {
+				script = strings.ReplaceAll(script, "${{ inputs."+k+" }}", v)
+				script = strings.ReplaceAll(script, "${{inputs."+k+"}}", v)
+			}
+			ps.Run = plan.RunStep{Script: script}
+		} else if cs.Uses != "" {
+			// Nested uses inside composite – treat as builtin or JS for now
+			// (recursive expansion is future work; for V1 we store as JS)
+			ps.JS = &plan.JSStep{Repo: cs.Uses, Inputs: map[string]string{}}
+			for k, v := range cs.With {
+				// Map outer inputs
+				for ok, ov := range outerInputs {
+					v = strings.ReplaceAll(v, "${{ inputs."+ok+" }}", ov)
+				}
+				if ps.JS.Inputs == nil {
+					ps.JS.Inputs = map[string]string{}
+				}
+				ps.JS.Inputs[k] = v
+			}
+		}
+		out = append(out, ps)
+	}
+	return out, nil
 }
 
 func stDisplayName(st compiler.Step) string {
@@ -1147,6 +1227,16 @@ func stDisplayName(st compiler.Step) string {
 			return base
 		}
 		return st.Uses.Action
+	}
+	if st.RawUses != "" {
+		if _, base, ok := strings.Cut(st.RawUses, "/"); ok {
+			// Trim the @ref suffix for display
+			if at := strings.LastIndex(base, "@"); at >= 0 {
+				base = base[:at]
+			}
+			return base
+		}
+		return st.RawUses
 	}
 	// Steps without names are identified by their script's first token.
 	return truncate(strings.Fields(st.Run)[0], 24)

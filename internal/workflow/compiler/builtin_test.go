@@ -42,6 +42,8 @@ jobs:
 }
 
 func TestBuiltinUnknownAction(t *testing.T) {
+	// Unknown non-builtin is now treated as generic JS/composite (0012),
+	// not as a builtin error. Only close typos of builtins still hint.
 	src := `name: CI
 on: push
 jobs:
@@ -54,11 +56,14 @@ jobs:
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	_, err = Compile(wf)
-	if err == nil || !strings.Contains(err.Error(), "not a forgelet builtin") {
-		t.Fatalf("expected unknown builtin error, got %v", err)
+	c, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("compile should handle generic uses, got %v", err)
 	}
-	// Test hint
+	if c.Jobs[0].Steps[0].RawUses != "evil/hack@v1" {
+		t.Errorf("RawUses = %q, want evil/hack@v1", c.Jobs[0].Steps[0].RawUses)
+	}
+	// Close typo of a builtin still hints
 	src2 := `name: CI
 on: push
 jobs:
