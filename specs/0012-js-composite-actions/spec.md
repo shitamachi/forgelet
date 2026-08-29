@@ -1,8 +1,9 @@
 # Spec 0012 — JS and Composite Actions
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-08-24
 - **Accepted**: 2026-08-24, project owner（会话指令“继续”，按最佳路线推进）
+- **Implemented**: 2026-08-24, v1-wave11（T1-T6 全量交付并通过 `make verify`）
 - **Parent**: `specs/0001-platform-overview/spec.md`（accepted；FR-5.2 P1）
 - **Covers**: FR-5.2 中 JS Action 与 Composite Action 的 P1 切片（0008 T9 剩余、0009 之后）
 - **Depends on**: 0008（Engine file commands 已就绪）、0009（Builtin 注册表形态）
