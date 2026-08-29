@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dop251/goja"
+
 	"github.com/shitamachi/forgelet/internal/run/plan"
 )
 
@@ -73,9 +75,9 @@ func runJS(ctx context.Context, bc BuiltinContext, script string, js *plan.JSSte
 			"payload":   map[string]interface{}{},
 		},
 	}
-	vm.Set("core", core)
-	vm.Set("github", github)
-	vm.Set("console", map[string]interface{}{
+	_ = vm.Set("core", core)
+	_ = vm.Set("github", github)
+	_ = vm.Set("console", map[string]interface{}{
 		"log": func(call goja.FunctionCall) goja.Value {
 			bc.Logger.Info("js console.log", "args", fmt.Sprint(call.Arguments))
 			return goja.Undefined()
@@ -88,9 +90,9 @@ func runJS(ctx context.Context, bc BuiltinContext, script string, js *plan.JSSte
 	}()
 	_, err := vm.RunString(script)
 	if err != nil {
-		// Check if it's a setFailed panic
-		if e, ok := err.(*goja.Exception); ok {
-			return fmt.Errorf("js: %v", e.Value())
+		var target *goja.Exception
+		if errors.As(err, &target) {
+			return fmt.Errorf("js: %v", target.Value())
 		}
 		return fmt.Errorf("js: %w", err)
 	}

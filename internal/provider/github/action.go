@@ -78,8 +78,8 @@ func parseActionMeta(data []byte) (*ActionMeta, error) {
 			Required    bool   `yaml:"required"`
 		} `yaml:"inputs"`
 		Runs struct {
-			Using string `yaml:"using"`
-			Main  string `yaml:"main"`
+			Using string                `yaml:"using"`
+			Main  string                `yaml:"main"`
 			Steps []CompositeActionStep `yaml:"steps"`
 		} `yaml:"runs"`
 	}

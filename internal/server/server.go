@@ -1157,9 +1157,7 @@ func (s *Server) buildPlan(ctx context.Context, rec model.JobRunRecord, ev model
 						steps, err := s.expandComposite(meta.Steps, inputs, id)
 						if err == nil {
 							// Composite expansion replaces the single step with its inner steps.
-							for _, cs := range steps {
-								p.Steps = append(p.Steps, cs)
-							}
+							p.Steps = append(p.Steps, steps...)
 							continue
 						}
 					} else if strings.HasPrefix(meta.RunsUsing, "node") {

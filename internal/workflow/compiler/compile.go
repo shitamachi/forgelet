@@ -17,7 +17,7 @@ type Step struct {
 	Name            string
 	If              string // raw condition; evaluated at runtime by the executor
 	Run             string
-	Uses            *BuiltinCall // set for builtin `uses:`; Run is empty then
+	Uses            *BuiltinCall      // set for builtin `uses:`; Run is empty then
 	RawUses         string            // raw `uses:` for non-builtin (JS/composite), e.g. "actions/github-script@v6"
 	RawWith         map[string]string // raw `with:` for non-builtin
 	ContinueOnError bool
