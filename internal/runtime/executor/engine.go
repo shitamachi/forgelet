@@ -168,6 +168,106 @@ func (e *Engine) Run(ctx context.Context, id identity.Identity, p plan.Plan) (Jo
 			}
 		}
 
+		if step.JS != nil {
+			// JS step (e.g. actions/github-script): run via goja.
+			finalInputs := make(map[string]string, len(step.JS.Inputs))
+			for k, v := range step.JS.Inputs {
+				if expression.HasExpression(v) {
+					rendered, ierr := expression.Interpolate(v, exprEnv)
+					if ierr != nil {
+						result.Error = "step " + step.ID + " with." + k + ": " + ierr.Error()
+						return result, e.failJob(ctx, id, p, i, &result, logger)
+					}
+					finalInputs[k] = rendered
+				} else {
+					finalInputs[k] = v
+				}
+			}
+			prefix := "$with:" + step.ID + ":"
+			for envKey, secVal := range withSecrets {
+				if strings.HasPrefix(envKey, prefix) {
+					k := strings.TrimPrefix(envKey, prefix)
+					finalInputs[k] = secVal
+				}
+			}
+			outputs := map[string]string{}
+			bc := BuiltinContext{
+				Ctx:       ctx,
+				Workspace: e.WorkDir,
+				Inputs:    finalInputs,
+				Env:       stepEnv,
+				Logger:    logger,
+				SetOutput: func(k, v string) { outputs[k] = v },
+				CP:        e.CP,
+				Identity:  id,
+			}
+			// For actions/github-script, the script is in with.script
+			script := finalInputs["script"]
+			if script == "" && step.JS.Script != "" {
+				script = step.JS.Script
+			}
+			start := time.Now()
+			berr := runJS(ctx, bc, script, step.JS)
+			sr := StepResult{StepID: step.ID, DurationMs: time.Since(start).Milliseconds()}
+			state := &stepState{outputs: outputs}
+			states[step.ID] = state
+			if berr == nil {
+				sr.ExitCode = 0
+			} else {
+				sr.ExitCode = 1
+			}
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(envFile)); ferr == nil {
+				_ = filecommand.Apply(env, kvs)
+			} else {
+				logger.Warn("malformed GITHUB_ENV", "step", step.ID, "err", ferr.Error())
+			}
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(outFile)); ferr == nil {
+				for _, kv := range kvs {
+					state.outputs[kv.Key] = kv.Value
+					logger.Info("step output", "step", step.ID, "key", kv.Key, "value", kv.Value)
+				}
+			} else {
+				logger.Warn("malformed GITHUB_OUTPUT", "step", step.ID, "err", ferr.Error())
+			}
+			pathEntries = append(filecommand.ParsePathFile(mustRead(pathFile)), pathEntries...)
+			if kvs, ferr := filecommand.ParseKVFile(mustRead(stateFile)); ferr == nil {
+				for _, kv := range kvs {
+					env["STATE_"+kv.Key] = kv.Value
+				}
+			} else {
+				logger.Warn("malformed GITHUB_STATE", "step", step.ID, "err", ferr.Error())
+			}
+			switch {
+			case berr == nil:
+				sr.Outcome, sr.Conclusion = outcomeSuccess, conclusionOK
+			case errors.Is(berr, context.Canceled) || errors.Is(berr, ErrCancelled):
+				result.Cancelled = true
+				result.Error = fmt.Sprintf("step %s cancelled", step.ID)
+				e.report(ctx, id, result, logger)
+				return result, ErrCancelled
+			case step.ContinueOnError:
+				sr.Outcome, sr.Conclusion = outcomeFailure, conclusionOK
+				logger.Warn("step failed but continue-on-error is set", "step", step.ID, "err", berr.Error())
+			default:
+				sr.Outcome, sr.Conclusion = outcomeFailure, conclusionFail
+				result.Steps = append(result.Steps, sr)
+				result.Error = fmt.Sprintf("step %s failed: %v", step.ID, berr)
+				return result, e.failJob(ctx, id, p, i+1, &result, logger)
+			}
+			state.outcome, state.conclusion = sr.Outcome, sr.Conclusion
+			result.Steps = append(result.Steps, sr)
+			continue
+		}
+
+		if step.Composite != nil {
+			// Composite steps are already expanded at buildPlan time into
+			// individual plan steps, so a CompositeStep should not appear here.
+			// If it does, treat it as a no-op.
+			states[step.ID] = &stepState{outcome: outcomeSuccess, conclusion: conclusionOK}
+			result.Steps = append(result.Steps, StepResult{StepID: step.ID, Outcome: outcomeSuccess, Conclusion: conclusionOK})
+			continue
+		}
+
 		if step.Builtin != nil {
 			// Builtin step: resolve inputs (interpolate + overlay secrets).
 			finalInputs := make(map[string]string, len(step.Builtin.Inputs))

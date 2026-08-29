@@ -43,6 +43,11 @@ func (g githubSource) DefaultBranch(ctx context.Context, repo model.RepositoryRe
 	return g.c.DefaultBranch(ctx, repo.Owner, repo.Name)
 }
 
+// FetchAction implements github.ActionFetcher.
+func (g githubSource) FetchAction(ctx context.Context, owner, repo, ref, subpath string) (*github.ActionMeta, error) {
+	return g.c.FetchAction(ctx, owner, repo, ref, subpath)
+}
+
 // loadAppKey reads a GitHub App private key (PKCS#1 or PKCS#8 PEM).
 func loadAppKey(path string) (*rsa.PrivateKey, error) {
 	raw, err := os.ReadFile(path)

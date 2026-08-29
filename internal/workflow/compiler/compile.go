@@ -17,7 +17,9 @@ type Step struct {
 	Name            string
 	If              string // raw condition; evaluated at runtime by the executor
 	Run             string
-	Uses            *BuiltinCall // set for `uses:` steps; Run is empty then
+	Uses            *BuiltinCall // set for builtin `uses:`; Run is empty then
+	RawUses         string            // raw `uses:` for non-builtin (JS/composite), e.g. "actions/github-script@v6"
+	RawWith         map[string]string // raw `with:` for non-builtin
 	ContinueOnError bool
 	Env             map[string]string
 }
@@ -86,6 +88,20 @@ func Compile(wf *syntax.Workflow) (*Compiled, error) {
 			case step.Uses != "":
 				call, warn, berr := compileBuiltin(job.ID, i, step)
 				if berr != nil {
+					if strings.Contains(berr.Error(), "did you mean") {
+						return nil, fmt.Errorf("compile %s: job %q step %d: %w", wf.File, job.ID, i, berr)
+					}
+					if strings.Contains(berr.Error(), "not a forgelet builtin") {
+						// Not a builtin: treat as generic JS/composite `uses` for 0012.
+						if warn.Msg != "" {
+							out.Warnings = append(out.Warnings, warn)
+						}
+						inst.Steps = append(inst.Steps, Step{
+							Name: step.Name, If: step.If, RawUses: step.Uses, RawWith: step.With,
+							ContinueOnError: step.ContinueOnError, Env: step.Env,
+						})
+						continue
+					}
 					return nil, fmt.Errorf("compile %s: job %q step %d: %w", wf.File, job.ID, i, berr)
 				}
 				if warn.Msg != "" {

@@ -18,6 +18,11 @@ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/dlclark/regexp2 v1.12.0 h1:0j4c5qQmnC6XOWNjP3PIXURXN2gWx76rd3KvgdPkCz8=
+github.com/dlclark/regexp2/v2 v2.5.2 h1:HAsucWRhsqcDzl6Ua9aR8JwYOTzrZyPrF0/FNxJVAI0=
+github.com/dlclark/regexp2/v2 v2.5.2/go.mod h1:avUrQvPaLz2DrFNHJF0taWAFFX2C1GMSSoeiqFjcBmU=
+github.com/dop251/goja v0.0.0-20260826204918-8f1c0696a37b h1:mYHoARbZ0mUYXXsaNeHoDFBft3TK4PpFEe3KU7hdDgg=
+github.com/dop251/goja v0.0.0-20260826204918-8f1c0696a37b/go.mod h1:u8yZRUavu+N4EnFFy6J5fVtjE7lEcZ2YyV2GcBXY9c8=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/emicklei/go-restful/v3 v3.13.0 h1:C4Bl2xDndpU6nJ4bc1jXd+uTmYPVUwkD6bFY/oTyCes=
@@ -77,6 +82,8 @@ github.com/go-openapi/testify/enable/yaml/v2 v2.4.2 h1:5zRca5jw7lzVREKCZVNBpysDN
 github.com/go-openapi/testify/enable/yaml/v2 v2.4.2/go.mod h1:XVevPw5hUXuV+5AkI1u1PeAm27EQVrhXTTCPAF85LmE=
 github.com/go-openapi/testify/v2 v2.4.2 h1:tiByHpvE9uHrrKjOszax7ZvKB7QOgizBWGBLuq0ePx4=
 github.com/go-openapi/testify/v2 v2.4.2/go.mod h1:SgsVHtfooshd0tublTtJ50FPKhujf47YRqauXXOUxfw=
+github.com/go-sourcemap/sourcemap v2.1.3+incompatible h1:W1iEw64niKVGogNgBN3ePyLFfuisuzeidWPMPWmECqU=
+github.com/go-sourcemap/sourcemap v2.1.3+incompatible/go.mod h1:F8jJfvm2KbVjc5NqelyYJmf/v5J0dwNLS2mL4sNA1Jg=
 github.com/go-task/slim-sprig/v3 v3.0.0 h1:sUs3vkvUymDpBKi3qH1YSqBQk9+9D/8M2mN1vB6EwHI=
 github.com/go-task/slim-sprig/v3 v3.0.0/go.mod h1:W848ghGpv3Qj3dhTPRyJypKRiqCdHZiAzKg9hl15HA8=
 github.com/gobuffalo/flect v1.0.3 h1:xeWBM2nui+qnVvNM4S3foBhCAL2XgPU+a7FdpelbTq4=
