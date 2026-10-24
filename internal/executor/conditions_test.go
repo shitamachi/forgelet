@@ -172,6 +172,19 @@ func TestExecuteContinueOnErrorDoesNotHideInfrastructureFailure(t *testing.T) {
 	}
 }
 
+func TestExecuteContinueOnErrorCarriesInfrastructureError(t *testing.T) {
+	// A job with continue-on-error must still expose executor errors. Otherwise
+	// storage.Finish sees Failed + empty Error and converts the job to success.
+	plan := run.Plan{ContinueOnError: true, Steps: []run.Step{
+		{ID: "bad", Run: `printf 'bad=notjson\n' >> "$GITHUB_OUTPUT"`},
+		{ID: "boom", Env: map[string]string{"X": `${{ fromJSON(steps.bad.outputs.bad) }}`}, Run: "true"},
+	}}
+	result, err := Execute(t.Context(), plan, Options{Workspace: t.TempDir()})
+	if err == nil || result.State != run.Failed || result.Error == "" {
+		t.Fatalf("result=%+v err=%v; infrastructure error must be visible", result, err)
+	}
+}
+
 func TestExecuteOutputsAreBounded(t *testing.T) {
 	var many strings.Builder
 	for index := range 101 {

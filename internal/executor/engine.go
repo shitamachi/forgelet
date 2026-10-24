@@ -54,6 +54,22 @@ var commitSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 // indicates an executor, protocol, or logging failure and still carries a terminal Result.
 func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Result, returnErr error) {
 	result.State = run.Failed
+	mask := newMasker()
+	// Every executor/protocol failure must carry a non-empty public error.
+	// storage.Finish uses an empty Result.Error to distinguish an ordinary
+	// command failure (which job continue-on-error may tolerate) from an
+	// infrastructure failure (which it must never hide).
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		if result.State == run.Succeeded {
+			result.State = run.Failed
+		}
+		if result.State == run.Failed && result.Error == "" {
+			result.Error = publicError(returnErr, mask)
+		}
+	}()
 	if err := prepareProcessReaping(); err != nil {
 		return result, fmt.Errorf("prepare child process cleanup: %w", err)
 	}
@@ -95,7 +111,6 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 	jobCtx, jobCancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
 	defer jobCancel()
 	plan.RuntimeSecrets = opts.Secrets
-	mask := newMasker()
 	if err := maskRegistry(opts.RegistryConfig, mask); err != nil {
 		return result, err
 	}
