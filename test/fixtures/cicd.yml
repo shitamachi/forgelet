@@ -1,0 +1,39 @@
+# Adapt repository scripts, profile and registered target/image before use.
+# This file is not installed into .github/workflows automatically.
+name: CI to CD
+on:
+  push:
+    branches: [main]
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: homelab
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./ci/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: reports
+          if-no-files-found: error
+  build:
+    needs: test
+    runs-on: builder
+    outputs:
+      digest: '${{ steps.image.outputs.digest }}'
+    steps:
+      - uses: actions/checkout@v4
+      - id: image
+        uses: forgelet/build@v1
+        with:
+          image: ghcr.io/example/demo
+  deliver:
+    needs: build
+    runs-on: homelab
+    steps:
+      - uses: forgelet/deploy@v1
+        with:
+          target: demo
+          digest: '${{ needs.build.outputs.digest }}'

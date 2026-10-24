@@ -1,0 +1,7 @@
+name: Forgelet failure recovery fixture
+description: Check pre-if against prior job failure using a real Node process.
+runs:
+  using: node24
+  pre: pre.js
+  pre-if: failure()
+  main: main.js

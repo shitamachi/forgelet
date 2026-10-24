@@ -1,0 +1,27 @@
+name: Real setup actions
+on: push
+jobs:
+  tools:
+    runs-on: homelab
+    timeout-minutes: 6
+    steps:
+      - id: go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.25.0'
+          cache: false
+          token: ''
+      - id: node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.14.0'
+          package-manager-cache: false
+          token: ''
+      - run: |
+          test '${{ steps.go.outputs.go-version }}' = '1.25.0'
+          test '${{ steps.node.outputs.node-version }}' = 'v24.14.0'
+          go version
+          test "$(node --version)" = v24.14.0
+          printf 'package main\nimport "fmt"\nfunc main(){fmt.Println("real-go-binary-ok")}\n' > main.go
+          go run main.go
+          node -e 'console.log("real-node-binary-ok")'

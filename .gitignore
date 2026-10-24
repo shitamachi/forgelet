@@ -1,9 +1,6 @@
 # binaries
 /bin/
 /dist/
-cmd/server/server
-cmd/controller/controller
-cmd/executor/executor
 
 # go
 *.test
@@ -19,3 +16,14 @@ coverage.*
 # local dev only
 .env
 *.local.yaml
+
+# local persistent server data
+/data/
+
+# Web build output and local browser test results
+web/node_modules/
+web/test-results/
+web/playwright-report/
+web/*.tsbuildinfo
+internal/webui/dist/*
+!internal/webui/dist/.keep

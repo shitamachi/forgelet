@@ -1,0 +1,5 @@
+name: Node 20 fixture
+description: Verify that node20 means the actual Node 20 runtime.
+runs:
+  using: node20
+  main: main.js

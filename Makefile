@@ -1,80 +1,54 @@
-# forgelet development commands
 BIN_DIR := ./bin
-IMAGE_REGISTRY ?= ghcr.io/shitamachi/forgelet
+IMAGE_REGISTRY ?= forgelet
 IMAGE_TAG ?= dev
 
-.PHONY: build test lint generate verify kind-up images clean
+.PHONY: build test test-integration lint generate verify images clean web-install web-build web-test web-e2e web-browsers
 
-build:
-	@packages="$$(go list ./cmd/...)"; status=$$?; \
-	if [ $$status -ne 0 ]; then \
-		exit $$status; \
-	elif [ -z "$$packages" ]; then \
-		echo "build: no command packages yet (docs-only phase)"; \
-	else \
-		mkdir -p "$(BIN_DIR)"; \
-		go build -o "$(BIN_DIR)/" $$packages; \
-	fi
+build: web-build
+	@mkdir -p "$(BIN_DIR)"
+	go build -o "$(BIN_DIR)/forgelet" ./cmd/forgelet
+	go build -o "$(BIN_DIR)/forgelet-executor" ./cmd/executor
 
+# Includes real SQLite and httptest integrations; no container daemon required.
 test:
-	@packages="$$(go list ./...)"; status=$$?; \
-	if [ $$status -ne 0 ]; then \
-		exit $$status; \
-	elif [ -z "$$packages" ]; then \
-		echo "test: no Go packages yet (docs-only phase)"; \
-	else \
-		go test $$packages; \
-	fi
+	go test -race ./...
+
+# A disposable k3s cluster. Docker is used only by the development test harness.
+test-integration: web-install web-browsers
+	go test -tags=integration ./test/integration -count=1 -v -timeout 30m
 
 lint:
-	@packages="$$(go list ./...)"; status=$$?; \
-	if [ $$status -ne 0 ]; then \
-		exit $$status; \
-	elif [ -z "$$packages" ]; then \
-		echo "lint: no Go packages yet (docs-only phase)"; \
-	elif ! command -v golangci-lint >/dev/null 2>&1; then \
-		echo "lint: golangci-lint is required (CI uses v2.13.1)" >&2; \
-		exit 1; \
-	else \
-		golangci-lint run; \
-	fi
+	golangci-lint run --build-tags integration
 
 generate:
-	@packages="$$(go list ./...)"; status=$$?; \
-	if [ $$status -ne 0 ]; then \
-		exit $$status; \
-	elif [ -z "$$packages" ]; then \
-		echo "generate: no Go packages yet (docs-only phase)"; \
-	else \
-		go generate $$packages; \
-	fi
+	go generate ./...
 
-verify: build test lint generate
+web/node_modules/.installed: web/package.json web/package-lock.json
+	npm --prefix web ci --no-audit --no-fund
+	@touch $@
 
-# Local k3s cluster with PG / MinIO / Loki. Intentionally unavailable until
-# specs 0010 and 0011 define the dependency and support matrix.
-kind-up:
-	./hack/kind-up.sh
+web-install: web/node_modules/.installed
 
-# Release-pipeline images (spec 0011 T8). The executor image ships bash:
-# job pods run user scripts in it.
-images: image-server image-controller image-executor image-minttoken
+web-build: web-install
+	npm --prefix web run build
 
-image-server:
-	docker build --build-arg BIN=server \
-		-t "$(IMAGE_REGISTRY)/server:$(IMAGE_TAG)" .
+web-test: web-install
+	npm --prefix web run typecheck
+	npm --prefix web run format:check
+	npm --prefix web test
 
-image-controller:
-	docker build --build-arg BIN=controller \
-		-t "$(IMAGE_REGISTRY)/controller:$(IMAGE_TAG)" .
+web-browsers: web-install
+	cd web && npx playwright install chromium
 
-image-executor:
-	docker build --build-arg BIN=executor --build-arg PKGS="ca-certificates bash" \
-		-t "$(IMAGE_REGISTRY)/executor:$(IMAGE_TAG)" .
+# Browser tests use deterministic fixture APIs; k3s tests exercise the real API.
+web-e2e: web-build web-browsers
+	npm --prefix web run test:e2e
 
-image-minttoken:
-	docker build --build-arg BIN=minttoken \
-		-t "$(IMAGE_REGISTRY)/minttoken:$(IMAGE_TAG)" .
+verify: build test lint generate web-test web-e2e
+
+images:
+	docker build --target server -t "$(IMAGE_REGISTRY)-server:$(IMAGE_TAG)" .
+	docker build --target executor -t "$(IMAGE_REGISTRY)-executor:$(IMAGE_TAG)" .
 
 clean:
 	rm -rf "$(BIN_DIR)"

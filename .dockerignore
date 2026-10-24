@@ -1,0 +1,11 @@
+.git
+bin
+data
+.idea
+*.local.yaml
+.env
+web/node_modules
+web/test-results
+web/playwright-report
+web/*.tsbuildinfo
+internal/webui/dist

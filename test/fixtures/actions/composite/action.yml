@@ -1,0 +1,19 @@
+name: Forgelet composite fixture
+description: Exercise scoped inputs and nested Action outputs.
+inputs:
+  value:
+    default: composite
+outputs:
+  result:
+    value: ${{ steps.inner.outputs.answer }}
+runs:
+  using: composite
+  steps:
+    - id: inner
+      uses: ./.actions/node
+      with:
+        value: ${{ inputs.value }}
+    - shell: sh
+      run: |
+        test "$SHARED" = from-action
+        test '${{ toJSON(inputs) }}' = '{"value":"second"}'

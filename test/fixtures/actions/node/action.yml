@@ -1,0 +1,12 @@
+name: Forgelet lifecycle fixture
+description: Exercise real Node inputs, state, outputs, environment and post execution.
+inputs:
+  value:
+    default: default
+  fail:
+    default: 'false'
+runs:
+  using: node24
+  pre: pre.js
+  main: main.js
+  post: post.js

@@ -1,0 +1,55 @@
+# Optional read access for the registered example target only.
+# Flux itself is managed separately. Apply after the named namespaces exist.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgelet-observe-flux
+  namespace: flux-system
+rules:
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [gitrepositories]
+    resourceNames: [homelab]
+    verbs: [get]
+  - apiGroups: [kustomize.toolkit.fluxcd.io]
+    resources: [kustomizations]
+    resourceNames: [demo]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgelet-observe-flux
+  namespace: flux-system
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-server
+    namespace: forgelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgelet-observe-flux
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgelet-observe-app
+  namespace: apps
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [demo]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgelet-observe-app
+  namespace: apps
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-server
+    namespace: forgelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgelet-observe-app

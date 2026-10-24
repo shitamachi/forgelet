@@ -16,22 +16,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: forgelet
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      FORGELET_TEST_POSTGRES: postgres://postgres:test@localhost:5432/forgelet
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -42,6 +27,18 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Set up Node for the static console and browser tests
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install browser test dependencies
+        run: |
+          make web-install
+          cd web && npx playwright install --with-deps chromium
+
       - name: Install golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -50,3 +47,6 @@ jobs:
 
       - name: Verify repository
         run: make verify
+
+      - name: Run disposable k3s integration tests
+        run: make test-integration

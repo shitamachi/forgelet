@@ -1,0 +1,218 @@
+package blob
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestStoreAtomicImmutableScopedRetention(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	limits := Limits{ObjectBytes: 1024, TotalBytes: 8192, Objects: 20}
+	s, err := Open(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	scope := Scope{Repository: "o/r", Kind: "artifact", Namespace: "run1"}
+	e, err := s.Put(ctx, scope, "a", "job", time.Hour, now, strings.NewReader("hello"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, scope, "a", "job", time.Hour, now, strings.NewReader("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, scope, "a", "other", time.Hour, now, strings.NewReader("hello")); !errors.Is(err, ErrConflict) {
+		t.Fatal(err)
+	}
+	for _, other := range []Scope{{Repository: "x/r", Kind: "artifact", Namespace: "run1"}, {Repository: "o/r", Kind: "artifact", Namespace: "run2"}, {Repository: "o/r", Kind: "cache", Namespace: "run1"}} {
+		if _, _, err := s.Get(other, "a", nil, now); !errors.Is(err, ErrNotFound) {
+			t.Fatal("scope leak", err)
+		}
+	}
+	if _, err := s.Put(ctx, scope, "large", "job", time.Hour, now, strings.NewReader(strings.Repeat("a", 1025))); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.Put(cancelled, scope, "cancelled", "job", time.Hour, now, strings.NewReader("x")); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	files, _ := os.ReadDir(dir)
+	if len(files) != 1 {
+		t.Fatal("unpublished uploads remain", len(files))
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".upload-interrupted"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, file, err := s.Get(scope, "a", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(file)
+	_ = file.Close()
+	if got.ID != e.ID || string(data) != "hello" {
+		t.Fatal(got, string(data))
+	}
+	n, err := s.Prune(ctx, now.Add(time.Hour))
+	if err != nil || n != 1 {
+		t.Fatal(n, err)
+	}
+	if _, _, err := s.Get(scope, "a", nil, now); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestCacheRaceVersionAndPrefix(t *testing.T) {
+	s, err := Open(t.TempDir(), Limits{ObjectBytes: 100, TotalBytes: 5000, Objects: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	scope := Scope{Repository: "o/r", Kind: "cache", Namespace: "refs/heads/main", Version: "v1"}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Put(t.Context(), scope, "go-1", "job", time.Hour, now, strings.NewReader("cache")); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(s.List(scope, now)) != 1 {
+		t.Fatal("cache not atomic")
+	}
+	_, err = s.Put(t.Context(), scope, "go-2", "job", time.Hour, now.Add(time.Second), strings.NewReader("new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, f, err := s.Get(scope, "absent", []string{"no-", "go-"}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if e.Key != "go-2" {
+		t.Fatal(e)
+	}
+	for _, change := range []string{"version", "ref", "repository"} {
+		other := scope
+		switch change {
+		case "version":
+			other.Version = "v2"
+		case "ref":
+			other.Namespace = "refs/pull/1/merge"
+		case "repository":
+			other.Repository = "x/y"
+		}
+		if _, _, err := s.Get(other, "go-1", []string{"go-"}, now); !errors.Is(err, ErrNotFound) {
+			t.Fatal("cache isolation", err)
+		}
+	}
+}
+
+func TestArchiveRoundTripAndAttacks(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "dist"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "dist", "app"), []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "dist", ".hidden"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	if err := Pack(t.Context(), workspace, []string{"dist"}, true, false, &archive); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if err := Unpack(t.Context(), dest, "download", bytes.NewReader(archive.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dest, "download", "app"))
+	if err != nil || string(data) != "binary" {
+		t.Fatal(err, string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dest, "download", ".hidden")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("hidden file included")
+	}
+	for _, name := range []string{"../escape", "/absolute", "x/../../escape", "a\\b"} {
+		t.Run(name, func(t *testing.T) {
+			var b bytes.Buffer
+			tw := tar.NewWriter(&b)
+			_ = tw.WriteHeader(&tar.Header{Name: name, Size: 1, Mode: 0600})
+			_, _ = tw.Write([]byte("x"))
+			_ = tw.Close()
+			if err := Unpack(t.Context(), dest, ".", &b); err == nil {
+				t.Fatal("accepted unsafe archive")
+			}
+		})
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(dest, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unpack(t.Context(), dest, "link", bytes.NewReader(archive.Bytes())); err == nil {
+		t.Fatal("escaped destination")
+	}
+	if err := os.Symlink("app", filepath.Join(workspace, "dist", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Pack(t.Context(), workspace, []string{"dist"}, true, true, io.Discard); err == nil {
+		t.Fatal("accepted archive link")
+	}
+	for _, value := range []string{"../a", "~/go", "**/dist", "a\n!b", "/tmp"} {
+		if _, err := Paths(value); err == nil {
+			t.Fatal("accepted paths", value)
+		}
+	}
+}
+
+func TestQuotaAllowsIdempotentRetryAndExpiredReplacement(t *testing.T) {
+	limits := Limits{ObjectBytes: 5, TotalBytes: 5, Objects: 1}
+	dir := t.TempDir()
+	s, err := Open(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{Repository: "o/r", Kind: "artifact", Namespace: "run"}
+	now := time.Now()
+	for i := 0; i < 2; i++ {
+		if _, err := s.Put(t.Context(), scope, "key", "job", time.Hour, now, strings.NewReader("hello")); err != nil {
+			t.Fatal("retry at quota", err)
+		}
+	}
+	if _, err := s.Put(t.Context(), scope, "other", "job", time.Hour, now, strings.NewReader("x")); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(t.Context(), scope, "key", "job", time.Hour, now.Add(time.Hour), strings.NewReader("new")); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, f, err := s.Get(scope, "key", nil, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
+	if err != nil || string(data) != "new" {
+		t.Fatal(string(data), err)
+	}
+}

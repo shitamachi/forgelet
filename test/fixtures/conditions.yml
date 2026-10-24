@@ -1,0 +1,90 @@
+name: Dependencies and conditions
+on: push
+jobs:
+  seed:
+    runs-on: homelab
+    outputs:
+      value: ${{ steps.write.outputs.value }}
+    steps:
+      - id: write
+        shell: sh
+        run: echo value=ready >> "$GITHUB_OUTPUT"
+  build:
+    needs: seed
+    runs-on: homelab
+    steps:
+      - id: ignored
+        continue-on-error: true
+        shell: sh
+        run: exit 3
+      - id: failing
+        shell: sh
+        run: |
+          test '${{ steps.ignored.outcome }}' = failure
+          test '${{ steps.ignored.conclusion }}' = success
+          test '${{ needs.seed.outputs.value }}' = ready
+          exit 7
+      - id: default_skip
+        shell: sh
+        run: echo SHOULD_NOT_RUN
+      - id: recover
+        if: failure()
+        shell: sh
+        run: echo recovered > recovery.txt
+      - id: cleanup
+        if: always()
+        shell: sh
+        run: cat recovery.txt
+  blocked:
+    needs: build
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo SHOULD_NOT_RUN
+  transitive:
+    needs: blocked
+    if: failure()
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo ancestor-failed
+  report:
+    env:
+      REPORT_ENABLED: disabled
+    needs: [build, seed]
+    if: always() && needs.build.result == 'failure'
+    runs-on: homelab
+    steps:
+      - env:
+          REPORT_ENABLED: enabled
+        if: env.REPORT_ENABLED == 'enabled'
+        shell: sh
+        run: |
+          test '${{ needs.seed.outputs.value }}' = ready
+          echo report-ready
+  success_path:
+    needs: seed
+    if: github.ref == 'refs/heads/main' && needs.seed.result == 'success'
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo independent-success
+  false_job:
+    if: false
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo SHOULD_NOT_RUN
+  not_after_skip:
+    needs: false_job
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo SHOULD_NOT_RUN
+  always_after_skip:
+    needs: false_job
+    if: always()
+    runs-on: homelab
+    steps:
+      - shell: sh
+        run: echo runs-after-skip

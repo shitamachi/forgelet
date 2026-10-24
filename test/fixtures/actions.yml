@@ -1,0 +1,30 @@
+name: Real Actions
+on: push
+jobs:
+  actions:
+    runs-on: homelab
+    steps:
+      - run: cp -R /opt/forgelet/test-actions .actions
+      - id: first
+        uses: ./.actions/node
+        with: {value: first}
+      - id: second
+        uses: ./.actions/composite
+        with: {value: second}
+      - uses: ./.actions/node20
+      - run: |
+          test '${{ steps.first.outputs.answer }}' = first
+          test '${{ steps.second.outputs.result }}' = second
+          test "$SHARED" = from-action
+          test -z "${INPUT_VALUE:-}"
+          echo action-outputs-ok
+  failure:
+    runs-on: homelab
+    steps:
+      - run: cp -R /opt/forgelet/test-actions .actions
+      - uses: ./.actions/node
+        with: {value: failure, fail: true}
+      - if: failure()
+        uses: ./.actions/recovery
+      - if: failure()
+        run: echo failure-cleanup

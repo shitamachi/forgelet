@@ -1,0 +1,237 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgelet
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgelet-server
+  namespace: forgelet
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgelet-executor
+  namespace: forgelet
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgelet-pods
+  namespace: forgelet
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgelet-pods
+  namespace: forgelet
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-server
+    namespace: forgelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgelet-pods
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: forgelet-tokenreview
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: forgelet-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: forgelet-server
+    namespace: forgelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: forgelet-tokenreview
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgelet-config
+  namespace: forgelet
+data:
+  forgelet.yaml: |
+    listen: ':8443'
+    data_dir: /data
+    namespace: forgelet
+    public_url: https://ci.example.invalid
+    internal_url: https://forgelet.forgelet.svc:8443
+    tls_cert_file: /tls/tls.crt
+    tls_key_file: /tls/tls.key
+    runtime_ca_secret: forgelet-api-ca
+    max_parallel: 4
+    admin_access: session # Initial admin password: /data/initial-admin-password (0600).
+    auth:
+      bootstrap_password_file: '' # Optional Secret file; used only for the first initialization.
+      github_client_id: '' # OAuth App with callback public_url + /api/auth/github/callback.
+      github_client_secret_file: '' # Mount from a Kubernetes Secret.
+    disk_space:
+      pause_below_bytes: 536870912
+      resume_at_bytes: 1073741824
+    blobs:
+      object_bytes: 268435456  # 256 MiB, including archive headers
+      total_bytes: 2147483648 # 2 GiB, including reserved uploads
+      objects: 4096
+    retention:
+      history: 720h
+      logs: 168h
+      events: 720h
+      backups: 168h
+      interval: 10m
+    repositories:
+      - example/project
+    github_app_id: ''
+    github_app_key_file: ''
+    secret_key_file: '' # Enable with /encryption/key and a 32-byte forgelet-encryption Secret.
+    profiles:
+      homelab:
+        image: forgelet-executor:dev
+        cpu_request: 100m
+        memory_request: 128Mi
+        cpu_limit: '1'
+        memory_limit: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: forgelet-data
+  namespace: forgelet
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgelet
+  namespace: forgelet
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: forgelet
+  template:
+    metadata:
+      labels:
+        app: forgelet
+    spec:
+      serviceAccountName: forgelet-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: forgelet-server:dev
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/forgelet]
+          args: [--config, /config/forgelet.yaml]
+          env:
+            - name: FORGELET_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: forgelet-auth
+                  key: admin-token
+                  optional: true
+            - name: FORGELET_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: forgelet-auth
+                  key: webhook-secret
+                  optional: true
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: github
+              mountPath: /github
+              readOnly: true
+            - name: encryption
+              mountPath: /encryption
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: forgelet-data
+        - name: config
+          configMap:
+            name: forgelet-config
+        - name: tls
+          secret:
+            secretName: forgelet-api-tls
+        - name: github
+          secret:
+            secretName: forgelet-github
+            optional: true
+        - name: encryption
+          secret:
+            secretName: forgelet-encryption
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgelet
+  namespace: forgelet
+spec:
+  selector:
+    app: forgelet
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
