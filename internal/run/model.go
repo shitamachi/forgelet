@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// Plan size limits keep one executor claim response below the executor's
+// 1 MiB runtime response cap, and bound the total job bodies written per run.
+const (
+	MaxPlanBytes    = 900 << 10
+	MaxRunPlanBytes = 16 << 20
+)
+
 type State string
 
 const (

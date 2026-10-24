@@ -433,6 +433,28 @@ func (s *Server) manual(w http.ResponseWriter, r *http.Request) {
 
 var errRunExpired = errors.New("run history expired")
 
+// validatePlanSize keeps each claimed Plan below the executor's 1 MiB runtime
+// response cap and bounds a single run's persisted JSON. Plan.Event/Vars are
+// copied into every job, so a large webhook payload or matrix can otherwise
+// create runs that can never be claimed and can grow SQLite without limit.
+func validatePlanSize(plans []run.Plan) error {
+	total := 0
+	for _, plan := range plans {
+		data, err := json.Marshal(plan)
+		if err != nil {
+			return fmt.Errorf("encode plan for job %q: %w", plan.Name, err)
+		}
+		if len(data) > run.MaxPlanBytes {
+			return fmt.Errorf("job %q plan is %d bytes; limit is %d", plan.Name, len(data), run.MaxPlanBytes)
+		}
+		total += len(data)
+		if total > run.MaxRunPlanBytes {
+			return fmt.Errorf("workflow plans are %d bytes; limit is %d", total, run.MaxRunPlanBytes)
+		}
+	}
+	return nil
+}
+
 func (s *Server) createRun(ctx context.Context, e run.Event, path string, source []byte) (run.Run, error) {
 	e.WorkflowPath = path
 	id := stableID(e.DeliveryID, path)
@@ -468,6 +490,9 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	}
 	if len(plans) == 0 {
 		return run.Run{}, fmt.Errorf("%w: workflow has no runnable jobs", ErrWorkflow)
+	}
+	if err := validatePlanSize(plans); err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	for _, p := range plans {
 		if p.NeedsBuild() && s.cfg.Profiles[p.Profile].Build == nil {
@@ -512,6 +537,10 @@ func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 		p.RunID = id
 		p.JobID = stableID(id, j.ID)
 		plans = append(plans, p)
+	}
+	if err := validatePlanSize(plans); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
 	item := old
 	item.ID = id

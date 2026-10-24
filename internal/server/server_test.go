@@ -297,6 +297,22 @@ func (h *harness) webhook(delivery string, mutate func(map[string]string)) (int,
 	return h.request(http.MethodPost, "/webhooks/github", body, headers)
 }
 
+func TestCreateRunRejectsOversizedPlan(t *testing.T) {
+	h := newHarness(t, 1)
+	payload, err := json.Marshal(map[string]string{"padding": strings.Repeat("x", run.MaxPlanBytes)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := run.Event{DeliveryID: "oversized-plan", Repository: "me/repo", SHA: testSHA, Ref: "refs/heads/main", Name: "push", Payload: payload}
+	if _, err = h.server.createRun(t.Context(), event, ".github/workflows/ci.yml", []byte(testWorkflow)); !errors.Is(err, ErrWorkflow) {
+		t.Fatalf("oversized plan accepted or wrong error: %v", err)
+	}
+	runs, err := h.store.ListRuns(t.Context())
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("oversized run persisted: %+v %v", runs, err)
+	}
+}
+
 func TestAuthenticationAndStrictJSON(t *testing.T) {
 	h := newHarness(t, 1)
 	for _, path := range []string{"/api/runs", "/api/events", "/api/jobs/missing/logs"} {
