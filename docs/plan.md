@@ -1,6 +1,6 @@
 # 实施计划
 
-更新：2026-10-24。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
+更新：2026-10-25。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
 不使用 spec/accepted 审批，不安排独立基线、资源测量或审核阶段。
 用单测、集成测试、Testcontainers 随实现验证，完成后更新本页和 [status.md](status.md)。
 
@@ -103,18 +103,18 @@ GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/app
 - [x] **7.6 自动验证**：单测/HTTP/SQLite、浏览器与临时 k3s：会话/令牌/配置重启、改密撤销、回调重放/跨浏览器、App 授权复核与真实执行 Pod（旧 fixture 的自动授权错误由阶段 8 修正）；原 CI/CD 完整回归。
 - [x] **7.7 实际环境配置与部署**：经 owner 授权创建真实 OAuth App 和 Secret，部署 homelab session 模式。管理员/GitHub 登录、50 个账号仓库发现、重启保留与真实 push → 两级 CI/Checks/日志/产物通过；现有 CD 健康保持，实际证据与部署修复见 status。新真实仓库自动扩展 App 授权及组织批准未在本轮操作。
 
-## 阶段 8：仓库接入授权修复与页面重写（代码与自动验证完成）
+## 阶段 8：仓库接入授权修复与页面重写（代码、自动验证与 homelab 部署完成）
 
 - [x] **8.1 真实原因诊断**：只读 GitHub API 确认 yuki-project 为 admin、OAuth scopes 为 read:user/repo；独立 OAuth token 访问 App 安装接口被拒，不误报为仓库管理员权限不足。
 - [x] **8.2 授权流程修复**：移除不支持的 OAuth 安装授权调用，结构化返回待 GitHub 授权/安装/恢复/权限更新；复核前不改可信配置，拒绝过期版本、伪造仓库与错误绑定。
 - [x] **8.3 页面重写**：已接入仓库主视图、独立 CI/授权/最近运行状态；搜索筛选、停用、检查运行、管理与高级登记。添加弹窗按搜索展示并分页，账号过滤、权限提示、局部错误、刷新恢复待授权选择。
 - [x] **8.4 单测和浏览器**：Go race、真实 HTTP/SQLite、35 个 Vitest、13 组 Chromium、make verify 通过；fixture 不再假装支持错误令牌类型。
 - [x] **8.5 Testcontainers 回归**：全量 19 个场景通过，1020.446 秒；真实 k3s 验证待授权不启用、外部确认后实际 Pod、session/配置重启和原 CI/CD。工作台 4 组浏览器 26.0 秒、认证 1 组 8.0 秒，认证专项 86.19 秒；临时容器已清理。
-- [ ] **8.6 实际 homelab 更新**：本轮未更新实际集群；线上仍为阶段 7 镜像。新仓库 GitHub 授权变更需 owner 明确选择，不自动增加 App 范围。
+- [x] **8.6 实际 homelab 更新**：2026-10-25 部署含 review #1/#2 修复的 server/executor（amd64 digest 见 status）；健康、session、匿名 401、嵌入 UI 与备份/数据计数通过。该次部署未登录管理界面、未触发真实 CI，也未改变 GitHub App 授权范围。
 
 ## 接下来
 
-GitHub 自助接入和阶段 7 登录已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。下一批按实际需要实现 6.3b / 6.5；批量、rename 和后台同步继续按需实现。
+阶段 8 与 review #1/#2 修复已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。下一批按实际需要实现 6.3b / 6.5，并处理 status 中 review #3–#10 的可靠性/边界问题；批量、rename 和后台同步继续按需实现。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。

@@ -1,6 +1,6 @@
 # 项目总览：代码地图、运行流程与设计
 
-更新：2026-10-24。本文把**当前实现**串成一张可追踪的图：代码在哪里、一次运行怎么走、状态如何持久化、为什么这样取舍。
+更新：2026-10-25。本文把**当前实现**串成一张可追踪的图：代码在哪里、一次运行怎么走、状态如何持久化、为什么这样取舍。
 设计论证见 [architecture.md](architecture.md)，完成情况与验证记录见 [status.md](status.md)，后续任务见 [plan.md](plan.md)，
 Actions 边界见 [compatibility.md](compatibility.md)，安装与恢复操作见 [deployment.md](deployment.md)。
 
@@ -384,17 +384,22 @@ Run 状态由 jobs 聚合，不单独维护。全部 queued → queued；存在�
 当前文档记录（`docs/status.md` 阶段 8）：`make verify` 通过，35 个 Vitest、13 组 Chromium；
 全量 Testcontainers 19 个叶子场景通过。**这些是文档记录的历史运行结果，不等于本次会话重新跑过。**
 
-本次会话额外确认：`go build ./...`、`go vet ./...` 与 `go test ./internal/... ./cmd/...`（未加 `-race`）通过（当前工作区）。
+2026-10-25 实际部署：含 review #1/#2 修复的 server/executor 已更新到 homelab，1/1 Ready、0 restarts；
+`/healthz` 200、`/api/auth/session` 为 session 模式、匿名 `/api/runs` 401、嵌入 UI bundle 正常；
+部署前后 SQLite 快照均为 16 runs / 34 jobs / 1 admin。未触发新的真实 CI 运行。
+
+修复后额外确认：`go test -race ./...` 通过，`golangci-lint run --build-tags integration` 0 issues，
+`npm --prefix web run typecheck` 与 35 个 Vitest 通过。未重跑 `make verify`、Playwright 或 Testcontainers。
 
 ## 10. 当前边界与风险
 
 按影响排序：
 
-1. **工作区尚未提交。** 最后一个提交 `1b41037` 仍指向旧架构（v1-wave11）；当前单进程实现、文档重写和
-   旧实现删除都在工作区里（191 个已跟踪文件变更 + 93 个未跟踪条目）。按 `AGENTS.md` 不自动提交；
-   需要 owner 明确决定如何分批提交。
-2. **线上仍是阶段 7 镜像。** `plan.md` 8.6 未完成：阶段 8 的接入页/授权修复只在本机和临时 k3s 验证，
-   真实 homelab 集群没有升级；新仓库的 GitHub App 授权也未扩大。
+1. **实现只在工作分支。** 当前单进程实现和文档已提交到 `chore/homelab-reset-20261023` 并推送 `origin`，
+   但 `main` 仍指向旧架构；需要在 review 后创建 PR 并决定合并方式，避免长期分支漂移。
+2. **阶段 8 已部署，但没有新的真实 CI 运行。** 2026-10-25 已更新 server/executor 并验证健康、session、
+   匿名 401、UI 和备份数据；本批没有触发 push/manual 运行，也没有扩大 GitHub App 授权。
+   接入/首跑仍需在真实页面操作。
 3. **没有安装生命周期同步。** 6.5 未实现：没有 installation/installation_repositories webhook、后台校正、
    撤权后的排队/凭证清理；6.3b 的批量启用与 rename 自动迁移也未实现。
 4. **单点与调度延迟。** 单副本 Recreate；控制面不可用期间事件会堆积在 GitHub 重投/SQLite 中；

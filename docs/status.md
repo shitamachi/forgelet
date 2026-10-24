@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-24（Asia/Shanghai）。当前：**阶段 8 已实现仓库启用 403 根因修复与仓库接入页重写；make verify 通过（35 个 Vitest、13 组 Chromium）；全量 Testcontainers 19 个场景通过（1020.446 秒），含 4 组工作台与 1 组认证真实浏览器。真实 homelab 仍运行阶段 7 登录版，本轮没有更新集群或扩大 GitHub App 授权。**
+更新：2026-10-25（Asia/Shanghai）。当前：**阶段 8 已部署 homelab，线上为包含 review #1/#2 修复的 server/executor 镜像；健康、session、匿名 401、嵌入 UI 和备份/数据计数验证通过。本批未触发真实 CI 运行，也未扩大 GitHub App 授权。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 已交付
@@ -12,13 +12,24 @@
 - 正式 server/executor Dockerfile、最小 k3s 安装清单、race 单测、进程内集成与 Testcontainers 临时 k3s。
 - artifact/cache PVC 存储、按需 rootless BuildKit、GitOps direct/PR、Flux 健康观测、限定 image digest 回滚。
 - 旧实现已清理并保留仓库外完整快照；恢复位置见本页末尾。
+- 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证，剩余 review 项见下方。
 
-## 本轮：修复仓库启用 403 与重写接入页（阶段 8，代码与自动验证完成）
+## 本轮：阶段 8 部署与 review 修复（2026-10-25）
+
+- **提交与远端**：`2d808da`（单进程实现）、`9a79c4d`（文档重写）、`089f3d8`（continue-on-error 不再隐藏执行器错误）、`93d5d42`（Plan 大小上限）。分支 `chore/homelab-reset-20261023` 已推送 `origin`；`main` 尚未合并。
+- **review 修复**：所有 `Execute` 错误路径现在都携带非空 `Result.Error`，job `continue-on-error` 不再把执行器/协议错误转换为成功；创建和重跑 run 时校验 Plan 序列化大小（单 Plan 900 KiB、单 run 16 MiB），避免创建无法被 executor claim 的任务和 SQLite 无界增长。新增 executor、storage 和 server admission 回归。
+- **自动验证**：`go test -race ./...` 通过；`golangci-lint run --build-tags integration` 0 issues；当前前端 `tsc -b` 与 35 个 Vitest 通过。本批未重跑 `make verify`、Playwright 或 Testcontainers；本页第 8 阶段此前的 `make verify`/19 场景结果仍是其记录范围，不混称为本次运行。
+- **部署**：server `registry.shitamchi.com/forgelet/server@sha256:fbbd4fd1d3d5579eac306f807f7127829ca6fbc22a57323b37239801939893bf`，executor `registry.shitamchi.com/forgelet/executor@sha256:751bd3c6e346e4e58a4eba1123b57fb336af6fb4885d1da52f1901026ed2c373`，均构建为 linux/amd64。ConfigMap 中 2 处 executor digest 已更新；Deployment server digest 已更新；rollout 1/1 Ready、0 restarts，无遗留执行 Pod。旧 server digest 为 `sha256:27d3bf56eff5aa1320269fd2f5ef91daf49f9c12b6de13a3c3ff0161fc77b75d`，旧 executor 为 `sha256:e571477be78896227359587d6e218452eb5d66e9ea61ffb83b314a274114114f`，部署前 Deployment/ConfigMap 已保存。
+- **备份**：部署前保存 Deployment/ConfigMap，并生成带 `restore_required` 标记、`integrity_check=ok` 的 SQLite 快照（640 KiB；16 runs、34 jobs、1 admin）。PVC 上为 `/data/backup-manual-20261024T180905Z.db`，部署后另生成 `/data/backup-manual-post-20261024T183231Z.db`（同样 16/34/1）；本地证据目录 `/tmp/forgelet-deploy-20261024T180612Z/`。没有复制或输出 Secret 明文。
+- **实际验证**：从集群内访问公网入口，`/healthz` 返回 200，`/api/auth/session` 返回 `mode=session`、`github_enabled=true`，首页标题与嵌入 bundle 为当前构建；匿名 `/api/runs` 仍返回 401。未用管理员密码登录，未触发新的 GitHub push/manual CI 运行。
+- **剩余边界**：review #3–#10（Checks 空 public_url/404、永久 reconciliation 卡住、cancel grace、executor 1 分钟容忍、outbox 重试、rerun 禁用检查、同名新 ID 重绑、Flux path 校验等）尚未修复；GitHub App 授权范围未扩大。
+
+## 上批：修复仓库启用 403 与重写接入页（阶段 8 代码与自动验证）
 
 - **根因**：截图中的仓库管理员权限并未缺失。使用已有加密凭据做只读诊断：`GET /user` 为 200、scopes=`read:user, repo`；`GET /repos/shitamachi/yuki-project` 为 200 且 permissions.admin=true；`GET /user/installations` 明确拒绝独立 OAuth App token。旧实现把 OAuth token 用于 GitHub App 安装授权管理，fixture 却错误返回成功，导致真实新仓库启用时 403。此处是实现与测试假设错误，不能归因于用户权限。
 - **代码修复**：移除 OAuth 的安装授权调用；未授权时返回 HTTP 202 `authorization_required`，区分仓库待授权、未安装、暂停和权限更新，附服务端确定的操作链接；用户在 GitHub 确认后返回复核，验证通过再启用。待授权/失败/版本冲突不改变可信配置，不创建运行，不扩大 OAuth/App 范围。
 - **页面重写**：主视图只保留已接入仓库，CI 开关、授权和最近运行分别显示；搜索与状态筛选、停用/恢复、检查运行及管理菜单。新增仓库在独立弹窗搜索、选择、确认，每页最多 6 个结果，支持账号筛选和无权限/无结果/请求失败状态；打开弹窗才请求账号目录，不再在主页铺开全部仓库。刷新恢复待授权选择，错误就近显示。
-- **当前验证**：make verify 通过，Go race/HTTP/SQLite、35 个 Vitest、13 组 Chromium（最终 29.6 秒），包含旧工作台回归和新增授权等待/复核、刷新、50 仓库分页、无权限与移动布局。发现并修复新弹窗与旧 CSS 同名导致搜索框不可见的问题。全量 Testcontainers **19 个叶子场景通过，1020.446 秒**；工作台真实 Chromium 4 组 26.0 秒，认证真实 Chromium 1 组 8.0 秒，认证/重启专项 86.19 秒。授权前两次复核仍保持待接入；测试中单独模拟用户在 GitHub 确认后，真实 Go → SQLite 保存绑定 → 执行 Pod 成功；改密、session/OAuth 凭据与配置重启、原 Actions/BuildKit/GitOps/Flux/磁盘/清理回归全部通过。测试 OAuth 安装修改接口明确返回 403，外部确认通过仅存在于测试进程的本机桥接完成，产品未增加绕过授权的 API。临时容器和本机预览进程已清理。真实集群尚未更新，不将本机预览或受控 GitHub fixture 计为线上新仓库授权成功。
+- **当前验证**：make verify 通过，Go race/HTTP/SQLite、35 个 Vitest、13 组 Chromium（最终 29.6 秒），包含旧工作台回归和新增授权等待/复核、刷新、50 仓库分页、无权限与移动布局。发现并修复新弹窗与旧 CSS 同名导致搜索框不可见的问题。全量 Testcontainers **19 个叶子场景通过，1020.446 秒**；工作台真实 Chromium 4 组 26.0 秒，认证真实 Chromium 1 组 8.0 秒，认证/重启专项 86.19 秒。授权前两次复核仍保持待接入；测试中单独模拟用户在 GitHub 确认后，真实 Go → SQLite 保存绑定 → 执行 Pod 成功；改密、session/OAuth 凭据与配置重启、原 Actions/BuildKit/GitOps/Flux/磁盘/清理回归全部通过。测试 OAuth 安装修改接口明确返回 403，外部确认通过仅存在于测试进程的本机桥接完成，产品未增加绕过授权的 API。临时容器和本机预览进程已清理。该代码验证批次当时真实集群尚未更新；实际部署见本轮，不将本机预览或受控 GitHub fixture 计为线上新仓库授权成功。
 
 验证日志：`/tmp/forgelet-repositories-verify-current.log`、`/tmp/forgelet-repositories-k3s.log`；本机预览截图：`/tmp/forgelet-repositories-overview.png`、`/tmp/forgelet-repositories-picker.png`、`/tmp/forgelet-repositories-mobile.png`。本批不新增功能依赖，不自动提交或推送项目 Git。
 
