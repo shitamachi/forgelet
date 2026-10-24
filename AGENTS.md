@@ -1,122 +1,65 @@
 # AGENTS.md
 
-Guidance for AI coding agents (and humans) working on forgelet.
+forgelet 为我们自己的 k3s homelab 提供低常驻资源的独立 CI/CD。
+代码托管在 GitHub 等外部服务，GitHub Actions 兼容范围按实际使用逐步扩展。
 
-## What this project is
+## 当前工作方式
 
-forgelet is a Kubernetes-native CI/CD platform that executes GitHub Actions-compatible
-workflows. GitHub is only a source provider (webhooks, git, check runs via GitHub App);
-all scheduling and execution happen on Kubernetes. There are **no runners** — Kubernetes
-itself is the runner fleet.
+2026-10-23 起暂停 spec-driven 开发。**不创建 spec/plan 审批门禁，不要求 accepted 状态。**
+以后是否重新引入由项目 owner 决定；旧 specs 的批准和完成状态不适用于重启后的项目。
 
-Read before doing anything non-trivial:
+开始有实际影响的工作前读：
 
-1. `docs/architecture.md` — the authoritative architecture & module map.
-2. `specs/0001-platform-overview/spec.md` — the top-level spec; every feature must trace back to it.
-3. `docs/module-boundaries.md` — monorepo modules, ownership, and allowed dependency directions.
-4. `docs/conventions.md` — Go style, error handling, testing rules.
+1. `docs/status.md`：已经完成什么、验证结果、当前任务和问题。
+2. `docs/plan.md`：实施顺序、任务清单和各阶段完成条件。
+3. `docs/architecture.md`：当前设计与取舍。
+4. 修改 workflow 支持时再读 `docs/compatibility.md`。
 
-## Development workflow: spec-driven
+工作完成时同步更新状态与相应任务清单；设计或兼容范围变化时更新对应文档。
+小修复不需要新建文档。计划、代码实现、自动测试、真实集群验证必须分别说明，不能混称完成。
+当前已进入分阶段快速实现；不设独立基线审核或资源基准门禁。随实现运行单测、集成测试和 Testcontainers。
 
-We develop spec-first. **Do not write implementation code for a feature unless both its
-spec and plan are accepted.** The flow is:
+## 产品与设计边界
 
-```
-specs/NNNN-<slug>/
-├── spec.md     # WHAT & WHY: requirements, invariants, acceptance criteria
-├── plan.md     # HOW: technical design chosen for this spec (created after spec approval)
-└── tasks.md    # Implementation checklist with status markers
-```
+- Git 托管在外部服务；GitHub App 是第一个接入。不自建 Git 平台。
+- forgelet 自己接收事件、调度、保留日志和历史；不使用 GitHub Runner、ARC 或 Tekton 执行。
+- 目标形态：一个常驻 Go 控制面，SQLite + 单个数据 PVC，按需创建执行 Pod。
+- 当前不需要 CRD、独立 controller 服务、PostgreSQL、消息队列、Loki 或 MinIO。
+- 一个 job attempt 使用一个主 Pod，普通、JS、Composite steps 共享主容器和 workspace。
+- `runs-on` 匹配管理员配置的执行 profile；不承诺 GitHub 托管镜像中的所有工具。
+- Actions 支持必须有明确版本、输入和行为测试；未知字段/能力应给出诊断。
+- JS Actions 使用真实 Node 子进程；Go 内嵌 JS VM 不能代替 Node。
+- 持久化计划只含 secret 引用。执行 Pod 无 Kubernetes API 权限，不挂 Docker socket、hostPath 或 cluster-admin 凭证。
+- 镜像构建用按需 BuildKit；CD 优先通过托管 GitOps 仓库与 Flux 衔接。
+- 默认单控制面、可配置多任务并发（默认 4）、仅可信仓库；多租户、HA、完整 Actions 兼容不是当前目标。
 
-Rules:
+## 工程规则
 
-- One directory per spec, numbered `NNNN`, e.g. `0002-state-consistency-and-scheduler`.
-- `spec.md` states requirements in testable terms; it must not prescribe internals.
-- Spec and plan approval rules are defined in `specs/README.md`. An `accepted` spec
-  authorizes planning; product implementation requires both an `accepted` spec and an
-  `accepted` plan.
-- Implementation PRs reference the spec number in the branch name (`spec/0002-...`)
-  and update `tasks.md` as tasks complete.
-- When reality invalidates a spec, update the spec in the same PR — never let docs drift.
-- New top-level behaviors need a new spec; refactors don't.
+- Go >= 1.27，单 Go module；`net/http` + chi、`gopkg.in/yaml.v3`、按需使用 client-go。
+- 不预建空模块或抽象框架。新增依赖应对应眼前需求，记录明显的资源/运维成本。
+- `cmd/` 只做依赖装配；`internal/workflow` 保持纯逻辑；执行器不依赖 Kubernetes client 或数据库。
+- 依赖方向、拟议目录见 `docs/architecture.md`；不创建 `common/shared/helpers/utils` 包。
+- 用 `fmt.Errorf("...: %w", err)` 包装错误；无库内 panic、`context.Background()` 或 init 副作用。
+- Context 显式传递；后台工作可取消，时间与外部 I/O 可替换。
+- 快速分阶段交付，随功能运行单测 + 集成测试 + Testcontainers；不单独设基线审核/性能验收门禁。
+- Docker 仅用于 Testcontainers 开发测试，不进入产品执行路径。
+- 新行为有行为测试，修复有回归测试；优先 table-driven。工作流与调度核心覆盖率目标 ≥ 85%。
+- 重启恢复、幂等、安全和取消不能只用 happy-path 或 fake client 验证；需要真实 k3s 测试。
+- `make verify` 执行真实构建、race 单测/进程内集成、lint 和 generate。
+- `make test-integration` 用 Testcontainers 创建临时 k3s，验证实际安装清单与执行链；不读取用户 kubeconfig。
 
-## Repository layout
+## Git
 
-```
-cmd/            one main.go per binary: server, controller, executor
-api/            CRD types (api/v1alpha1: RunnerClass, WorkflowRun, JobRun)
-internal/       all non-public Go code (provider, workflow, scheduler, executor, ...)
-docs/           architecture & conventions
-specs/          spec-driven development artifacts
-hack/           dev scripts (kind cluster, codegen, lint)
-.github/        our own CI (we dogfood forgelet, but until it can bootstrap itself use plain GH Actions)
-```
+- 默认分支 `main`；工作分支 `feat/...`、`fix/...`、`chore/...`。
+- Conventional Commits；保持变更可独立检查。
+- 清理旧内容前保护未提交和未跟踪文件；不自动提交、推送或操作实际集群。
+- 旧实现已经留有 Git 历史与仓库外完整快照，恢复位置见 `docs/status.md`。
 
-forgelet is a **modular monorepo**. It starts with one Go module and several binaries;
-package boundaries, not extra `go.mod` files, enforce separation. Add another Go module
-only when a component needs independent versioning, distribution, or dependency policy;
-if that happens, manage local development with a checked-in `go.work` file.
 
-Nothing under `internal/` may be imported from outside the Go module. Within the module,
-follow `docs/module-boundaries.md`; an `internal/` path is not permission to create arbitrary
-cross-module imports. Do not add generic `common`, `shared`, `helpers`, or `utils` packages.
+<claude-mem-context>
+# Memory Context
 
-## Tech stack (fixed decisions — do not relitigate in PRs)
+# $CMEM forgelet 2026-10-24 12:57am GMT+8
 
-| Concern      | Choice |
-|--------------|--------|
-| Language     | Go (>= 1.27) |
-| Repository   | Modular monorepo; one Go module initially |
-| HTTP         | `net/http` + chi |
-| Internal RPC | ConnectRPC |
-| Database     | PostgreSQL (history), etcd/CRDs (active state only) |
-| K8s          | controller-runtime + client-go |
-| YAML         | gopkg.in/yaml.v3 |
-| Expression   | own engine, informed by act's exprparser (no hard dependency on act) |
-| Logs         | executor → structured JSON → Loki |
-| Artifacts/cache | S3 / MinIO |
-| Image build  | BuildKit (never the Docker socket) |
-
-Architectural invariants (violations must be flagged in review):
-
-- No Docker socket, no DinD, no GitHub Runner, no ARC, no Tekton on the core execution path.
-- One JobRun owns one primary execution Pod; ordinary, JavaScript, composite, and builtin
-  steps share its main container. Service Pods and Docker Action Step Pods are explicit P2 exceptions.
-- Executor pods get no Kubernetes API-authorized credentials
-  (`automountServiceAccountToken: false`). A separately projected, audience-bound,
-  short-lived workload identity may authenticate only to forgelet.
-- CRDs never carry secrets or full execution plans — only plan ID + digest.
-- Persisted Plans contain secret references, never resolved plaintext secret values.
-- `runs-on` means RunnerClass, not a runner machine.
-- PostgreSQL is authoritative for durable scheduling/history; CRDs are authoritative for
-  observed active Kubernetes execution. Cross-store writes must be idempotently reconciled.
-
-## Commands
-
-```bash
-make build      # build all binaries
-make test       # unit tests
-make lint       # golangci-lint
-make generate   # codegen (CRDs, mocks)
-make verify     # build + test + lint + generate
-make kind-up    # local dev k3s/kind cluster with deps
-```
-
-The build/test/lint/generate targets must remain green even during the docs-only phase.
-`kind-up` may remain an explicit unavailable target until its accepted implementation spec lands.
-
-## Coding rules (summary — details in docs/conventions.md)
-
-- Package errors via `fmt.Errorf("...: %w", err)`; no `panic` outside `main`/tests.
-- Table-driven tests; target coverage on `internal/workflow/**` and `internal/run/scheduler/**` ≥ 85%.
-- All new behavior lands with tests; bug fixes land with a regression test.
-- Public types in `api/` need `+k8s:` deep-copy gen comments and pass CRD schema gen.
-- Contexts are passed explicitly; no `context.Background()` inside libraries.
-- No `init()` side effects; wire dependencies in `main`.
-
-## Git conventions
-
-- Default branch: `main`.
-- Conventional Commits (`feat:`, `fix:`, `docs:`, `spec:`, `refactor:`, `test:`, `chore:`).
-- Branches: `spec/NNNN-short-desc` for feature work, `fix/...`, `chore/...`.
-- Keep commits small; each must build and pass tests on its own.
+No previous sessions found.
+</claude-mem-context>
