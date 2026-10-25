@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-25（Asia/Shanghai）。当前：**阶段 8 已部署 homelab，线上为包含 review #1/#2 修复的 server/executor 镜像；健康、session、匿名 401、嵌入 UI 和备份/数据计数验证通过。本批未触发真实 CI 运行，也未扩大 GitHub App 授权。**
+更新：2026-10-25（Asia/Shanghai）。当前：**阶段 9 的 Review 修正与自动验证已完成（make verify、全量 20 个 k3s 场景及最新镜像 needs 大小专项均通过）；线上仍为阶段 8 + review #1/#2 镜像，本轮未部署、未操作真实集群或 GitHub。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 已交付
@@ -14,7 +14,21 @@
 - 旧实现已清理并保留仓库外完整快照；恢复位置见本页末尾。
 - 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证，剩余 review 项见下方。
 
-## 本轮：阶段 8 部署与 review 修复（2026-10-25）
+## 本轮：评估并修正外部 Review（阶段 9）
+
+附件评审基于更早的重写版本。开始本轮时工作区干净，#1 COE 错误与 #2 序列化大小限制已经由 089f3d8 / 93d5d42 修复；保留已有实现，同时补上调度时合入 needs 输出后的大小复查：超限在创建 Pod 前明确失败，不能被 COE 吞掉，也不阻塞后续任务。当前保留单 Plan 900 KiB、创建时 run 合计 16 MiB 的限制，并增加真实 executor → HTTP → SQLite 的基础设施失败回归。
+
+- **已实现 #3/#7**：空 public_url 不生成相对详情链接；已存 Check ID 的 GET 404 后按本 App/SHA/external_id 重新查找/创建并 CAS 替换。事件/Checks 持久化重试计数与到期时间，2 秒起指数退避至 5 分钟，连续 12 次后暂停并保留诊断，后续正常项可推进；新增受保护的管理员重试 API 与详情页 Checks 重试入口，不重跑 job。
+- **已实现 #4/#5/#6**：运行时永久错误立即 interrupted，临时错误有持久化退避和 12 次预算，释放并发；取消删除失败保留独立预算。Pod grace 改 45 秒、最终 flush 保持 20 秒；修正终止 Pod 的身份校验，允许原 UID 收尾，禁止再 claim/取凭据。控制面中断容忍默认 5 分钟，可按 profile 配置，最大 1 小时。
+- **已实现 #8/#9/#10**：rerun 检查仓库启用和当前 profile/BuildKit 能力；同名新 repository ID 返回冲突；Flux spec.path 必须匹配目标目录。
+- **其他采纳**：旧零 timeout 计划 deadline 1320 秒、身份比较 JobID、普通步骤过滤内部传输环境变量、缺失/错误加密主密钥阻止启动、运行列表在 SQL 移除执行大字段、token/open/session 请求规则文档对齐。
+- **明确暂缓/保留**：run 级共享 event/vars 存储改造、GHE clone 配置、可信代理与登录限速模型后续按实际需要实现；blob 目录未知文件继续 fail-closed。没有新增产品依赖、服务或审批流程。
+- **自动验证**：make verify 已通过：Go 构建/race、HTTP/SQLite、lint 0 issues、generate、TypeScript/格式检查、35 个 Vitest、14 组 Chromium（最终 32.6 秒）；另补的 YAML 时长配置 race 回归通过。全量 Testcontainers **20 个叶子场景通过，1046.235 秒**；真实工作台 Chromium 4 组 48.4 秒、认证 Chromium 1 组 8.0 秒。覆盖 BuildKit/GitOps direct/PR/Flux 部署与回滚、真实 Node Actions/工具链、会话与配置重启、磁盘、日志历史清理，临时容器已全部清理。全量测试启动后追加的 needs 大小 guard 使用最新镜像另跑下述专项，不混称该次全量已包含此新增场景。首次停机测试遇到测试脚本复用旧 Scale resourceVersion 的冲突，已改为恢复前重新读取，清理旧临时容器后重跑，不记为产品通过。临时 k3s 新增 70 秒控制面离线后原 UID 恢复、真实 Pod 标签漂移不接管/删除、取消结果收尾断言；调度合入超大 needs 输出另用最新镜像专项验证通过（Testcontainers 104.174 秒，实际场景 4.47 秒）：上游真实执行 Pod 生成输出，join 无 Pod 且显式 failure，COE 不吞错、下游 skipped、独立任务 success。schema v5 → v6 迁移与待处理工作保留有独立回归。
+- **实际部署**：本轮未请求且未执行。schema 已升 v6，未来部署前需保留 v5 备份和原密钥；旧程序不能直接读取 v6 数据库。没有自动提交或推送。
+
+验证日志：`/tmp/forgelet-review-verify-latest.log`、`/tmp/forgelet-review-integration-final.log`、`/tmp/forgelet-review-integration-size.log`；升级/重试行为见 architecture 和 deployment。
+
+## 上批：阶段 8 部署与 review #1/#2 修复（2026-10-25）
 
 - **提交与远端**：`2d808da`（单进程实现）、`9a79c4d`（文档重写）、`089f3d8`（continue-on-error 不再隐藏执行器错误）、`93d5d42`（Plan 大小上限）。分支 `chore/homelab-reset-20261023` 已推送 `origin`；`main` 尚未合并。
 - **review 修复**：所有 `Execute` 错误路径现在都携带非空 `Result.Error`，job `continue-on-error` 不再把执行器/协议错误转换为成功；创建和重跑 run 时校验 Plan 序列化大小（单 Plan 900 KiB、单 run 16 MiB），避免创建无法被 executor claim 的任务和 SQLite 无界增长。新增 executor、storage 和 server admission 回归。
@@ -22,7 +36,7 @@
 - **部署**：server `registry.shitamchi.com/forgelet/server@sha256:fbbd4fd1d3d5579eac306f807f7127829ca6fbc22a57323b37239801939893bf`，executor `registry.shitamchi.com/forgelet/executor@sha256:751bd3c6e346e4e58a4eba1123b57fb336af6fb4885d1da52f1901026ed2c373`，均构建为 linux/amd64。ConfigMap 中 2 处 executor digest 已更新；Deployment server digest 已更新；rollout 1/1 Ready、0 restarts，无遗留执行 Pod。旧 server digest 为 `sha256:27d3bf56eff5aa1320269fd2f5ef91daf49f9c12b6de13a3c3ff0161fc77b75d`，旧 executor 为 `sha256:e571477be78896227359587d6e218452eb5d66e9ea61ffb83b314a274114114f`，部署前 Deployment/ConfigMap 已保存。
 - **备份**：部署前保存 Deployment/ConfigMap，并生成带 `restore_required` 标记、`integrity_check=ok` 的 SQLite 快照（640 KiB；16 runs、34 jobs、1 admin）。PVC 上为 `/data/backup-manual-20261024T180905Z.db`，部署后另生成 `/data/backup-manual-post-20261024T183231Z.db`（同样 16/34/1）；本地证据目录 `/tmp/forgelet-deploy-20261024T180612Z/`。没有复制或输出 Secret 明文。
 - **实际验证**：从集群内访问公网入口，`/healthz` 返回 200，`/api/auth/session` 返回 `mode=session`、`github_enabled=true`，首页标题与嵌入 bundle 为当前构建；匿名 `/api/runs` 仍返回 401。未用管理员密码登录，未触发新的 GitHub push/manual CI 运行。
-- **剩余边界**：review #3–#10（Checks 空 public_url/404、永久 reconciliation 卡住、cancel grace、executor 1 分钟容忍、outbox 重试、rerun 禁用检查、同名新 ID 重绑、Flux path 校验等）尚未修复；GitHub App 授权范围未扩大。
+- **当时剩余边界（本轮修正见阶段 9）**：review #3–#10（Checks 空 public_url/404、永久 reconciliation 卡住、cancel grace、executor 1 分钟容忍、outbox 重试、rerun 禁用检查、同名新 ID 重绑、Flux path 校验等）尚未修复；GitHub App 授权范围未扩大。
 
 ## 上批：修复仓库启用 403 与重写接入页（阶段 8 代码与自动验证）
 

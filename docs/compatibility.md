@@ -40,13 +40,17 @@ Fork PR 忽略且不持久化执行事件；没有 merge SHA 的同仓库 PR 明
   聚合结果传播失败/取消/跳过，outputs 合并；同名 output **按 matrix 展开索引较大的值覆盖**，不依赖完成顺序。
   需要不同变体的所有输出时使用不同 output 名；此覆盖顺序是 forgelet 的明确规则。
 - 普通失败后默认 steps 和依赖 job 跳过；failure/always 分支仍可执行，清理成功不抹掉失败。
-  跳过 job 不创建 Pod，全部跳过的 run 保持 skipped。重跑生成新 ID，并清空旧 needs 结果快照。
+  跳过 job 不创建 Pod，全部跳过的 run 保持 skipped。重跑生成新 ID，并清空旧 needs 结果快照；重新检查仓库是否启用、当前 profile 是否存在及 BuildKit 能力，不绕过停用配置。
 - step/job continue-on-error 支持布尔或返回布尔的表达式，仅忽略普通非零退出。step outcome 保留原始结果，
   conclusion 为容错后的结果；job API 的 `state` 为结论、`result.state` 保留原始失败。超时和基础设施错误不能被吞掉。
 - 单 step 超时仍可执行后续 failure/always 清理，但 job 保持 timed_out。整个 job 超时或显式取消停止新代码，
   不再启动该 job 的清理 step 或 Action post；取消整个 run 也取消排队 job。这与 GitHub 的取消流程有差异。
 - job outputs 在 steps 结束后求值，支持显式 steps 和直接 needs；不支持 env。每组最多 100 项/64 KiB，
   全部 step outputs 合计限 64 KiB；含注册 mask 的值不发布到历史或下游。
+
+单 Plan 序列化限制为 900 KiB，创建时所有 Plan 合计最多 16 MiB；调度合入 needs 输出后再次检查单 Plan 限制，超限在创建 Pod 前失败并保留诊断，COE 不会忽略。
+
+执行器默认容忍临时控制面中断 5 分钟，可由管理员 profile.control_plane_timeout 调整，最大 1 小时；不会因中断自动重新执行 job。这个窗口不替代 workflow timeout，也不延长结束后的 20 秒最终上传期限。Pod 终止宽限为 45 秒，原 Pod 可在终止中上传最后日志/结果；超出收尾期限仍可能 interrupted。控制面的永久运行时拒绝或连续 12 次临时失败会终止 attempt，不能被 continue-on-error 吞掉。
 
 ## 表达式与求值时间
 

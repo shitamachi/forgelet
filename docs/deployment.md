@@ -73,7 +73,7 @@ sudo k3s ctr images list
 ## TLS 与凭证
 
 安装清单默认 `admin_access: session`：首次启动初始化 admin，先用初始密码登录，再在账号页面关联 GitHub。完整配置见本页“管理员与 GitHub 登录”。显式 open 继续作为开发/已有内网部署的兼容模式。
-管理入口面向自己的内网/VPN；公网 Ingress 仍只转发 `/webhooks/github`。写请求需要 `Content-Type: application/json`，浏览器必须同源。
+管理入口面向自己的内网/VPN；公网 Ingress 仍只转发 `/webhooks/github`。session/open 模式的管理写请求需要 `Content-Type: application/json`，浏览器必须同源。旧 token 模式需要显式 Bearer；只读 Basic 不能授权写入。
 反向代理应保留 Host，`public_url` 填入实际内部管理域名（用于同源判断和 Checks 详情链接）。
 已有部署省略此项时仍使用 token 模式；正式 Web 可显式切换 session 并配置正确 public_url，初次启动再初始化 admin。
 需要继续 token API 的部署可设 `admin_access: token`，保留至少 16 字符的 `FORGELET_ADMIN_TOKEN`；前端不提供 token 输入；账号登录使用 session 模式。
@@ -138,9 +138,10 @@ kubectl -n forgelet create secret generic forgelet-auth \
 | 配置 | 设置 |
 |---|---|
 | `repositories` | 允许执行的 `owner/repo`，大小写与 GitHub payload 一致 |
+| `profiles.homelab.control_plane_timeout` | 临时控制面中断容忍窗口，例如 `5m`；默认 5 分钟，最大 1 小时 |
 | `profiles.homelab.image` | 已导入或可以拉取的执行镜像；workflow 使用 `runs-on: homelab` |
 | `max_parallel` | 默认 4，按集群余量调整；starting/running 都占额度 |
-| `public_url` | 用户打开 Checks 详情时访问的地址 |
+| `public_url` | 用户打开 Checks 详情时访问的地址；token/open 可省略，此时 Checks 不带详情链接；session 必填 |
 | `internal_url` / TLS / CA | 与上节 Service 和证书一致 |
 | `github_app_id` / `github_app_key_file` | 手动模式都设为 `''`；接 GitHub 时同时填写 |
 | `secret_key_file` | 不启用 secrets 时留空；启用后填 `/encryption/key`，密钥只挂 server |
@@ -251,7 +252,7 @@ forgelet_api -X POST "https://localhost:8443/api/runs/$FORGELET_RUN_ID/cancel"
 forgelet_api -X POST "https://localhost:8443/api/runs/$FORGELET_RUN_ID/rerun"
 ```
 
-重跑只接受终态 run，创建新 run/job ID 并保留固定 SHA。日志 JSON 每页最多 256 条，下一页的 `after`
+重跑只接受终态 run，重新检查仓库启用状态、当前 profile/BuildKit 能力，创建新 run/job ID 并保留固定 SHA。GET /api/runs 为轻量列表，省略执行 payload、steps、变量和详细结果；完整计划与结果通过 GET /api/runs/{id} 获取。日志 JSON 每页最多 256 条，下一页的 `after`
 使用上页最后的 `seq`；SSE 也支持该游标。Web 工作台在 `/`，运行详情在 `/runs/<id>`，支持操作与完整日志。
 `GET /api/jobs/<id>/logs/download` 下载全部日志，日志过期返回 410。`GET /api/events` 查看 webhook/编译诊断。
 以上 curl 示例用于 open 模式；旧 token 模式另加 `Authorization: Bearer <token>`。
@@ -605,8 +606,22 @@ App 第一次进入新账号/组织仍需安装；组织审批/策略不允许�
 
 会话通过 Secure/HttpOnly/SameSite Cookie 保存，7 天绝对到期；管理写请求仍要求同源 JSON。旧 `FORGELET_ADMIN_TOKEN` 在 session 模式不能绕过登录；脚本客户端可使用 Cookie jar 登录，不能把 OAuth token 或密码放进 URL。执行器 workload identity 和 GitHub webhook HMAC 始终独立。
 
-认证新增 SQLite schema v5（管理员哈希、会话摘要、一次性 flow）。OAuth token/refresh token 使用主密钥加密；没有配置 `secret_key_file` 时，server 在 PVC 创建 `auth-encryption.key`（0600）。备份 SQLite 之外，需备份该 key 或已配置的 Kubernetes Secret。显式备份恢复会撤销恢复出的所有登录 session 和 OAuth flow。升级前保留 v4 数据库备份；旧 v4 server 不能直接读取 v5 数据库，回退需使用升级前备份。
+认证功能引入 SQLite schema v5（管理员哈希、会话摘要、一次性 flow），当前版本已追加 v6 重试元数据。OAuth token/refresh token 使用主密钥加密；没有配置 `secret_key_file` 时，server 在 PVC 创建 `auth-encryption.key`（0600）。备份 SQLite 之外，需备份该 key 或已配置的 Kubernetes Secret。显式备份恢复会撤销恢复出的所有登录 session 和 OAuth flow。升级前保留当前运行库备份；旧版本 server 不能读取更新的 schema，回退需使用对应的升级前备份。
 
 认证验证命令仍为 `make verify` / `make test-integration`，并可用 `go test -tags=integration ./test/integration -run 'TestK3sConcurrentExecution/administrator' -count=1 -v -timeout 15m` 只跑临时 k3s 的认证专项。测试使用受控 GitHub OAuth/API fixture，真实账号配置与实际集群部署另行记录。
 
 2026-10-24 的 homelab 已按 session 模式部署，真实 OAuth 关联、GitHub 再登录、50 仓库发现和重启后真实 push 通过，镜像/快照/操作证据见 [status.md](status.md)。初始化 admin 密码保存在 `/data/initial-admin-password`，可按本节命令在自己的终端读取；已关联的 shitamachi 账号可直接 GitHub 登录。
+
+
+## 阶段 9：重试、收尾与升级
+
+本次 schema 升级为 v6，增加事件/Checks 重试元数据。部署前保存升级前 SQLite 备份与原加密主密钥；旧 v5 程序不能直接打开 v6 数据库，回退需使用升级前备份并按原恢复隔离流程处理，不能只回退镜像。已有 GitHub 凭据时丢失或换错 auth-encryption.key 将阻止启动；恢复原密钥后再启动。
+
+事件拉取/workflow admission、Checks 回写使用 2 秒起步、最多 5 分钟的指数退避，连续失败 12 次后暂停，重启保留退避时间。事件在 GET /api/events 保留最终 error，Checks 在 job.check_error 保留诊断，运行详情页可点击“重新回写 Checks”。管理员可用已登录同源 JSON 客户端请求：
+
+- POST /api/runs/{runID}/checks/retry：重置该 run 的回写预算，不重跑执行。
+- POST /api/events/{deliveryID}/retry：重新处理仍保留 payload 的失败事件；已有 run 的 delivery/workflow 唯一键继续防止重复执行。
+
+运行时永久拒绝/所有权冲突立即结束对应 attempt；临时创建、观测或取消删除失败最多重试 12 次，释放并发并留下诊断，不自动重跑 shell。外来 Pod 不删除，需要管理员处理冲突。profile.control_plane_timeout 默认 5m，配置为时长字符串；控制面中断超过该窗口仍会停止执行。最终 flush 只有 20 秒，Pod grace 为 45 秒，不能把 5 分钟中断容忍误读成任务结束后的无限等待。
+
+登录限速按直接连接的 RemoteAddr，每分钟最多 6 次。代理共用源地址时同一地址共享限额；当前不信任转发头，尚无 trusted-proxy 配置。blob 数据目录由程序独占；未知文件会使启动失败，不要在其中写入 Finder 元数据或其他文件。

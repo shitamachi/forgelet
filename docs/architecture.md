@@ -96,7 +96,7 @@ Vite 产物通过 `internal/webui` 的 `go:embed` 编入原控制面，Node/npm 
 - 静态资源使用内容哈希与长期缓存，入口 HTML 不缓存；未知 API/内部路径不会 fallback 到 HTML。启用 CSP、nosniff 和 frame-ancestors，日志以文本呈现。
 
 阶段 4–6 初版使用 `admin_access: open`；阶段 7 按 owner 要求新增管理员/session/GitHub 登录，新安装显式选择 session。已有 open 配置仅用于可信内网/VPN 或开发环境；
-浏览器写请求需同源且使用 JSON，跨站 Origin / Fetch Metadata 和表单写请求被拒绝，不启用 CORS。
+session/open 模式的管理写请求需同源且使用 JSON，跨站 Origin / Fetch Metadata 和表单写请求被拒绝，不启用 CORS。旧 token 模式要求显式 Bearer，不使用 Cookie 授权写入，不额外套用浏览器同源检查。
 API token 模式作为已有部署兼容项保留，省略 `admin_access` 时仍是 token 模式，升级不会自动取消现有保护。
 Web 工作台使用 session Cookie 登录，已有 open 模式继续兼容，不在浏览器保存 admin token；GitHub webhook HMAC 和 executor workload identity 始终独立校验。
 
@@ -147,7 +147,7 @@ GitHub App 私钥、webhook secret、加密主密钥、执行 profile 和基础�
 - 匿名只访问登录状态、密码登录、OAuth 启动/回调、静态 bundle 和健康探针；管理 API 全部要求有效 session，不接受旧 Bearer token 作为旁路。写请求同源 JSON 校验继续生效。密码登录按真实远端地址每分钟最多 6 次，不信任客户端提供的转发 IP。
 - 使用独立 GitHub OAuth App 的 `read:user repo` 授权做账号登录与用户仓库发现。初次关联须本地管理员登录；登录回调以 GitHub ID 匹配已关联管理员，不能将第一个 GitHub 访问者自动提升为管理员。没有按用户名/email 自动合并身份。
 - OAuth 使用随机 state + 浏览器绑定 Cookie + S256 PKCE，关联 flow 另绑定发起 session；flow 在网络兑换之前原子消费，拒绝超时/重放/跨浏览器/已退出的关联回调。服务端固定回调和返回路径，不接受任意跳转。凭据兑换、身份核对和 API 都有超时且不跟随跨站重定向；错误不返回远端响应体或 token。
-- OAuth token bundle 使用 AES-GCM 和独立 AAD 加密。优先复用已配置的 32-byte 主密钥，否则在 PVC 创建 `auth-encryption.key`（0600）；后者需随 PVC 备份，不能仅备份 SQLite。过期前按 refresh token 更新并重新核对 GitHub ID；授权撤销或无法刷新时要求重新连接。
+- OAuth token bundle 使用 AES-GCM 和独立 AAD 加密。优先复用已配置的 32-byte 主密钥，否则在 PVC 创建 `auth-encryption.key`（0600）；后者需随 PVC 备份，不能仅备份 SQLite。已有加密 GitHub 凭据时，该文件丢失或密钥无法解密凭据会阻止启动，不能静默生成替代密钥。过期前按 refresh token 更新并重新核对 GitHub ID；授权撤销或无法刷新时要求重新连接。
 - Connections 主视图只显示已经登记的仓库，分别呈现 CI 开关、GitHub 授权和最近运行。添加仓库使用独立弹窗：打开时才读取 OAuth `/user/repos`，搜索后展示每页 6 个结果并可筛选账号。启用前重新读取用户管理权限及本 App 权威目录；尚未授权、安装缺失/暂停或权限不足时返回 HTTP 202 `authorization_required` 和服务端生成的 GitHub 操作地址，不改变可信配置。用户在 GitHub 完成授权后明确点击复核，只有目录确认 repository ID/name/installation/权限后才 CAS 保存。选择的待授权 repository ID 可保存在浏览器 sessionStorage 以便刷新继续，不能作为可信授权证据。
 - **2026-10-24 修正**：独立 OAuth App 的 `repo` token 不能用于修改 GitHub App installation，移除此前错误的自动授权调用。GitHub 登录用于身份与仓库发现，安装仓库授权仍由 GitHub 确认；没有引入 PAT、放宽为所有仓库或以 OAuth token 替代执行凭据。GitHub App 继续负责集中 webhook、限定仓库的短期执行凭据、Checks 与原 CD，OAuth token 不下发给 Pod。
 - App 尚未安装于新组织或组织策略阻止操作时，明确提示一次性安装/批准；OAuth 登录不会绕过组织策略。对已有 App 的仓库授权即接通集中 webhook，无需重复申请另一组 repository webhook。范围同步/批量/rename 仍按阶段 6 后续计划推进。
@@ -188,7 +188,7 @@ API 每次返回最多 256 块，按 `after` 续读；SSE 支持断点。Web 持
 保留事件 delivery 身份和 run 唯一键的精简去重记录，旧 webhook 不会因历史清理而再执行。
 备份只删除本程序命名的过期普通快照文件，不删除活动数据库、临时文件、目录或符号链接。
 
-SQLite schema 在事务中自动从 v1/v2/v3/v4 升级到 v5；v3 增加仓库 settings，v4 增加带 CAS 版本的 CD 投递记录，v5 增加单管理员、会话摘要和有时限 OAuth flow，旧 run 计划仍可读取。新库启用 incremental auto-vacuum，清理后有界回收；旧库删除页可复用，
+SQLite schema 在事务中逐级升级到 v6；v3 增加仓库 settings，v4 增加带 CAS 版本的 CD 投递记录，v5 增加单管理员、会话摘要和有时限 OAuth flow，v6 增加事件/Checks 的重试计数、下次尝试时间和索引，旧 run 计划仍可读取。新库启用 incremental auto-vacuum，清理后有界回收；旧库删除页可复用，
 不会自动 full VACUUM 重写数据库，也不保证立即缩小文件。去重元数据继续保留。
 
 控制面每个调度 tick 及创建执行 Pod 前，通过 `statfs(data_dir)` 检查当前进程可用字节（`Bavail`，不含特权保留块）。
@@ -267,3 +267,20 @@ limit 1 CPU/1Gi；PVC 10Gi。它们是可修改的配置，不是测量结果，
 | `deploy` / `test/integration` | 安装清单 / Testcontainers 临时 k3s 集成测试 |
 
 依赖方向为 `cmd → application/adapters → domain`。不创建空模块或 common/shared/utils 包。
+
+
+## Review 可靠性修正（阶段 9）
+
+事件和 Checks 待发送记录采用持久化退避：首次失败延迟 2 秒，指数增长至最多 5 分钟，连续失败 12 次后暂停自动投递并保留最后诊断。查询只选到期记录，按下次尝试时间排序，每批 100 条；队首失败后会让出位置。事件仍保留 delivery 去重身份，重试不重跑已经创建的 workflow。Checks 的尝试预算按 job 状态变化重置，失败不改变 CI 执行结果；管理员可以重新请求回写，详情页显示独立的回写错误。手动重试不清除已有 run 去重键。
+
+Checks 无 public_url 时省略 details_url。已保存的远端 ID 返回 404 后，重新按 commit SHA / external_id / 本 App 查找或创建，使用旧 ID 的 CAS 更新本地绑定；403 或身份不匹配不会触发重新创建。
+
+运行时区分临时 API/传输错误与永久拒绝、无效配置和 Pod 所有权冲突。永久错误立即 interrupted，临时错误持久化退避，连续 12 次后 interrupted，取消请求则 cancelled；释放并发后仍只按已记录 UID 回收本任务 Pod。成功观测恢复后重置临时失败计数，取消删除失败不会因一次成功 GET 重置计数。外来标签、SA 或 UID 不匹配的 Pod 不接管、不删除、不重新执行。
+
+执行 profile 可配置 control_plane_timeout，默认 5 分钟、最大 1 小时；用于执行器上传/控制轮询的临时故障容忍，明确取消和永久身份错误不等待该窗口。shell 仍受 job/step timeout 约束。最终日志/结果上传保持独立的 20 秒有界收尾，Pod 终止宽限为 45 秒；若收尾时控制面仍不可用，不能保证完整结果，保留 interrupted 诊断。终止中的同一 UID Pod 可上传日志/结果，不能领取计划或获取新凭据。零 timeout 的旧计划按 20 分钟执行加 2 分钟 Pod 余量处理。内部 FORGELET_* 和传输定位变量不再继承到普通步骤；这不构成对可信代码的额外沙箱。
+
+rerun 重新校验仓库启用状态、当前执行 profile 和 BuildKit 能力，仍使用原固定 SHA 和变量快照。同名仓库的非零 GitHub ID 变化返回冲突，要求显式移除旧登记再接入，避免继承旧配置。Flux Kustomization 的 spec.path 规范化后必须等于目标文件所在目录，不能仅凭相同 revision、inventory 和镜像判定部署成功。
+
+GET /api/runs 在 SQLite 查询时移除计划的 event/steps/env/vars/inputs/needs_context 及结果 steps/outputs，再解码为列表摘要；GET /api/runs/{id} 和内部 claim 仍返回完整数据。当前继续使用单计划 900 KiB、创建时每 run 合计 16 MiB 的入库限制。调度合入 needs 输出后再次检查单计划上限，超限的 job 在创建 Pod 前失败并给出诊断，不被 COE 忽略；事件/变量改为 run 级共享引用尚未实施。
+
+本批不扩大 GitHub Enterprise clone 支持，不引入可信代理配置。登录限速仍依据直接 RemoteAddr，代理聚合地址会共享每分钟预算；不能直接信任 X-Forwarded-For。blob 目录遇到未知文件继续阻止启动，避免静默吞掉数据目录异常；该目录仅供程序管理，不应放 .DS_Store 等杂项。
