@@ -65,29 +65,21 @@ export function repositoryState(
   }
 }
 
-export function repositoryPage<T extends GitHubRepository>(
+export const REPOSITORY_BATCH = 20
+
+// The picker always lists the account, with search and owner as filters.
+// Rendering is windowed so a large account can load more on scroll.
+export function repositoryList<T extends GitHubRepository>(
   repos: T[],
   search: string,
   owner: string,
-  page: number,
-  size = 6,
 ) {
   const text = search.trim().toLowerCase()
-  const filtered = text
-    ? repos
-        .filter(
-          (r) =>
-            r.full_name.toLowerCase().includes(text) &&
-            (owner === 'all' || r.full_name.split('/')[0] === owner),
-        )
-        .sort((a, b) => a.full_name.localeCompare(b.full_name))
-    : []
-  const pages = Math.max(1, Math.ceil(filtered.length / size))
-  const current = Math.max(0, Math.min(page, pages - 1))
-  return {
-    rows: filtered.slice(current * size, (current + 1) * size),
-    total: filtered.length,
-    pages,
-    current,
-  }
+  return repos
+    .filter(
+      (r) =>
+        (owner === 'all' || r.full_name.split('/')[0] === owner) &&
+        (!text || r.full_name.toLowerCase().includes(text)),
+    )
+    .sort((a, b) => a.full_name.localeCompare(b.full_name))
 }

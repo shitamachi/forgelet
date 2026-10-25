@@ -2190,6 +2190,14 @@ select {
 }
 .repository-results {
   border-top: 1px solid var(--border);
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+.repository-results:focus-visible {
+  outline: 3px solid #8195f0;
+  outline-offset: 2px;
 }
 .repository-result {
   display: flex;
@@ -2219,14 +2227,19 @@ select {
 .repository-result button {
   flex-shrink: 0;
 }
-.repository-pagination {
+.repository-list-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   padding-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
-.repository-pagination > span {
+.repository-list-footer > span {
   flex: 1;
+}
+.repository-list-footer .button {
+  flex-shrink: 0;
 }
 .repository-selection {
   margin-top: 14px;

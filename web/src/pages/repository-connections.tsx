@@ -12,15 +12,13 @@ import {
   Pause,
   Play,
   Settings2,
-  ChevronLeft,
-  ChevronRight,
   LockKeyhole,
   Globe2,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { authQuery, queries, queryClient } from '../lib/queries'
 import type { Management, GitHubRepository, RepositoryAuthorization } from '../lib/types'
-import { repositoryPage, repositoryState } from '../lib/repository-state'
+import { REPOSITORY_BATCH, repositoryList, repositoryState } from '../lib/repository-state'
 import { Dialog, Empty, ErrorPanel, Loading, PageHeader, Status, useToast } from '../components/ui'
 import FirstRun from './github-onboarding'
 
@@ -57,7 +55,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
   const [adding, setAdding] = useState(() => pendingRepository() !== null)
   const [search, setSearch] = useState('')
   const [owner, setOwner] = useState('all')
-  const [page, setPage] = useState(0)
+  const [visibleCount, setVisibleCount] = useState(REPOSITORY_BATCH)
   const [filter, setFilter] = useState('all')
   const [listSearch, setListSearch] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
@@ -77,7 +75,9 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
   const catalog = connection.data
   const repos = connected ? userRepos.data || [] : catalog?.repositories || []
   const choice = selected || repos.find((r) => r.id === pendingID) || null
-  const result = repositoryPage(repos, search, owner, page)
+  const matches = repositoryList(repos, search, owner)
+  const shownRepos = matches.slice(0, visibleCount)
+  const hasMore = shownRepos.length < matches.length
   const owners = [...new Set(repos.map((r) => r.full_name.split('/')[0]))].sort()
   const rows = doc.repositories.map((repo, index) => ({
     repo,
@@ -108,6 +108,9 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
     setSelected(null)
     setAuthorization(null)
     setError(undefined)
+    setSearch('')
+    setOwner('all')
+    setVisibleCount(REPOSITORY_BATCH)
     remember(null)
   }
   function openAdd(repo?: GitHubRepository) {
@@ -115,8 +118,14 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
     setAdding(true)
     setError(undefined)
     setSearch('')
-    setPage(0)
     setOwner('all')
+    setVisibleCount(REPOSITORY_BATCH)
+  }
+  function resetList() {
+    setVisibleCount(REPOSITORY_BATCH)
+  }
+  function loadMore() {
+    setVisibleCount((count) => Math.min(count + REPOSITORY_BATCH, matches.length))
   }
   async function refresh() {
     reload()
@@ -397,13 +406,14 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
         <Dialog title="添加 GitHub 仓库" onClose={closeAdd}>
           <div className="dialog-body repository-onboarding-picker" aria-label="GitHub 自动接入">
             <p className="section-note">
-              搜索你要接入的仓库。GitHub 登录用于发现仓库，执行 CI 还需要将仓库授权给 GitHub App。
+              默认展示全部可发现仓库，滚动列表或点击“加载更多”继续；GitHub 登录用于发现仓库， 执行
+              CI 还需要将仓库授权给 GitHub App。
             </p>
-            {connected && userRepos.isPending ? <Loading label="正在读取账号仓库…" /> : null}
-            {userRepos.isError && (
+            {connected && userRepos.isPending ? (
+              <Loading label="正在读取账号仓库…" />
+            ) : userRepos.isError ? (
               <ErrorPanel error={userRepos.error} retry={() => void userRepos.refetch()} />
-            )}
-            {!choice ? (
+            ) : !choice ? (
               <>
                 <div className="repository-picker-search">
                   <label className="repository-search">
@@ -415,7 +425,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
                       value={search}
                       onChange={(e) => {
                         setSearch(e.target.value)
-                        setPage(0)
+                        resetList()
                       }}
                     />
                   </label>
@@ -424,7 +434,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
                     value={owner}
                     onChange={(e) => {
                       setOwner(e.target.value)
-                      setPage(0)
+                      resetList()
                     }}
                   >
                     <option value="all">所有账号</option>
@@ -433,20 +443,26 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
                     ))}
                   </select>
                 </div>
-                {!search.trim() ? (
-                  <div className="repository-search-prompt">
-                    <Search size={28} />
-                    <strong>搜索要添加的仓库</strong>
-                    <p>输入名称开始查找，现有仓库不会重复添加。</p>
-                  </div>
-                ) : !result.total ? (
-                  <Empty title="没有找到匹配仓库">
-                    检查名称，或在连接设置中确认 GitHub 账号和 App 授权。
+                {!matches.length ? (
+                  <Empty title={search.trim() ? '没有找到匹配仓库' : '账号下没有可接入的仓库'}>
+                    {search.trim()
+                      ? '检查名称，或在连接设置中确认 GitHub 账号和 App 授权。'
+                      : '在 GitHub App 的安装设置中授权仓库后，重新打开此窗口。'}
                   </Empty>
                 ) : (
                   <>
-                    <div className="repository-results" role="list" aria-label="仓库搜索结果">
-                      {result.rows.map((repo) => {
+                    <div
+                      className="repository-results"
+                      role="list"
+                      aria-label="仓库列表"
+                      tabIndex={0}
+                      onScroll={(event) => {
+                        const list = event.currentTarget
+                        if (hasMore && list.scrollHeight - list.scrollTop - list.clientHeight < 160)
+                          loadMore()
+                      }}
+                    >
+                      {shownRepos.map((repo) => {
                         const registered = doc.repositories.find((r) => r.repository_id === repo.id)
                         const unavailable =
                           repo.archived ||
@@ -485,26 +501,18 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
                         )
                       })}
                     </div>
-                    <div className="repository-pagination">
+                    <div className="repository-list-footer">
                       <span>
-                        {result.total} 个结果 · 第 {result.current + 1} / {result.pages} 页
+                        {search.trim() ? `${matches.length} 个匹配` : `${matches.length} 个仓库`}
+                        {' · '}已显示 {shownRepos.length}
                       </span>
-                      <button
-                        className="icon-button"
-                        aria-label="上一页仓库"
-                        disabled={result.current === 0}
-                        onClick={() => setPage(result.current - 1)}
-                      >
-                        <ChevronLeft size={17} />
-                      </button>
-                      <button
-                        className="icon-button"
-                        aria-label="下一页仓库"
-                        disabled={result.current + 1 === result.pages}
-                        onClick={() => setPage(result.current + 1)}
-                      >
-                        <ChevronRight size={17} />
-                      </button>
+                      {hasMore ? (
+                        <button type="button" className="button button-small" onClick={loadMore}>
+                          加载更多仓库
+                        </button>
+                      ) : (
+                        <span>已全部显示</span>
+                      )}
                     </div>
                   </>
                 )}
@@ -518,6 +526,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
                     setSelected(null)
                     setAuthorization(null)
                     setError(undefined)
+                    resetList()
                     remember(null)
                   }}
                 >

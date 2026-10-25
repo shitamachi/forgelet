@@ -329,7 +329,7 @@ test('administrator login, account security and GitHub account repositories', as
   expect(await page.evaluate(() => Object.keys(localStorage))).toEqual([])
 })
 
-test('adding a repository requires focused search, bounds results and preserves GitHub consent across reload', async ({
+test('adding a repository lists the account by default, filters and preserves GitHub consent across reload', async ({
   page,
   request,
 }) => {
@@ -351,8 +351,9 @@ test('adding a repository requires focused search, bounds results and preserves 
     state.calls.some((c: { path: string }) => c.path === '/api/github/user/repositories'),
   ).toBe(false)
   await page.getByRole('button', { name: '添加仓库', exact: true }).click()
-  await expect(page.getByText('搜索要添加的仓库', { exact: true })).toBeVisible()
-  await expect(page.getByRole('listitem')).toHaveCount(0)
+  const picker = page.getByRole('dialog', { name: '添加 GitHub 仓库' })
+  await expect(picker.getByRole('listitem')).toHaveCount(1)
+  await expect(picker.getByText('team/new-project', { exact: true })).toBeVisible()
   await page.getByLabel('搜索 GitHub 仓库').fill('new-project')
   await page.getByRole('button', { name: '选择仓库', exact: true }).click()
   await page.getByRole('button', { name: '启用仓库', exact: true }).click()
@@ -388,7 +389,7 @@ test('adding a repository requires focused search, bounds results and preserves 
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
 
-test('repository picker paginates a large account and handles missing access without misleading CI status', async ({
+test('repository picker loads a large account incrementally and handles missing access without misleading CI status', async ({
   page,
   request,
 }) => {
@@ -415,15 +416,21 @@ test('repository picker paginates a large account and handles missing access wit
   })
   await page.goto('/connections')
   await page.getByRole('button', { name: '添加仓库', exact: true }).click()
-  await page.getByLabel('搜索 GitHub 仓库').fill('app-')
-  await expect(page.getByRole('listitem')).toHaveCount(6)
-  await expect(page.getByRole('button', { name: '需要管理员权限', exact: true })).toBeDisabled()
-  await page.getByRole('button', { name: '下一页仓库', exact: true }).click()
-  await expect(page.getByRole('listitem')).toHaveCount(6)
-  await expect(page.getByText('owner/app-06', { exact: true })).toBeVisible()
+  const picker = page.getByRole('dialog', { name: '添加 GitHub 仓库' })
+  const results = picker.getByRole('list')
+  await expect(results.getByRole('listitem')).toHaveCount(20)
+  await expect(picker.getByRole('button', { name: '需要管理员权限', exact: true })).toBeDisabled()
+  await picker.locator('.repository-results').evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+    element.dispatchEvent(new Event('scroll', { bubbles: true }))
+  })
+  await expect(results.getByRole('listitem')).toHaveCount(40)
+  await picker.getByRole('button', { name: '加载更多仓库', exact: true }).click()
+  await expect(results.getByRole('listitem')).toHaveCount(50)
   await page.getByLabel('搜索 GitHub 仓库').fill('app-49')
-  await expect(page.getByRole('listitem')).toHaveCount(1)
-  await expect(page.getByRole('button', { name: '上一页仓库', exact: true })).toBeDisabled()
+  await expect(results.getByRole('listitem')).toHaveCount(1)
+  await expect(picker.getByText('owner/app-49', { exact: true })).toBeVisible()
+  await expect(picker.getByRole('button', { name: /上一页仓库|下一页仓库/ })).toHaveCount(0)
   await page.getByRole('button', { name: '关闭对话框', exact: true }).click()
   await request.post('/__test/state', {
     data: { errors: { 'GET /api/github/connection': { status: 502, body: 'unavailable' } } },
@@ -435,4 +442,29 @@ test('repository picker paginates a large account and handles missing access wit
   )
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+test('failed Checks delivery remains distinct from execution and can be retried', async ({
+  page,
+  request,
+}) => {
+  await page.route('**/api/runs/run-success', async (route) => {
+    const response = await route.fetch()
+    const record = await response.json()
+    const state = await (await request.get('/__test/state')).json()
+    if (
+      !state.calls.some((c: { path: string }) => c.path === '/api/runs/run-success/checks/retry')
+    ) {
+      record.jobs[0].check_error = 'retry limit reached; GitHub Checks delivery paused: offline'
+    }
+    await route.fulfill({ response, json: record })
+  })
+  await page.goto('/runs/run-success')
+  await expect(
+    page.getByRole('status').filter({ hasText: 'GitHub Checks 回写未完成' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: '重新回写 Checks' }).click()
+  await expect(page.getByRole('button', { name: '重新回写 Checks' })).toHaveCount(0)
+  const state = await (await request.get('/__test/state')).json()
+  expect(state.runs.find((r: { id: string }) => r.id === 'run-success').state).toBe('success')
 })

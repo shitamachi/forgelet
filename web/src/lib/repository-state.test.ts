@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GitHubConnection, GitHubRepository, RepositoryConfig } from './types'
-import { repositoryPage, repositoryState } from './repository-state'
+import { repositoryList, repositoryState } from './repository-state'
 const registered: RepositoryConfig = {
   name: 'owner/app',
   repository_id: 1,
@@ -80,19 +80,18 @@ describe('focused repository discovery', () => {
     id: i + 1,
     full_name: `${i % 2 ? 'team' : 'owner'}/app-${String(i).padStart(2, '0')}`,
   }))
-  it('does not show the whole account before searching', () =>
-    expect(repositoryPage(repos, '', 'all', 0).rows).toEqual([]))
-  it('bounds results and clamps an obsolete page after filters change', () => {
-    const p = repositoryPage(repos, 'APP', 'owner', 99)
-    expect(p.total).toBe(25)
-    expect(p.pages).toBe(5)
-    expect(p.current).toBe(4)
-    expect(p.rows).toHaveLength(1)
+  it('shows every repository sorted by full name', () => {
+    const rows = repositoryList(repos, '', 'all')
+    expect(rows).toHaveLength(50)
+    expect(rows[0].full_name).toBe('owner/app-00')
+    expect(rows[49].full_name).toBe('team/app-49')
   })
-  it('respects owner and case-insensitive full name search', () => {
-    const p = repositoryPage(repos, ' TEAM/app-0 ', 'team', 0)
-    expect(p.total).toBe(5)
-    expect(p.rows.every((r) => r.full_name.startsWith('team/'))).toBe(true)
-    expect(repositoryPage(repos, 'absent', 'all', 0).total).toBe(0)
+  it('filters by owner and case-insensitive full name without hiding the rest', () => {
+    const team = repositoryList(repos, ' TEAM/app-0 ', 'team')
+    expect(team).toHaveLength(5)
+    expect(team.every((r) => r.full_name.startsWith('team/'))).toBe(true)
+    expect(repositoryList(repos, '', 'owner')).toHaveLength(25)
   })
+  it('returns an empty list for an absent search', () =>
+    expect(repositoryList(repos, 'absent', 'all')).toEqual([]))
 })
