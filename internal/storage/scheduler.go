@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"fmt"
 
@@ -157,6 +158,9 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 				job.State, job.Result = run.Failed, &run.Result{State: run.Failed, Error: "job condition: " + err.Error()}
 			} else if !allowed {
 				job.State, job.Result = run.Skipped, &run.Result{State: run.Skipped}
+			} else if planErr := claimPlanLimit(job.Plan); planErr != nil {
+				job.Plan.NeedsContext = nil
+				job.State, job.Result = run.Failed, &run.Result{State: run.Failed, Error: planErr.Error()}
 			} else if slots > 0 {
 				if !matrixSlot(*job, jobs) {
 					continue
@@ -184,6 +188,19 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 		}
 	}
 	return reserved, nil
+}
+
+// Dependencies are resolved after run admission and can enlarge a persisted
+// plan. Reject oversized snapshots before creating an unclaimable executor.
+func claimPlanLimit(plan run.Plan) error {
+	data, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("encode resolved execution plan: %w", err)
+	}
+	if len(data) > run.MaxPlanBytes {
+		return fmt.Errorf("resolved execution plan is %d bytes; limit is %d", len(data), run.MaxPlanBytes)
+	}
+	return nil
 }
 
 func dependenciesTerminal(plan run.Plan, jobs map[string]*run.Job) bool {

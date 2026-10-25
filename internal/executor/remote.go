@@ -254,7 +254,7 @@ func newRemoteClient(options RemoteOptions) (*remoteClient, error) {
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	retryTimeout := options.RetryTimeout
 	if retryTimeout <= 0 {
-		retryTimeout = time.Minute
+		retryTimeout = 5 * time.Minute
 	}
 	return &remoteClient{base: u, client: httpClient, tokenFile: options.TokenFile, retryTimeout: retryTimeout}, nil
 }

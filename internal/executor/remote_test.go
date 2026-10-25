@@ -283,6 +283,14 @@ func TestRunRemoteFlushesSameLogAfterParentCancellation(t *testing.T) {
 				http.Error(w, "ACK lost", http.StatusServiceUnavailable)
 				return
 			}
+			// The parent is already cancelled. A slow sink must still receive
+			// the identical pending chunk under the independent flush context.
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-r.Context().Done():
+				t.Error("flush inherited cancelled request")
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]int64{"seq": entry.Seq})
 		case strings.HasSuffix(r.URL.Path, "/result"):
 			if err := json.NewDecoder(r.Body).Decode(&result); err != nil {

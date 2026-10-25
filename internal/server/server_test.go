@@ -109,7 +109,7 @@ func (f *fakeRuntime) Authenticate(_ context.Context, token string) (kube.Identi
 	if !strings.HasPrefix(token, "token-") || !ok {
 		return kube.Identity{}, kube.ErrIdentity
 	}
-	return kube.Identity{PodName: p.job.PodName, PodUID: p.uid}, nil
+	return kube.Identity{JobID: p.job.ID, PodName: p.job.PodName, PodUID: p.uid}, nil
 }
 
 type fakeProvider struct {
@@ -519,6 +519,7 @@ func TestCreateResponseLossAndMissingPodDoNotReplay(t *testing.T) {
 	if err := h.server.Tick(t.Context()); err == nil {
 		t.Fatal("expected simulated create response loss")
 	}
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
 	job, err := h.store.GetJob(t.Context(), r.Jobs[0].ID)
 	if err != nil || job.PodUID == "" || h.runtime.created != 1 {
@@ -528,7 +529,9 @@ func TestCreateResponseLossAndMissingPodDoNotReplay(t *testing.T) {
 		t.Fatalf("claim=%d", code)
 	}
 	delete(h.runtime.pods, job.ID)
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
 	job, err = h.store.GetJob(t.Context(), job.ID)
 	if err != nil || job.State != run.Interrupted || h.runtime.created != 1 {
@@ -543,16 +546,18 @@ func TestChecksOutboxRetryDoesNotRerunJob(t *testing.T) {
 	if err := h.server.Tick(t.Context()); err == nil {
 		t.Fatal("expected simulated Checks outage")
 	}
-	checks, err := h.store.PendingChecks(t.Context())
+	checks, err := h.store.PendingChecks(t.Context(), time.Now().Add(time.Minute))
 	if err != nil || len(checks) != 1 {
 		t.Fatalf("lost report intent: %+v,%v", checks, err)
 	}
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
-	checks, err = h.store.PendingChecks(t.Context())
+	checks, err = h.store.PendingChecks(t.Context(), time.Now().Add(time.Minute))
 	if err != nil || len(checks) != 0 || h.runtime.created != 1 {
 		t.Fatalf("retry: %+v,%v creates=%d", checks, err, h.runtime.created)
 	}
 	h.complete(r.Jobs[0])
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
 	last := h.provider.reports[len(h.provider.reports)-1]
 	if last.RemoteID != 101 || last.Job.State != run.Succeeded || h.runtime.created != 1 {
@@ -569,10 +574,11 @@ func TestProviderRetryAndCompileDiagnostics(t *testing.T) {
 	if err := h.server.Tick(t.Context()); err == nil {
 		t.Fatal("expected temporary provider failure")
 	}
-	if events, err := h.store.PendingEvents(t.Context()); err != nil || len(events) != 1 {
+	if events, err := h.store.PendingEvents(t.Context(), time.Now().Add(time.Minute)); err != nil || len(events) != 1 {
 		t.Fatalf("provider error consumed event: %+v,%v", events, err)
 	}
 	h.provider.files = map[string][]byte{".github/workflows/bad.yml": []byte("on: push\njobs:\n  bad:\n    runs-on: small\n    unsupported: true\n")}
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
 	code, body := h.admin(http.MethodGet, "/api/events", nil)
 	var events []run.Event
@@ -603,10 +609,11 @@ func TestTransientPersistenceErrorKeepsWebhookPending(t *testing.T) {
 	if err := h.server.Tick(t.Context()); err == nil {
 		t.Fatal("persistence failure must be returned for retry")
 	}
-	events, err := h.store.PendingEvents(t.Context())
+	events, err := h.store.PendingEvents(t.Context(), time.Now().Add(time.Minute))
 	if err != nil || len(events) != 1 {
 		t.Fatalf("transient database error consumed event: %+v,%v", events, err)
 	}
+	h.server.now = func() time.Time { return time.Now().Add(time.Minute) }
 	h.tick()
 	runs, err := h.store.ListRuns(t.Context())
 	if err != nil || len(runs) != 1 {

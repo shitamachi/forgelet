@@ -44,25 +44,31 @@ func (c *Client) ReportCheck(ctx context.Context, check run.Check, detailsURL st
 	}
 	base := "/repos/" + check.Run.Repository
 	id := check.RemoteID
+	if id != 0 {
+		var existing remoteCheck
+		err := c.request(ctx, http.MethodGet, base+"/check-runs/"+strconv.FormatInt(id, 10), nil, token, nil, &existing)
+		if isStatus(err, http.StatusNotFound) {
+			id = 0
+		} else if err != nil {
+			return 0, fmt.Errorf("github: read check: %w", err)
+		} else if existing.ID != id || existing.ExternalID != check.Job.ID || existing.HeadSHA != check.Run.SHA || existing.App.ID != c.appID {
+			return 0, errors.New("github: check identity or App mismatch")
+		}
+	}
 	if id == 0 {
 		id, err = c.findCheck(ctx, base, token, check.Run.SHA, check.Job.ID)
 		if err != nil {
 			return 0, fmt.Errorf("github: find check: %w", err)
-		}
-	} else {
-		var existing remoteCheck
-		if err := c.request(ctx, http.MethodGet, base+"/check-runs/"+strconv.FormatInt(id, 10), nil, token, nil, &existing); err != nil {
-			return 0, fmt.Errorf("github: read check: %w", err)
-		}
-		if existing.ID != id || existing.ExternalID != check.Job.ID || existing.HeadSHA != check.Run.SHA || existing.App.ID != c.appID {
-			return 0, errors.New("github: check identity or App mismatch")
 		}
 	}
 	name := check.Job.Name
 	if name == "" {
 		name = check.Job.ID
 	}
-	body := map[string]any{"name": "forgelet / " + name, "status": status, "external_id": check.Job.ID, "details_url": detailsURL}
+	body := map[string]any{"name": "forgelet / " + name, "status": status, "external_id": check.Job.ID}
+	if detailsURL != "" {
+		body["details_url"] = detailsURL
+	}
 	if status == "in_progress" {
 		started := check.Job.CreatedAt
 		if started.IsZero() {

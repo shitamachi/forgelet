@@ -230,6 +230,10 @@ const server = createServer(async (req, res) => {
     if (match) {
       const run = state.runs.find((r) => r.id === match[1])
       if (!run) return plain('run not found', 404)
+      if (match[2] === 'checks/retry') {
+        for (const job of run.jobs) delete job.check_error
+        return json({ retried: true })
+      }
       if (match[2] === 'cancel') {
         run.state = 'cancelled'
         for (const job of run.jobs) job.state = 'cancelled'

@@ -122,7 +122,7 @@ func openStore(ctx context.Context, path string, restoring bool) (*Store, error)
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fail(fmt.Errorf("read schema version: %w", err))
 	}
-	if version > 5 {
+	if version > 6 {
 		return fail(fmt.Errorf("unsupported schema version %d: %w", version, ErrConflict))
 	}
 	if version == 0 {
@@ -170,6 +170,11 @@ PRAGMA user_version=4;`)
 			return fail(err)
 		}
 	}
+	if version < 6 {
+		if err := s.migrateV6(ctx); err != nil {
+			return fail(fmt.Errorf("migrate retry schema: %w", err))
+		}
+	}
 	return s, nil
 }
 
@@ -201,8 +206,8 @@ func (s *Store) PutEvent(ctx context.Context, event run.Event) (bool, error) {
 	return n == 1, err
 }
 
-func (s *Store) PendingEvents(ctx context.Context) ([]run.Event, error) {
-	return s.events(ctx, "SELECT body,error FROM events WHERE done=0 ORDER BY created_at,delivery_id LIMIT 100")
+func (s *Store) PendingEvents(ctx context.Context, times ...time.Time) ([]run.Event, error) {
+	return s.events(ctx, "SELECT body,error FROM events WHERE done=0 AND next_attempt_at<=? ORDER BY next_attempt_at,created_at,delivery_id LIMIT 100", retryTime(times).UnixNano())
 }
 
 // Events includes processed events and their compilation/ingestion diagnostics.
@@ -210,8 +215,8 @@ func (s *Store) Events(ctx context.Context) ([]run.Event, error) {
 	return s.events(ctx, "SELECT body,error FROM events ORDER BY created_at DESC,delivery_id DESC LIMIT 100")
 }
 
-func (s *Store) events(ctx context.Context, query string) ([]run.Event, error) {
-	rows, err := s.db.QueryContext(ctx, query)
+func (s *Store) events(ctx context.Context, query string, args ...any) ([]run.Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pending events: %w", err)
 	}

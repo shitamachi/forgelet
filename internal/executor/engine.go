@@ -588,7 +588,7 @@ func inheritedEnvironment() map[string]string {
 	env := make(map[string]string)
 	for _, entry := range os.Environ() {
 		key, value, ok := strings.Cut(entry, "=")
-		if ok && validateEnvKey(key) == nil && !strings.HasPrefix(key, "GIT_CONFIG_") && key != "GIT_DIR" && key != "GIT_WORK_TREE" {
+		if ok && key != "TOKEN_FILE" && key != "POD_UID" && key != "JOB_ID" && key != "WORKSPACE" && !strings.HasPrefix(key, "FORGELET_") && validateEnvKey(key) == nil && !strings.HasPrefix(key, "GIT_CONFIG_") && key != "GIT_DIR" && key != "GIT_WORK_TREE" {
 			env[key] = value
 		}
 	}

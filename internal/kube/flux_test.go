@@ -16,7 +16,7 @@ import (
 )
 
 func TestFluxRequiresCurrentSourceInventoryAndApplicationHealth(t *testing.T) {
-	target := delivery.Target{Repository: "o/gitops", Branch: "main", FluxNamespace: "flux-system", Kustomization: "app", Namespace: "apps", Deployment: "app", Container: "app"}
+	target := delivery.Target{Path: "kustomization.yaml", Repository: "o/gitops", Branch: "main", FluxNamespace: "flux-system", Kustomization: "app", Namespace: "apps", Deployment: "app", Container: "app"}
 	revision := "main@sha1:" + strings.Repeat("a", 40)
 	ready := []any{map[string]any{"type": "Ready", "status": "True"}}
 	k := &unstructured.Unstructured{Object: map[string]any{
@@ -44,6 +44,8 @@ func TestFluxRequiresCurrentSourceInventoryAndApplicationHealth(t *testing.T) {
 		ready, err bool
 	}{
 		{name: "current and healthy", ready: true},
+		{name: "wrong directory", err: true, change: func(k, _ *unstructured.Unstructured, _ *appsv1.Deployment) { set(k, "./other", "spec", "path") }},
+		{name: "normalized directory", ready: true, change: func(k, _ *unstructured.Unstructured, _ *appsv1.Deployment) { set(k, "./", "spec", "path") }},
 		{name: "old Flux generation", change: func(k, _ *unstructured.Unstructured, _ *appsv1.Deployment) {
 			set(k, int64(1), "status", "observedGeneration")
 		}},

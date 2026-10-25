@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,18 +27,30 @@ const (
 )
 
 var ErrIdentity = errors.New("invalid workload identity")
+var ErrPermanent = errors.New("permanent runtime failure")
+
+func runtimeError(err error) error {
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) || apierrors.IsMethodNotSupported(err) {
+		return fmt.Errorf("%w: %w", ErrPermanent, err)
+	}
+	return err
+}
 
 type Profile struct {
-	Build         *BuildProfile     `yaml:"build,omitempty" json:"build,omitempty"`
-	Image         string            `yaml:"image" json:"image"`
-	CPURequest    string            `yaml:"cpu_request" json:"cpu_request"`
-	MemoryRequest string            `yaml:"memory_request" json:"memory_request"`
-	CPULimit      string            `yaml:"cpu_limit" json:"cpu_limit"`
-	MemoryLimit   string            `yaml:"memory_limit" json:"memory_limit"`
-	NodeSelector  map[string]string `yaml:"node_selector" json:"node_selector"`
+	ControlTimeout time.Duration     `yaml:"control_plane_timeout,omitempty" json:"control_plane_timeout,omitempty"`
+	Build          *BuildProfile     `yaml:"build,omitempty" json:"build,omitempty"`
+	Image          string            `yaml:"image" json:"image"`
+	CPURequest     string            `yaml:"cpu_request" json:"cpu_request"`
+	MemoryRequest  string            `yaml:"memory_request" json:"memory_request"`
+	CPULimit       string            `yaml:"cpu_limit" json:"cpu_limit"`
+	MemoryLimit    string            `yaml:"memory_limit" json:"memory_limit"`
+	NodeSelector   map[string]string `yaml:"node_selector" json:"node_selector"`
 }
 
 func (p Profile) Validate() error {
+	if p.ControlTimeout < 0 || p.ControlTimeout > time.Hour {
+		return errors.New("control_plane_timeout must be between zero and one hour")
+	}
 	if p.Build != nil {
 		if err := p.Build.Validate(); err != nil {
 			return err
@@ -59,8 +72,10 @@ func (p Profile) Validate() error {
 }
 
 type Identity struct {
-	PodName string
-	PodUID  string
+	Terminating bool
+	JobID       string
+	PodName     string
+	PodUID      string
 }
 
 type Observation struct {
@@ -81,29 +96,29 @@ type Runtime struct {
 
 func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (string, error) {
 	if err := profile.Validate(); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrPermanent, err)
 	}
 	parsed, err := url.Parse(r.ServerURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && (!r.AllowInsecure || parsed.Scheme != "http")) {
-		return "", errors.New("runtime URL must use HTTPS (HTTP requires explicit development override)")
+		return "", fmt.Errorf("%w: runtime URL must use HTTPS (HTTP requires explicit development override)", ErrPermanent)
 	}
 	pod, err := r.Client.CoreV1().Pods(r.Namespace).Get(ctx, job.PodName, metav1.GetOptions{})
 	if err == nil {
 		return ownedUID(pod, job)
 	}
 	if !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("get execution pod: %w", err)
+		return "", fmt.Errorf("get execution pod: %w", runtimeError(err))
 	}
 	if job.PodUID != "" {
-		return "", errors.New("cannot recreate an attempt with a recorded pod UID")
+		return "", fmt.Errorf("%w: cannot recreate an attempt with a recorded pod UID", ErrPermanent)
 	}
 	no := false
 	yes := true
 	uid := int64(1000)
-	grace := int64(10)
+	grace := int64(45)
 	expiry := int64(600)
 	deadline := int64(job.Plan.TimeoutSeconds + 120)
-	if deadline < 120 {
+	if job.Plan.TimeoutSeconds <= 0 {
 		deadline = 1320
 	}
 	resources := corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}
@@ -134,6 +149,11 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 			Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("2Gi")}}}, {Name: "identity", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: Audience, ExpirationSeconds: &expiry, Path: "token"}}}}}}},
 		},
 	}
+	controlTimeout := profile.ControlTimeout
+	if controlTimeout == 0 {
+		controlTimeout = 5 * time.Minute
+	}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "FORGELET_CONTROL_TIMEOUT", Value: controlTimeout.String()})
 	if r.CASecret != "" {
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "api-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: r.CASecret}}})
 		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "api-ca", MountPath: "/var/run/forgelet-ca", ReadOnly: true})
@@ -141,7 +161,7 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 	}
 	if job.Plan.NeedsBuild() {
 		if profile.Build == nil {
-			return "", fmt.Errorf("execution profile does not enable BuildKit")
+			return "", fmt.Errorf("%w: execution profile does not enable BuildKit", ErrPermanent)
 		}
 		addBuilder(pod, *profile.Build)
 	}
@@ -150,7 +170,7 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 		pod, err = r.Client.CoreV1().Pods(r.Namespace).Get(ctx, job.PodName, metav1.GetOptions{})
 	}
 	if err != nil {
-		return "", fmt.Errorf("create execution pod: %w", err)
+		return "", fmt.Errorf("create execution pod: %w", runtimeError(err))
 	}
 	return ownedUID(pod, job)
 }
@@ -159,7 +179,7 @@ func quantityPointer(s string) *resource.Quantity { q := resource.MustParse(s); 
 
 func ownedUID(pod *corev1.Pod, job run.Job) (string, error) {
 	if pod.Labels[Label] != job.ID || pod.Spec.ServiceAccountName != ServiceAccount || (job.PodUID != "" && string(pod.UID) != job.PodUID) {
-		return "", errors.New("execution pod ownership mismatch")
+		return "", fmt.Errorf("%w: execution pod ownership mismatch", ErrPermanent)
 	}
 	return string(pod.UID), nil
 }
@@ -170,7 +190,7 @@ func (r *Runtime) Observe(ctx context.Context, job run.Job) (Observation, error)
 		return Observation{Missing: true}, nil
 	}
 	if err != nil {
-		return Observation{}, fmt.Errorf("observe pod: %w", err)
+		return Observation{}, fmt.Errorf("observe pod: %w", runtimeError(err))
 	}
 	uid, err := ownedUID(p, job)
 	if err != nil {
@@ -183,13 +203,23 @@ func (r *Runtime) Delete(ctx context.Context, job run.Job) error {
 	if job.PodUID == "" {
 		return errors.New("cannot delete pod without recorded UID")
 	}
-	uid := types.UID(job.PodUID)
-	err := r.Client.CoreV1().Pods(r.Namespace).Delete(ctx, job.PodName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	pod, err := r.Client.CoreV1().Pods(r.Namespace).Get(ctx, job.PodName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("delete execution pod: %w", err)
+		return fmt.Errorf("read pod before deletion: %w", runtimeError(err))
+	}
+	if _, err := ownedUID(pod, job); err != nil {
+		return err
+	}
+	uid := types.UID(job.PodUID)
+	err = r.Client.CoreV1().Pods(r.Namespace).Delete(ctx, job.PodName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete execution pod: %w", runtimeError(err))
 	}
 	return nil
 }
@@ -227,8 +257,8 @@ func (r *Runtime) Authenticate(ctx context.Context, token string) (Identity, err
 		return Identity{}, ErrIdentity
 	}
 	p, err := r.Client.CoreV1().Pods(r.Namespace).Get(ctx, names[0], metav1.GetOptions{})
-	if err != nil || string(p.UID) != uids[0] || p.DeletionTimestamp != nil || p.Labels[Label] == "" || p.Spec.ServiceAccountName != ServiceAccount {
+	if err != nil || string(p.UID) != uids[0] || p.Labels[Label] == "" || p.Spec.ServiceAccountName != ServiceAccount {
 		return Identity{}, ErrIdentity
 	}
-	return Identity{PodName: names[0], PodUID: uids[0]}, nil
+	return Identity{Terminating: p.DeletionTimestamp != nil, JobID: p.Labels[Label], PodName: names[0], PodUID: uids[0]}, nil
 }

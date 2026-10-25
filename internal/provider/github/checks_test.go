@@ -242,3 +242,45 @@ func TestCheckStateMappingAndValidation(t *testing.T) {
 		t.Fatal("accepted unsafe details URL")
 	}
 }
+
+func TestDeletedCheckIsReconciledAndEmptyDetailsAreOmitted(t *testing.T) {
+	for _, found := range []bool{false, true} {
+		t.Run(strconv.FormatBool(found), func(t *testing.T) {
+			client, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					writeToken(t, w)
+					return
+				}
+				if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/check-runs/11") {
+					http.NotFound(w, r)
+					return
+				}
+				if strings.Contains(r.URL.Path, "/commits/") {
+					checks := []remoteCheck{}
+					if found {
+						checks = append(checks, remoteFixture(12, 42, "job-1"))
+					}
+					writeJSON(t, w, map[string]any{"check_runs": checks})
+					return
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := body["details_url"]; ok {
+					t.Fatal("empty details should be omitted")
+				}
+				if found && r.Method != "PATCH" || !found && r.Method != "POST" {
+					t.Fatal(r.Method)
+				}
+				writeJSON(t, w, remoteFixture(12, 42, "job-1"))
+			})
+			check := checkFixture()
+			check.RemoteID = 11
+			id, err := client.ReportCheck(t.Context(), check, "")
+			if err != nil || id != 12 {
+				t.Fatal(id, err)
+			}
+		})
+	}
+}

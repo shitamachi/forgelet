@@ -42,10 +42,11 @@ type Store interface {
 	Settings(context.Context, string, string) (map[string][]byte, error)
 	DeleteSetting(context.Context, string, string, string) error
 	PutEvent(context.Context, run.Event) (bool, error)
-	PendingEvents(context.Context) ([]run.Event, error)
+	PendingEvents(context.Context, ...time.Time) ([]run.Event, error)
 	Events(context.Context) ([]run.Event, error)
 	FinishEvent(context.Context, string, string) error
 	CreateRun(context.Context, run.Run, []run.Plan) (bool, error)
+	ListRunSummaries(context.Context) ([]run.Run, error)
 	ListRuns(context.Context) ([]run.Run, error)
 	GetRun(context.Context, string) (run.Run, error)
 	GetJob(context.Context, string) (run.Job, error)
@@ -58,8 +59,15 @@ type Store interface {
 	Active(context.Context) ([]run.Job, error)
 	AppendLog(context.Context, string, string, run.Log) error
 	Logs(context.Context, string, int64) ([]run.Log, error)
-	PendingChecks(context.Context) ([]run.Check, error)
+	PendingChecks(context.Context, ...time.Time) ([]run.Check, error)
 	SaveCheck(context.Context, string, int64, run.State) error
+	RetryRunChecks(context.Context, string) error
+	RetryFailedEvent(context.Context, string) error
+	ReplaceCheck(context.Context, string, int64, int64, run.State) error
+	RetryEvent(context.Context, string, string, time.Time) error
+	RetryCheck(context.Context, string, run.State, string, time.Time) error
+	RetryRuntime(context.Context, string, string, bool, time.Time) error
+	ClearRuntimeRetry(context.Context, string) error
 	Backup(context.Context, string) error
 	Prune(context.Context, time.Time, storage.RetentionPolicy, map[string]string) (storage.PruneResult, error)
 }
@@ -206,8 +214,14 @@ func (s *Server) Handler() http.Handler {
 		r.Put("/api/management", s.managementAPI)
 		r.Post("/api/management/inspect", s.inspectWorkflows)
 		r.Get("/api/status", s.status)
+		r.Post("/api/runs/{runID}/checks/retry", func(w http.ResponseWriter, r *http.Request) {
+			respond(w, map[string]bool{"retried": true}, s.store.RetryRunChecks(r.Context(), chi.URLParam(r, "runID")))
+		})
+		r.Post("/api/events/{deliveryID}/retry", func(w http.ResponseWriter, r *http.Request) {
+			respond(w, map[string]bool{"retried": true}, s.store.RetryFailedEvent(r.Context(), chi.URLParam(r, "deliveryID")))
+		})
 		r.Get("/api/runs", func(w http.ResponseWriter, r *http.Request) {
-			items, err := s.store.ListRuns(r.Context())
+			items, err := s.store.ListRunSummaries(r.Context())
 			respond(w, items, err)
 		})
 		r.Get("/api/events", func(w http.ResponseWriter, r *http.Request) {
@@ -494,13 +508,8 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	if err := validatePlanSize(plans); err != nil {
 		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
-	for _, p := range plans {
-		if p.NeedsBuild() && s.cfg.Profiles[p.Profile].Build == nil {
-			return run.Run{}, fmt.Errorf("%w: profile %q does not enable BuildKit", ErrWorkflow, p.Profile)
-		}
-		if _, ok := s.cfg.Profiles[p.Profile]; !ok {
-			return run.Run{}, fmt.Errorf("%w: unknown execution profile %q", ErrWorkflow, p.Profile)
-		}
+	if err := s.validateProfiles(plans); err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	item := run.Run{ID: id, DeliveryID: e.DeliveryID, Repository: e.Repository, SHA: e.SHA, Ref: e.Ref, WorkflowPath: path, InstallationID: e.InstallationID, State: run.Queued, CreatedAt: time.Now().UTC()}
 	created, err := s.store.CreateRun(ctx, item, plans)
@@ -514,10 +523,27 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	return saved, err
 }
 
+func (s *Server) validateProfiles(plans []run.Plan) error {
+	for _, p := range plans {
+		profile, ok := s.cfg.Profiles[p.Profile]
+		if !ok {
+			return fmt.Errorf("unknown execution profile %q", p.Profile)
+		}
+		if p.NeedsBuild() && profile.Build == nil {
+			return fmt.Errorf("profile %q does not enable BuildKit", p.Profile)
+		}
+	}
+	return nil
+}
+
 func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 	old, err := s.store.GetRun(r.Context(), chi.URLParam(r, "runID"))
 	if err != nil {
 		serverError(w, err)
+		return
+	}
+	if !s.allowed(old.Repository) {
+		http.Error(w, "repository disabled or removed", http.StatusForbidden)
 		return
 	}
 	if !old.State.Terminal() {
@@ -537,6 +563,10 @@ func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 		p.RunID = id
 		p.JobID = stableID(id, j.ID)
 		plans = append(plans, p)
+	}
+	if err := s.validateProfiles(plans); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
 	if err := validatePlanSize(plans); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -573,7 +603,7 @@ func (s *Server) authenticate(r *http.Request) (run.Job, kube.Identity, error) {
 	if err != nil {
 		return run.Job{}, kube.Identity{}, kube.ErrIdentity
 	}
-	if job.PodName != identity.PodName || (job.PodUID != "" && job.PodUID != identity.PodUID) {
+	if job.ID != identity.JobID || job.PodName != identity.PodName || (job.PodUID != "" && job.PodUID != identity.PodUID) {
 		return run.Job{}, kube.Identity{}, kube.ErrIdentity
 	}
 	return job, identity, nil
@@ -581,7 +611,7 @@ func (s *Server) authenticate(r *http.Request) (run.Job, kube.Identity, error) {
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	job, who, err := s.authenticate(r)
-	if err != nil {
+	if err != nil || who.Terminating {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
 		return
 	}
@@ -589,8 +619,8 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	respond(w, p, err)
 }
 func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
-	job, _, err := s.authenticate(r)
-	if err != nil {
+	job, who, err := s.authenticate(r)
+	if err != nil || who.Terminating {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
 		return
 	}
@@ -814,7 +844,7 @@ func (s *Server) Tick(ctx context.Context) error {
 		problems = append(problems, err)
 	}
 	if s.provider != nil {
-		events, err := s.store.PendingEvents(ctx)
+		events, err := s.store.PendingEvents(ctx, s.now())
 		if err != nil {
 			return err
 		}
@@ -828,6 +858,9 @@ func (s *Server) Tick(ctx context.Context) error {
 			files, err := s.eventWorkflows(ctx, e)
 			if err != nil {
 				problems = append(problems, fmt.Errorf("load delivery %s: %w", e.DeliveryID, err))
+				if retryErr := s.store.RetryEvent(ctx, e.DeliveryID, err.Error(), s.now()); retryErr != nil {
+					problems = append(problems, retryErr)
+				}
 				continue
 			}
 			var diagnostics []string
@@ -861,6 +894,9 @@ func (s *Server) Tick(ctx context.Context) error {
 				}
 			}
 			if retry {
+				if err := s.store.RetryEvent(ctx, e.DeliveryID, "workflow admission temporarily failed", s.now()); err != nil {
+					problems = append(problems, err)
+				}
 				continue
 			}
 			if err = s.store.FinishEvent(ctx, e.DeliveryID, strings.Join(diagnostics, "\n")); err != nil {
@@ -873,10 +909,19 @@ func (s *Server) Tick(ctx context.Context) error {
 		return err
 	}
 	for _, job := range active {
+
+		if s.now().Before(job.RuntimeRetryAt) {
+			continue
+		}
 		observation, err := s.runtime.Observe(ctx, job)
 		if err != nil {
-			problems = append(problems, err)
+			problems = append(problems, s.runtimeFailure(ctx, job, err))
 			continue
+		}
+		if job.RuntimeFailures > 0 && !observation.Missing && !job.CancelRequested {
+			if err := s.store.ClearRuntimeRetry(ctx, job.ID); err != nil {
+				problems = append(problems, err)
+			}
 		}
 		if observation.Missing {
 			if job.PodUID != "" || job.CancelRequested {
@@ -899,7 +944,7 @@ func (s *Server) Tick(ctx context.Context) error {
 		}
 		if job.CancelRequested {
 			if err = s.runtime.Delete(ctx, job); err != nil {
-				problems = append(problems, err)
+				problems = append(problems, s.runtimeFailure(ctx, job, err))
 			}
 			continue
 		}
@@ -923,7 +968,7 @@ func (s *Server) Tick(ctx context.Context) error {
 		}
 	}
 	if s.provider != nil {
-		checks, err := s.store.PendingChecks(ctx)
+		checks, err := s.store.PendingChecks(ctx, s.now())
 		if err != nil {
 			return err
 		}
@@ -931,12 +976,20 @@ func (s *Server) Tick(ctx context.Context) error {
 			if check.Run.InstallationID == 0 {
 				continue
 			}
-			remoteID, err := s.provider.ReportCheck(ctx, check, strings.TrimRight(s.cfg.PublicURL, "/")+"/runs/"+check.Run.ID)
+			remoteID, err := s.provider.ReportCheck(ctx, check, s.checkURL(check.Run.ID))
 			if err != nil {
 				problems = append(problems, err)
+				if retryErr := s.store.RetryCheck(ctx, check.Job.ID, check.Job.State, err.Error(), s.now()); retryErr != nil {
+					problems = append(problems, retryErr)
+				}
 				continue
 			}
-			if err = s.store.SaveCheck(ctx, check.Job.ID, remoteID, check.Job.State); err != nil {
+			if check.RemoteID > 0 && check.RemoteID != remoteID {
+				err = s.store.ReplaceCheck(ctx, check.Job.ID, check.RemoteID, remoteID, check.Job.State)
+			} else {
+				err = s.store.SaveCheck(ctx, check.Job.ID, remoteID, check.Job.State)
+			}
+			if err != nil {
 				problems = append(problems, err)
 			}
 		}
@@ -982,7 +1035,19 @@ func (s *Server) start(ctx context.Context, job run.Job) error {
 	}
 	uid, err := s.runtime.Ensure(ctx, job, profile)
 	if err != nil {
-		return fmt.Errorf("start job %s: %w", job.ID, err)
+		return s.runtimeFailure(ctx, job, err)
 	}
 	return s.store.RecordPod(ctx, job.ID, uid)
+}
+
+func (s *Server) checkURL(id string) string {
+	if s.cfg.PublicURL == "" {
+		return ""
+	}
+	return strings.TrimRight(s.cfg.PublicURL, "/") + "/runs/" + id
+}
+
+func (s *Server) runtimeFailure(ctx context.Context, job run.Job, cause error) error {
+	err := s.store.RetryRuntime(ctx, job.ID, cause.Error(), errors.Is(cause, kube.ErrPermanent), s.now())
+	return errors.Join(fmt.Errorf("reconcile job %s: %w", job.ID, cause), err)
 }

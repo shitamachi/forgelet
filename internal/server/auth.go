@@ -95,6 +95,15 @@ func (s *Server) InitAuth(ctx context.Context) error {
 	}
 	key := s.cfg.SecretKey
 	if len(key) == 0 {
+		admin, adminErr := store.AuthAdmin(ctx)
+		if adminErr != nil && !errors.Is(adminErr, storage.ErrNotFound) {
+			return fmt.Errorf("read administrator for encryption key: %w", adminErr)
+		}
+		if len(admin.GitHubToken) > 0 {
+			if _, err := os.Lstat(filepath.Join(s.cfg.DataDir, "auth-encryption.key")); err != nil {
+				return fmt.Errorf("existing GitHub credentials require the original auth-encryption.key: %w", err)
+			}
+		}
 		var err error
 		key, err = privateFile(filepath.Join(s.cfg.DataDir, "auth-encryption.key"), func() ([]byte, error) { b := make([]byte, 32); _, err := rand.Read(b); return b, err })
 		if err != nil {
@@ -127,6 +136,15 @@ func (s *Server) InitAuth(ctx context.Context) error {
 		}
 	} else if err != nil {
 		return fmt.Errorf("load administrator: %w", err)
+	}
+	admin, err := store.AuthAdmin(ctx)
+	if err != nil {
+		return err
+	}
+	if len(admin.GitHubToken) > 0 {
+		if _, err := openSecret(key, "auth", "github-token", admin.GitHubToken); err != nil {
+			return errors.New("cannot decrypt existing GitHub credentials; restore the original encryption key")
+		}
 	}
 	s.auth = &authRuntime{store: store, key: append([]byte(nil), key...), attempts: map[string][]time.Time{}}
 	return nil

@@ -41,6 +41,8 @@ export default function RunDetail() {
     refetchInterval: record.data && isActive(record.data.state) ? 5000 : false,
   })
   const deliveries = useQuery(queries.deliveries)
+  const [checkError, setCheckError] = useState<unknown>()
+  const [retryingChecks, setRetryingChecks] = useState(false)
   const [confirm, setConfirm] = useState<'cancel' | 'rerun' | null>(null)
   const toast = useToast()
   if (record.isPending) return <Loading />
@@ -95,6 +97,34 @@ export default function RunDetail() {
           </>
         }
       />
+      {jobs.some((j) => j.check_error) && (
+        <section className="alert" role="status">
+          <div>
+            <strong>GitHub Checks 回写未完成</strong>
+            <p>执行结果已保存。{jobs.find((j) => j.check_error)?.check_error}</p>
+          </div>
+          <button
+            className="button button-small"
+            disabled={retryingChecks}
+            onClick={async () => {
+              setRetryingChecks(true)
+              setCheckError(undefined)
+              try {
+                await api.retryChecks(runId)
+                await record.refetch()
+                toast('已请求重新回写 Checks')
+              } catch (error) {
+                setCheckError(error)
+              } finally {
+                setRetryingChecks(false)
+              }
+            }}
+          >
+            重新回写 Checks
+          </button>
+        </section>
+      )}
+      {checkError != null && <ErrorPanel error={checkError} />}
       <div className="run-meta">
         <Status state={run.state} />
         <span>

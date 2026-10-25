@@ -108,6 +108,10 @@ func (s *Server) enableRepository(ctx context.Context, repo gh.Repository, versi
 			return Management{}, fmt.Errorf("repository renamed; update workflow and target bindings explicitly: %w", storage.ErrConflict)
 		}
 		if strings.EqualFold(old.Name, repo.Name) {
+			if old.RepositoryID != 0 && old.RepositoryID != repo.ID {
+				return Management{}, fmt.Errorf("repository name now belongs to a different GitHub repository ID; remove the old registration explicitly before reconnecting: %w", storage.ErrConflict)
+			}
+
 			next.Repositories[i] = RepositoryConfig{Name: repo.Name, RepositoryID: repo.ID, InstallationID: repo.InstallationID, Enabled: true}
 			found = true
 		}

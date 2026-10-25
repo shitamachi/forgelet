@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"path"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +30,10 @@ func (f *FluxObserver) Observe(ctx context.Context, t delivery.Target) (delivery
 		return result, fmt.Errorf("observe Flux Kustomization: %w", err)
 	}
 	result.Revision, _, _ = unstructured.NestedString(k.Object, "status", "lastAppliedRevision")
+	fluxPath, _, _ := unstructured.NestedString(k.Object, "spec", "path")
+	if path.Clean(fluxPath) != path.Dir(t.Path) {
+		return result, fmt.Errorf("flux Kustomization path differs from registered GitOps directory")
+	}
 	sourceKind, _, _ := unstructured.NestedString(k.Object, "spec", "sourceRef", "kind")
 	sourceName, _, _ := unstructured.NestedString(k.Object, "spec", "sourceRef", "name")
 	sourceNS, _, _ := unstructured.NestedString(k.Object, "spec", "sourceRef", "namespace")

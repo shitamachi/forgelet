@@ -38,6 +38,8 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 }
 const part = encodeURIComponent
 export const api = {
+  retryChecks: (id: string) =>
+    request(`/runs/${part(id)}/checks/retry`, { method: 'POST', body: '{}' }),
   session: (signal?: AbortSignal) =>
     request<import('./types').AuthSession>('/auth/session', { signal }),
   login: (username: string, password: string) =>

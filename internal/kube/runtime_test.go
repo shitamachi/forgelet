@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -161,5 +165,92 @@ func TestAuthenticateHonorsContext(t *testing.T) {
 	_, err := rt.Authenticate(t.Context(), "token")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+// A terminating Pod may flush logs/results, but must retain its exact identity.
+func TestTerminatingIdentityAndForeignOwnership(t *testing.T) {
+	rt, client, job, profile := fixture(t)
+	ctx := t.Context()
+	uid, err := rt.Ensure(ctx, job, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.PodUID = uid
+	client.PrependReactor("create", "tokenreviews", func(ktesting.Action) (bool, kruntime.Object, error) {
+		return true, &authenticationv1.TokenReview{Status: authenticationv1.TokenReviewStatus{Authenticated: true, Audiences: []string{Audience}, User: authenticationv1.UserInfo{Username: "system:serviceaccount:ci:" + ServiceAccount, Extra: map[string]authenticationv1.ExtraValue{"authentication.kubernetes.io/pod-name": {job.PodName}, "authentication.kubernetes.io/pod-uid": {uid}}}}}, nil
+	})
+	pod, err := client.CoreV1().Pods("ci").Get(ctx, job.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := metav1.Now()
+	pod.DeletionTimestamp = &at
+	if _, err := client.CoreV1().Pods("ci").Update(ctx, pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	who, err := rt.Authenticate(ctx, "token")
+	if err != nil || !who.Terminating || who.JobID != job.ID {
+		t.Fatal(who, err)
+	}
+	pod.Labels[Label] = "different-job"
+	if _, err := client.CoreV1().Pods("ci").Update(ctx, pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Observe(ctx, job); !errors.Is(err, ErrPermanent) {
+		t.Fatal(err)
+	}
+	if err := rt.Delete(ctx, job); !errors.Is(err, ErrPermanent) {
+		t.Fatal(err)
+	}
+	if _, err := client.CoreV1().Pods("ci").Get(ctx, job.PodName, metav1.GetOptions{}); err != nil {
+		t.Fatal("foreign pod was deleted", err)
+	}
+}
+func TestRuntimeFailureClassificationAndTimeoutPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		permanent bool
+	}{
+		{"forbidden", apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "pod", errors.New("denied")), true},
+		{"invalid", apierrors.NewBadRequest("invalid field"), true},
+		{"throttled", apierrors.NewTooManyRequests("slow down", 1), false},
+		{"unavailable", apierrors.NewServiceUnavailable("offline"), false},
+		{"transport", errors.New("connection reset"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, client, job, profile := fixture(t)
+			client.PrependReactor("create", "pods", func(ktesting.Action) (bool, kruntime.Object, error) { return true, nil, tc.err })
+			if _, err := rt.Ensure(t.Context(), job, profile); err == nil || errors.Is(err, ErrPermanent) != tc.permanent {
+				t.Fatal(err)
+			}
+		})
+	}
+	rt, client, job, profile := fixture(t)
+	job.Plan.TimeoutSeconds = 0
+	profile.ControlTimeout = 8 * time.Minute
+	if _, err := rt.Ensure(t.Context(), job, profile); err != nil {
+		t.Fatal(err)
+	}
+	pod, err := client.CoreV1().Pods("ci").Get(t.Context(), job.PodName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *pod.Spec.ActiveDeadlineSeconds != 1320 || *pod.Spec.TerminationGracePeriodSeconds < 30 {
+		t.Fatal(pod.Spec)
+	}
+	found := false
+	for _, v := range pod.Spec.Containers[0].Env {
+		if v.Name == "FORGELET_CONTROL_TIMEOUT" && v.Value == "8m0s" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("profile control timeout missing")
+	}
+	profile.ControlTimeout = 2 * time.Hour
+	if profile.Validate() == nil {
+		t.Fatal("unbounded outage timeout")
 	}
 }

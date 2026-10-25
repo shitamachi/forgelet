@@ -127,6 +127,49 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		must(t, json.Unmarshal(request(t, "GET", "/api/runs/"+id, nil, 200), &item))
 		return item
 	}
+	t.Run("resolved needs plan stays below the claim limit", func(t *testing.T) {
+		producer := func(key string) string {
+			return fmt.Sprintf(`  %s:
+    runs-on: homelab
+    outputs:
+      blob: '${{ steps.emit.outputs.blob }}'
+    steps:
+      - id: emit
+        shell: sh
+        run: |
+          printf 'blob=' >> "$GITHUB_OUTPUT"
+          head -c 61440 /dev/zero | tr '\000' y >> "$GITHUB_OUTPUT"
+          printf '\n' >> "$GITHUB_OUTPUT"
+`, key)
+		}
+		source := "on: push\njobs:\n" + producer("left") + producer("right") + fmt.Sprintf(`  join:
+    needs: [left, right]
+    runs-on: homelab
+    continue-on-error: true
+    steps:
+      - run: |
+          echo SHOULD_NOT_RUN
+          #%s
+  after:
+    needs: join
+    runs-on: homelab
+    steps:
+      - run: echo SHOULD_NOT_RUN
+  independent:
+    runs-on: homelab
+    steps:
+      - run: echo independent-ok
+`, strings.Repeat("x", 850<<10))
+		record := create(t, source)
+		result := finishRun(t, ctx, get, record.ID)
+		join := jobByKey(t, result, "join")
+		if result.State != run.Failed || join.State != run.Failed || join.PodUID != "" || join.Result == nil || !strings.Contains(join.Result.Error, "resolved execution plan") {
+			t.Fatalf("unclaimable plan started or failure was hidden: state=%s join=%+v", result.State, join.Result)
+		}
+		if jobByKey(t, result, "after").State != run.Skipped || jobByKey(t, result, "independent").State != run.Succeeded {
+			t.Fatal("oversized plan blocked failure propagation or independent execution")
+		}
+	})
 	t.Run("workspace belongs to executor and Git accepts root checkout", func(t *testing.T) {
 		item := create(t, `on: push
 jobs:
@@ -296,17 +339,21 @@ jobs:
 				if j.State != run.Cancelled {
 					t.Fatalf("job not cancelled: %+v", j)
 				}
+				if len(j.Plan.Needs) == 0 && (j.Result == nil || j.Result.Error != "") {
+					t.Fatalf("executor cancellation flush was not acknowledged: %+v", j.Result)
+				}
 			}
 			return true
 		})
 	})
 	t.Run("server restart keeps active attempt and dependent jobs", func(t *testing.T) {
-		item := create(t, "on: push\njobs:\n  restart:\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: |\n          echo before-restart\n          sleep 12\n          echo after-restart\n  dependent:\n    needs: restart\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: echo dependency-finished\n")
-		var uid string
+		item := create(t, "on: push\njobs:\n  restart:\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: |\n          echo before-restart\n          while [ ! -f /workspace/control-plane-recovered ]; do sleep 1; done\n          echo after-restart\n  dependent:\n    needs: restart\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: echo dependency-finished\n")
+		var uid, podName string
 		waitFor(t, ctx, "attempt starts", func() bool {
 			current := get(t, item.ID)
 			if jobByKey(t, current, "restart").State == run.Running {
 				uid = jobByKey(t, current, "restart").PodUID
+				podName = jobByKey(t, current, "restart").PodName
 				if jobByKey(t, current, "dependent").State != run.Queued {
 					t.Fatal("dependent job started before dependency completed")
 				}
@@ -314,7 +361,46 @@ jobs:
 			}
 			return false
 		})
-		restartServer(t, ctx, client, httpClient, endpoint)
+		scale, err := client.AppsV1().Deployments("forgelet").GetScale(ctx, "forgelet", metav1.GetOptions{})
+		must(t, err)
+		scale.Spec.Replicas = 0
+		_, err = client.AppsV1().Deployments("forgelet").UpdateScale(ctx, "forgelet", scale, metav1.UpdateOptions{})
+		must(t, err)
+		defer func() {
+			cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer done()
+			current, e := client.AppsV1().Deployments("forgelet").GetScale(cleanupCtx, "forgelet", metav1.GetOptions{})
+			if e != nil {
+				return
+			}
+			current.Spec.Replicas = 1
+			_, _ = client.AppsV1().Deployments("forgelet").UpdateScale(cleanupCtx, "forgelet", current, metav1.UpdateOptions{})
+		}()
+		waitFor(t, ctx, "control plane stopped", func() bool {
+			ps, e := client.CoreV1().Pods("forgelet").List(ctx, metav1.ListOptions{LabelSelector: "app=forgelet"})
+			return e == nil && len(ps.Items) == 0
+		})
+		// Exceeds the former one-minute polling limit. Keep the shell alive
+		// without producing output until the control plane is back.
+		timer := time.NewTimer(70 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatal(ctx.Err())
+		case <-timer.C:
+		}
+		pod, err := client.CoreV1().Pods("forgelet").Get(ctx, podName, metav1.GetOptions{})
+		must(t, err)
+		if string(pod.UID) != uid || pod.Status.Phase != corev1.PodRunning {
+			t.Fatalf("attempt died during outage: %+v", pod.Status)
+		}
+		scale, err = client.AppsV1().Deployments("forgelet").GetScale(ctx, "forgelet", metav1.GetOptions{})
+		must(t, err)
+		scale.Spec.Replicas = 1
+		_, err = client.AppsV1().Deployments("forgelet").UpdateScale(ctx, "forgelet", scale, metav1.UpdateOptions{})
+		must(t, err)
+		waitFor(t, ctx, "control plane restored", func() bool { return probeStatus(t, ctx, httpClient, endpoint+"/healthz") == 200 })
+		clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", podName, "--", "touch", "/workspace/control-plane-recovered")
 		waitFor(t, ctx, "run recovers", func() bool {
 			current := get(t, item.ID)
 			if jobByKey(t, current, "restart").PodUID != uid {
@@ -330,6 +416,29 @@ jobs:
 			return false
 		})
 		request(t, "POST", "/api/backup", nil, 201)
+	})
+	t.Run("ownership drift interrupts without deleting a foreign pod", func(t *testing.T) {
+		item := create(t, "on: push\njobs:\n  identity:\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: sleep 90\n")
+		var job run.Job
+		waitFor(t, ctx, "identity job running", func() bool { job = get(t, item.ID).Jobs[0]; return job.State == run.Running })
+		pod, err := client.CoreV1().Pods("forgelet").Get(ctx, job.PodName, metav1.GetOptions{})
+		must(t, err)
+		pod.Labels["forgelet.dev/job"] = "foreign-job"
+		_, err = client.CoreV1().Pods("forgelet").Update(ctx, pod, metav1.UpdateOptions{})
+		must(t, err)
+		defer func() {
+			cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer done()
+			zero := int64(0)
+			uid := types.UID(job.PodUID)
+			_ = client.CoreV1().Pods("forgelet").Delete(cleanupCtx, job.PodName, metav1.DeleteOptions{GracePeriodSeconds: &zero, Preconditions: &metav1.Preconditions{UID: &uid}})
+		}()
+		waitFor(t, ctx, "identity mismatch recorded", func() bool { return get(t, item.ID).Jobs[0].State == run.Interrupted })
+		pod, err = client.CoreV1().Pods("forgelet").Get(ctx, job.PodName, metav1.GetOptions{})
+		must(t, err)
+		if pod.DeletionTimestamp != nil || string(pod.UID) != job.PodUID {
+			t.Fatal("foreign Pod deleted or replaced")
+		}
 	})
 	t.Run("lost executor is interrupted without replay", func(t *testing.T) {
 		item := create(t, "on: push\njobs:\n  lost:\n    runs-on: homelab\n    steps:\n      - shell: sh\n        run: sleep 30\n")

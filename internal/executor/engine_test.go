@@ -322,3 +322,16 @@ func TestExecuteConcurrentIsolation(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutorTransportEnvironmentIsNotInheritedBySteps(t *testing.T) {
+	for _, name := range []string{"FORGELET_URL", "FORGELET_CONTROL_TIMEOUT", "FORGELET_REGISTRY_CONFIG", "TOKEN_FILE", "POD_UID", "JOB_ID", "WORKSPACE"} {
+		t.Setenv(name, "internal-value")
+	}
+	t.Setenv("VISIBLE_SETTING", "preserved")
+	result, err := Execute(t.Context(), run.Plan{Steps: []run.Step{{ID: "env", Shell: "sh", Run: `test -z "${FORGELET_URL:-}${FORGELET_CONTROL_TIMEOUT:-}${FORGELET_REGISTRY_CONFIG:-}${TOKEN_FILE:-}${POD_UID:-}${JOB_ID:-}${WORKSPACE:-}"
+test "$VISIBLE_SETTING" = preserved
+test -n "$GITHUB_WORKSPACE"`}}}, Options{Workspace: t.TempDir()})
+	if err != nil || result.State != run.Succeeded {
+		t.Fatal(result, err)
+	}
+}

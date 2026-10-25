@@ -7,7 +7,7 @@ import (
 )
 
 // Plan size limits keep one executor claim response below the executor's
-// 1 MiB runtime response cap, and bound the total job bodies written per run.
+// 1 MiB runtime response cap, and bound the total initial plans admitted per run.
 const (
 	MaxPlanBytes    = 900 << 10
 	MaxRunPlanBytes = 16 << 20
@@ -144,6 +144,10 @@ type Plan struct {
 }
 
 type Job struct {
+	CheckError      string    `json:"check_error,omitempty"`
+	RuntimeFailures int       `json:"runtime_failures,omitempty"`
+	RuntimeError    string    `json:"runtime_error,omitempty"`
+	RuntimeRetryAt  time.Time `json:"runtime_retry_at,omitzero"`
 	LogsExpired     bool      `json:"logs_expired,omitempty"`
 	ID              string    `json:"id"`
 	RunID           string    `json:"run_id"`

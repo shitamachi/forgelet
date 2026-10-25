@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	gh "github.com/shitamachi/forgelet/internal/provider/github"
 	"github.com/shitamachi/forgelet/internal/run"
@@ -35,7 +36,7 @@ func TestPathFilterDiagnosticVersusRetry(t *testing.T) {
 			if permanent && err != nil || !permanent && err == nil {
 				t.Fatal(err)
 			}
-			pending, err := h.store.PendingEvents(t.Context())
+			pending, err := h.store.PendingEvents(t.Context(), time.Now().Add(time.Minute))
 			if err != nil || permanent && len(pending) != 0 || !permanent && len(pending) != 1 {
 				t.Fatal(pending, err)
 			}

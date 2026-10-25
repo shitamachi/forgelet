@@ -76,7 +76,7 @@ func (s *Store) GetRun(ctx context.Context, id string) (run.Run, error) {
 	return record, err
 }
 
-func getRun(ctx context.Context, q queryer, id string) (run.Run, error) {
+func getRun(ctx context.Context, q queryer, id string, summary ...bool) (run.Run, error) {
 	var record run.Run
 	var body []byte
 	if err := q.QueryRowContext(ctx, "SELECT body FROM runs WHERE id=?", id).Scan(&body); err != nil {
@@ -85,7 +85,11 @@ func getRun(ctx context.Context, q queryer, id string) (run.Run, error) {
 	if err := json.Unmarshal(body, &record); err != nil {
 		return record, fmt.Errorf("decode run: %w", err)
 	}
-	jobs, err := queryJobs(ctx, q, "SELECT body FROM jobs WHERE run_id=? ORDER BY created_at,id", id)
+	query := "SELECT body FROM jobs WHERE run_id=? ORDER BY created_at,id"
+	if len(summary) > 0 && summary[0] {
+		query = "SELECT json_remove(body,'$.plan.event','$.plan.steps','$.plan.env','$.plan.vars','$.plan.inputs','$.plan.needs_context','$.result.steps','$.result.outputs') FROM jobs WHERE run_id=? ORDER BY created_at,id"
+	}
+	jobs, err := queryJobs(ctx, q, query, id)
 	if err != nil {
 		return record, err
 	}
@@ -123,6 +127,12 @@ func aggregate(jobs []run.Job) run.State {
 }
 
 func (s *Store) ListRuns(ctx context.Context) ([]run.Run, error) {
+	return s.listRuns(ctx, false)
+}
+func (s *Store) ListRunSummaries(ctx context.Context) ([]run.Run, error) {
+	return s.listRuns(ctx, true)
+}
+func (s *Store) listRuns(ctx context.Context, summary bool) ([]run.Run, error) {
 	var records []run.Run
 	err := s.transaction(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, "SELECT id FROM runs ORDER BY created_at DESC,id DESC LIMIT 100")
@@ -142,7 +152,7 @@ func (s *Store) ListRuns(ctx context.Context) ([]run.Run, error) {
 			return fmt.Errorf("list runs: %w", err)
 		}
 		for _, id := range ids {
-			record, err := getRun(ctx, tx, id)
+			record, err := getRun(ctx, tx, id, summary)
 			if err != nil {
 				return err
 			}
@@ -201,7 +211,7 @@ func saveJob(ctx context.Context, tx *sql.Tx, job run.Job) error {
 	if job.State.Terminal() {
 		terminalAt = job.UpdatedAt.UnixNano()
 	}
-	r, err := tx.ExecContext(ctx, "UPDATE jobs SET check_dirty=CASE WHEN state<>? THEN 1 ELSE check_dirty END,state=?,body=?,terminal_at=CASE WHEN terminal_at=0 THEN ? ELSE terminal_at END WHERE id=?", job.State, job.State, body, terminalAt, job.ID)
+	r, err := tx.ExecContext(ctx, "UPDATE jobs SET check_dirty=CASE WHEN state<>? THEN 1 ELSE check_dirty END,check_attempts=CASE WHEN state<>? THEN 0 ELSE check_attempts END,check_next_attempt_at=CASE WHEN state<>? THEN 0 ELSE check_next_attempt_at END,state=?,body=?,terminal_at=CASE WHEN terminal_at=0 THEN ? ELSE terminal_at END WHERE id=?", job.State, job.State, job.State, job.State, body, terminalAt, job.ID)
 	return affected(r, err, "save job")
 }
 

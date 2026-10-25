@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
@@ -183,10 +184,10 @@ func validateResult(result run.Result) error {
 	return nil
 }
 
-func (s *Store) PendingChecks(ctx context.Context) ([]run.Check, error) {
+func (s *Store) PendingChecks(ctx context.Context, times ...time.Time) ([]run.Check, error) {
 	var checks []run.Check
 	err := s.transaction(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, "SELECT jobs.id,check_id FROM jobs JOIN runs ON runs.id=jobs.run_id WHERE check_dirty=1 AND runs.installation_id>0 ORDER BY jobs.created_at,jobs.id LIMIT 100")
+		rows, err := tx.QueryContext(ctx, "SELECT jobs.id,check_id FROM jobs JOIN runs ON runs.id=jobs.run_id WHERE check_dirty=1 AND runs.installation_id>0 AND check_next_attempt_at<=? ORDER BY check_next_attempt_at,jobs.created_at,jobs.id LIMIT 100", retryTime(times).UnixNano())
 		if err != nil {
 			return fmt.Errorf("pending checks: %w", err)
 		}
@@ -223,6 +224,9 @@ func (s *Store) PendingChecks(ctx context.Context) ([]run.Check, error) {
 }
 
 func (s *Store) SaveCheck(ctx context.Context, id string, remoteID int64, state run.State) error {
+	return s.saveCheck(ctx, id, remoteID, state, nil)
+}
+func (s *Store) saveCheck(ctx context.Context, id string, remoteID int64, state run.State, previous *int64) error {
 	if remoteID <= 0 {
 		return fmt.Errorf("invalid remote check ID: %w", ErrConflict)
 	}
@@ -231,10 +235,10 @@ func (s *Store) SaveCheck(ctx context.Context, id string, remoteID int64, state 
 		if err := tx.QueryRowContext(ctx, "SELECT check_id FROM jobs WHERE id=?", id).Scan(&existing); err != nil {
 			return fmt.Errorf("get remote check ID: %w", notFound(err))
 		}
-		if existing != 0 && existing != remoteID {
+		if previous != nil && existing != *previous || previous == nil && existing != 0 && existing != remoteID {
 			return fmt.Errorf("remote check ID already assigned: %w", ErrConflict)
 		}
-		r, err := tx.ExecContext(ctx, "UPDATE jobs SET check_id=?,check_dirty=CASE WHEN state=? THEN 0 ELSE 1 END WHERE id=?", remoteID, state, id)
+		r, err := tx.ExecContext(ctx, "UPDATE jobs SET check_id=?,check_dirty=CASE WHEN state=? THEN 0 ELSE 1 END,check_attempts=0,check_next_attempt_at=0,body=json_remove(body,'$.check_error') WHERE id=?", remoteID, state, id)
 		return affected(r, err, "save check")
 	})
 }

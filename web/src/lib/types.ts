@@ -33,6 +33,7 @@ export interface StepResult {
   outputs?: Record<string, string>
 }
 export interface Job {
+  check_error?: string
   id: string
   run_id: string
   name: string
