@@ -112,7 +112,7 @@ GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/app
 - [x] **8.5 Testcontainers 回归**：全量 19 个场景通过，1020.446 秒；真实 k3s 验证待授权不启用、外部确认后实际 Pod、session/配置重启和原 CI/CD。工作台 4 组浏览器 26.0 秒、认证 1 组 8.0 秒，认证专项 86.19 秒；临时容器已清理。
 - [x] **8.6 实际 homelab 更新**：2026-10-25 部署含 review #1/#2 修复的 server/executor（amd64 digest 见 status）；健康、session、匿名 401、嵌入 UI 与备份/数据计数通过。该次部署未登录管理界面、未触发真实 CI，也未改变 GitHub App 授权范围。
 
-## 阶段 9：Review 正确性与可靠性修正（代码与自动验证完成，未部署）
+## 阶段 9：Review 正确性与可靠性修正（代码、自动验证与 homelab 部署完成）
 
 - [x] **9.1 结果可信度与大小限制**：确认已有 #1/#2 修复并补齐 needs 输出合入后的大小检查；增加 executor → HTTP → SQLite 的 COE 基础设施失败回归，沿用计划 900 KiB / run 16 MiB 限制。
 - [x] **9.2 Checks 与事件投递**：空详情 URL、远端 Check 404 重新对账与 CAS；持久化退避/12 次预算/最终诊断/管理员重试，失败项不阻塞后续记录，详情页可独立重试 Checks。
@@ -120,11 +120,11 @@ GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/app
 - [x] **9.4 配置与身份**：rerun 校验启用/profile/build、同名新仓库 ID 冲突、Flux path；工作负载 JobID 比较、旧计划默认 deadline、内部环境过滤、加密密钥丢失/替换启动失败。
 - [x] **9.5 列表开销**：运行列表从 SQL 移除重复执行 payload/步骤/变量/详细结果；详情/claim 保持完整。
 - [x] **9.6 自动验证**：单测/HTTP/SQLite/race、make verify、35 个 Vitest、14 组 Chromium；全量 Testcontainers 20 个场景通过（1046.235 秒），覆盖 70 秒停机后同 UID 恢复、真实 Pod 所有权漂移与取消收尾。全量启动后追加的 needs 大小检查另用最新镜像专项通过（104.174 秒）；全量中的工作台 4 组和认证 1 组真实浏览器亦通过。
-- [ ] **9.7 homelab 部署**：本轮未请求部署，不操作真实集群；部署前需备份 v5 数据库与原密钥。线上仍为阶段 8 + #1/#2 镜像。
+- [x] **9.7 homelab 部署**：2026-10-25 部署 server `sha256:fbc91710...`、executor `sha256:cc230abb...`（amd64 digest 见 status）；schema v5→v6 迁移先在本地生产快照副本上验证，再升级线上库。健康/session/匿名 401/UI 与部署前后数据计数通过；未登录管理界面、未触发真实 CI。v5 备份和旧镜像记录保留，旧程序不能直接打开 v6。
 
 ## 接下来
 
-阶段 8 与 review #1/#2 修复已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。下一批按实际需要实现 6.3b / 6.5；review #3–#10 的实现与验证进度见阶段 9。批量、rename 和后台同步继续按需实现。
+阶段 8、review #1/#2 与阶段 9 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。下一批按实际需要实现 6.3b / 6.5；批量、rename 和后台同步继续按需实现。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。

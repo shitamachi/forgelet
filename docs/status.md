@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-25（Asia/Shanghai）。当前：**阶段 9 的 Review 修正与自动验证已完成（make verify、全量 20 个 k3s 场景及最新镜像 needs 大小专项均通过）；线上仍为阶段 8 + review #1/#2 镜像，本轮未部署、未操作真实集群或 GitHub。**
+更新：2026-10-25（Asia/Shanghai）。当前：**阶段 9 已部署 homelab（schema v5→v6，server/executor 新 digest）；迁移、健康、session、匿名 401、嵌入 UI 与备份/数据计数验证通过。未触发真实 CI，也未扩大 GitHub App 授权。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 已交付
@@ -12,7 +12,8 @@
 - 正式 server/executor Dockerfile、最小 k3s 安装清单、race 单测、进程内集成与 Testcontainers 临时 k3s。
 - artifact/cache PVC 存储、按需 rootless BuildKit、GitOps direct/PR、Flux 健康观测、限定 image digest 回滚。
 - 旧实现已清理并保留仓库外完整快照；恢复位置见本页末尾。
-- 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证，剩余 review 项见下方。
+- 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证。
+- 2026-10-25 阶段 9 可靠性修正（review #3–#10 及 UI 仓库列表）已提交并部署；schema v6，详见本轮记录。
 
 ## 本轮：评估并修正外部 Review（阶段 9）
 
@@ -23,8 +24,10 @@
 - **已实现 #8/#9/#10**：rerun 检查仓库启用和当前 profile/BuildKit 能力；同名新 repository ID 返回冲突；Flux spec.path 必须匹配目标目录。
 - **其他采纳**：旧零 timeout 计划 deadline 1320 秒、身份比较 JobID、普通步骤过滤内部传输环境变量、缺失/错误加密主密钥阻止启动、运行列表在 SQL 移除执行大字段、token/open/session 请求规则文档对齐。
 - **明确暂缓/保留**：run 级共享 event/vars 存储改造、GHE clone 配置、可信代理与登录限速模型后续按实际需要实现；blob 目录未知文件继续 fail-closed。没有新增产品依赖、服务或审批流程。
-- **自动验证**：make verify 已通过：Go 构建/race、HTTP/SQLite、lint 0 issues、generate、TypeScript/格式检查、35 个 Vitest、14 组 Chromium（最终 32.6 秒）；另补的 YAML 时长配置 race 回归通过。全量 Testcontainers **20 个叶子场景通过，1046.235 秒**；真实工作台 Chromium 4 组 48.4 秒、认证 Chromium 1 组 8.0 秒。覆盖 BuildKit/GitOps direct/PR/Flux 部署与回滚、真实 Node Actions/工具链、会话与配置重启、磁盘、日志历史清理，临时容器已全部清理。全量测试启动后追加的 needs 大小 guard 使用最新镜像另跑下述专项，不混称该次全量已包含此新增场景。首次停机测试遇到测试脚本复用旧 Scale resourceVersion 的冲突，已改为恢复前重新读取，清理旧临时容器后重跑，不记为产品通过。临时 k3s 新增 70 秒控制面离线后原 UID 恢复、真实 Pod 标签漂移不接管/删除、取消结果收尾断言；调度合入超大 needs 输出另用最新镜像专项验证通过（Testcontainers 104.174 秒，实际场景 4.47 秒）：上游真实执行 Pod 生成输出，join 无 Pod 且显式 failure，COE 不吞错、下游 skipped、独立任务 success。schema v5 → v6 迁移与待处理工作保留有独立回归。
-- **实际部署**：本轮未请求且未执行。schema 已升 v6，未来部署前需保留 v5 备份和原密钥；旧程序不能直接读取 v6 数据库。没有自动提交或推送。
+- **提交与远端**：`32e3916`（添加仓库弹窗默认展示全部仓库、滚动加载）、`4ac1ca4`（阶段 9 可靠性批次，含 schema v6）、`4f626da`（阶段 9 文档）。分支 `chore/homelab-reset-20261023` 已推送 `origin`，`main` 尚未合并。
+- **自动验证**：批次记录中的 make verify 已通过：Go 构建/race、HTTP/SQLite、lint 0 issues、generate、TypeScript/格式检查、35 个 Vitest、14 组 Chromium（最终 32.6 秒）；另补的 YAML 时长配置 race 回归通过。全量 Testcontainers **20 个叶子场景通过，1046.235 秒**；真实工作台 Chromium 4 组 48.4 秒、认证 Chromium 1 组 8.0 秒。部署前复核了 `go test -race ./...`、lint 0 issues、`tsc -b`、35 个 Vitest 和 14 组 Chromium；本机 `make verify` 在 Playwright 浏览器安装阶段因沙箱无法写 `~/Library/Caches/ms-playwright` 失败，浏览器测试已单独通过，不把该安装失败计为代码失败。全量测试启动后追加的 needs 大小 guard 使用最新镜像另跑专项，不混称该次全量已包含此新增场景；临时 k3s 新增 70 秒控制面离线后原 UID 恢复、真实 Pod 标签漂移不接管/删除、取消结果收尾断言。schema v5 → v6 迁移与待处理工作保留有独立回归。
+- **实际部署**：2026-10-25 部署 server `sha256:fbc91710a659b85b17650f39115472b4ac992de578e01d62f005eaefadaaf885`、executor `sha256:cc230abba6a212797beccf88cb792b2e8c9faaf7ecba6d945961059af786d59c`（linux/amd64）；ConfigMap 2 处 executor digest 已更新。rollout 1/1 Ready、0 restarts。升级前保存 Deployment/ConfigMap 与 v5 SQLite 快照；本地副本上先执行 `PrepareRestore` + `Open` 迁移验证（`user_version=6`、`integrity_check=ok`、16 runs/34 jobs/1 admin），再在生产库启动迁移。部署后 v6 快照为 16 runs/34 jobs/1 admin/8 events、`integrity_check=ok`。旧 stage 8 server/executor digest 分别为 `sha256:fbbd4fd1...`、`sha256:751bd3c6...`；旧程序不能直接打开 v6，回退需使用部署前 v5 快照和原密钥。
+- **实际验证**：从集群内访问公网入口，`/healthz` 200；`/api/auth/session` 返回 `mode=session`、`github_enabled=true`；首页为当前嵌入 bundle；匿名 `/api/runs` 401。未用管理员密码登录，未触发新的 GitHub push/manual CI 运行。仓库添加弹窗默认展示全部仓库，首屏 20 条、滚动/按钮加载更多；14 组 Chromium 覆盖默认列表、50 仓库增量加载、搜索过滤和无权限项。
 
 验证日志：`/tmp/forgelet-review-verify-latest.log`、`/tmp/forgelet-review-integration-final.log`、`/tmp/forgelet-review-integration-size.log`；升级/重试行为见 architecture 和 deployment。
 

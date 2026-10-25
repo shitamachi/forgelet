@@ -381,15 +381,17 @@ Run 状态由 jobs 聚合，不单独维护。全部 queued → queued；存在�
 `make verify` 串起构建、race 测试、lint、generate、前端单测和 Chromium；`make test-integration` 单独运行，
 不读取用户 kubeconfig。集成测试使用 GitHub API fixture，但 Git 对象、BuildKit、registry、Flux 和 Pod 是真实的。
 
-当前文档记录（`docs/status.md` 阶段 8）：`make verify` 通过，35 个 Vitest、13 组 Chromium；
-全量 Testcontainers 19 个叶子场景通过。**这些是文档记录的历史运行结果，不等于本次会话重新跑过。**
+当前文档记录（`docs/status.md` 阶段 9）：`make verify` 通过，35 个 Vitest、14 组 Chromium；
+全量 Testcontainers 20 个叶子场景通过。**这些是文档记录的历史运行结果，不等于本次会话重新跑过。**
 
-2026-10-25 实际部署：含 review #1/#2 修复的 server/executor 已更新到 homelab，1/1 Ready、0 restarts；
+2026-10-25 实际部署：阶段 9 的 server/executor 已更新到 homelab（schema v6），1/1 Ready、0 restarts；
 `/healthz` 200、`/api/auth/session` 为 session 模式、匿名 `/api/runs` 401、嵌入 UI bundle 正常；
-部署前后 SQLite 快照均为 16 runs / 34 jobs / 1 admin。未触发新的真实 CI 运行。
+升级前 v5 快照为 16 runs / 34 jobs / 1 admin，升级后 v6 快照同样保留这些数据（8 events）。
+v5→v6 迁移先在生产快照副本上验证，再启动线上迁移。未触发新的真实 CI 运行。
 
-修复后额外确认：`go test -race ./...` 通过，`golangci-lint run --build-tags integration` 0 issues，
-`npm --prefix web run typecheck` 与 35 个 Vitest 通过。未重跑 `make verify`、Playwright 或 Testcontainers。
+部署前复核：`go test -race ./...` 通过，`golangci-lint run --build-tags integration` 0 issues，
+`npm --prefix web run typecheck`、35 个 Vitest 和 14 组 Chromium 通过。本机 `make verify` 在
+Playwright 浏览器安装阶段因沙箱无法写缓存失败；浏览器测试单独通过，不把安装失败计为代码失败。
 
 ## 10. 当前边界与风险
 
@@ -397,9 +399,9 @@ Run 状态由 jobs 聚合，不单独维护。全部 queued → queued；存在�
 
 1. **实现只在工作分支。** 当前单进程实现和文档已提交到 `chore/homelab-reset-20261023` 并推送 `origin`，
    但 `main` 仍指向旧架构；需要在 review 后创建 PR 并决定合并方式，避免长期分支漂移。
-2. **阶段 8 已部署，但没有新的真实 CI 运行。** 2026-10-25 已更新 server/executor 并验证健康、session、
-   匿名 401、UI 和备份数据；本批没有触发 push/manual 运行，也没有扩大 GitHub App 授权。
-   接入/首跑仍需在真实页面操作。
+2. **阶段 9 已部署，但没有新的真实 CI 运行。** 2026-10-25 已更新 server/executor（schema v6）并验证
+   迁移、健康、session、匿名 401、UI 和备份数据；本批没有触发 push/manual 运行，也没有扩大 GitHub App 授权。
+   接入/首跑仍需在真实页面操作；v6 之后旧程序不能直接回退，需使用部署前 v5 快照和原密钥。
 3. **没有安装生命周期同步。** 6.5 未实现：没有 installation/installation_repositories webhook、后台校正、
    撤权后的排队/凭证清理；6.3b 的批量启用与 rename 自动迁移也未实现。
 4. **单点与调度延迟。** 单副本 Recreate；控制面不可用期间事件会堆积在 GitHub 重投/SQLite 中；

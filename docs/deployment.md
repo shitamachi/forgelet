@@ -617,6 +617,8 @@ App 第一次进入新账号/组织仍需安装；组织审批/策略不允许�
 
 本次 schema 升级为 v6，增加事件/Checks 重试元数据。部署前保存升级前 SQLite 备份与原加密主密钥；旧 v5 程序不能直接打开 v6 数据库，回退需使用升级前备份并按原恢复隔离流程处理，不能只回退镜像。已有 GitHub 凭据时丢失或换错 auth-encryption.key 将阻止启动；恢复原密钥后再启动。
 
+2026-10-25 已按此流程部署 homelab：server `sha256:fbc91710...`、executor `sha256:cc230abb...`（linux/amd64）。升级前 v5 快照为 16 runs/34 jobs/1 admin；先在本地副本执行 `PrepareRestore` + `Open` 验证 v6 迁移，再启动线上迁移。部署后 1/1 Ready、0 restarts，v6 快照 integrity ok 且数据计数保持；`/healthz`、session、匿名 401 和嵌入 UI 验证通过。未登录管理界面、未触发真实 CI。
+
 事件拉取/workflow admission、Checks 回写使用 2 秒起步、最多 5 分钟的指数退避，连续失败 12 次后暂停，重启保留退避时间。事件在 GET /api/events 保留最终 error，Checks 在 job.check_error 保留诊断，运行详情页可点击“重新回写 Checks”。管理员可用已登录同源 JSON 客户端请求：
 
 - POST /api/runs/{runID}/checks/retry：重置该 run 的回写预算，不重跑执行。
