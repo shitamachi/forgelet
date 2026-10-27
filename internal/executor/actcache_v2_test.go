@@ -7,12 +7,50 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shitamachi/forgelet/internal/blob"
 )
+
+func TestActCacheV2SDK64MiBBlockBoundary(t *testing.T) {
+	c, err := startActCache(t.Context(), &localServices{}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.uploads[1] = &cacheUpload{File: filepath.Join(c.dir, "sdk"), Blocks: map[string]string{}, BlockDigests: map[string][32]byte{}}
+	block := base64.StdEncoding.EncodeToString([]byte("0001"))
+	body := bytes.Repeat([]byte{'x'}, maxCacheBlockBytes+1)
+	for _, tc := range []struct {
+		name string
+		size int
+		want int
+	}{
+		{"empty", 0, 400},
+		{"oversized", maxCacheBlockBytes + 1, 413},
+		{"sdk chunk", maxCacheBlockBytes, 201},
+		{"idempotent retry", maxCacheBlockBytes, 201},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, c.URL()+"upload/1?comp=block&blockid="+block, bytes.NewReader(body[:tc.size]))
+			res := httptest.NewRecorder()
+			c.azureUpload(res, req, "1")
+			if res.Code != tc.want {
+				t.Fatalf("status %d: %s", res.Code, res.Body.String())
+			}
+			wantBytes := int64(0)
+			if tc.want == 201 {
+				wantBytes = maxCacheBlockBytes
+			}
+			if c.uploads[1].Staged != wantBytes {
+				t.Fatalf("rejected upload/retry changed quota: %d", c.uploads[1].Staged)
+			}
+		})
+	}
+}
 
 func TestActCacheV2BlocksPersistenceCapabilityAndRange(t *testing.T) {
 	store, err := blob.Open(t.TempDir(), blob.DefaultLimits())

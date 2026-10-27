@@ -23,6 +23,9 @@ import (
 const cacheStageLimit = 512 << 20
 const maxCacheBlocks = 256
 
+// setup-go's pinned cache SDK uploads Azure blocks in 64 MiB chunks.
+const maxCacheBlockBytes = 64 << 20
+
 const cacheServicePath = "twirp/github.actions.results.api.v1.CacheService/"
 
 // BuildKit reads these claims before making requests. Authorization is still an
@@ -208,7 +211,12 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 			http.Error(w, "invalid block ID", http.StatusBadRequest)
 			return
 		}
-		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxCacheBlockBytes))
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "cache block size exceeded (maximum 64 MiB)", http.StatusRequestEntityTooLarge)
+			return
+		}
 		if err != nil || len(data) == 0 {
 			http.Error(w, "invalid block length", http.StatusBadRequest)
 			return

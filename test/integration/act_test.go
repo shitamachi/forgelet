@@ -89,7 +89,7 @@ jobs:
   act:
     runs-on: actions
     outputs: {answer: '${{ steps.node.outputs.answer }}'}
-    env: {TOKEN: '${{ secrets.TOKEN }}'}
+    env: {TOKEN: '${{ secrets.TOKEN }}', CACHE_UPLOAD_CHUNK_SIZE: '64'}
     steps:
       - run: |
           test ! -e /var/run/forgelet/token
@@ -114,11 +114,18 @@ jobs:
       - run: test '${{ steps.docker.outputs.answer }}' = docker-real-act
       - id: cache
         uses: actions/cache@v4
-        with: {path: cache, key: formal-act-cache-v1}
+        with: {path: cache, key: formal-act-cache-v2}
       - run: |
           printf '%s' "$TOKEN"
           printf '\n'
-          if [ '${{ steps.cache.outputs.cache-hit }}' = true ]; then test "$(cat cache/item)" = stored; else echo stored > cache/item; fi
+          if [ '${{ steps.cache.outputs.cache-hit }}' = true ]; then
+            test "$(cat cache/item)" = stored
+            sha256sum -c cache/checksum
+          else
+            echo stored > cache/item
+            dd if=/dev/urandom of=cache/sdk-block bs=1048576 count=65
+            sha256sum cache/sdk-block > cache/checksum
+          fi
           printf 'formal-%s\n' act-ready
           printf '%2048s\n' ''
           while [ ! -f /workspace/repository/continue ]; do sleep 1; done
