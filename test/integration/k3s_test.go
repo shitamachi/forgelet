@@ -537,7 +537,7 @@ jobs:
 	testBuildxCache(t, ctx, cluster, client, httpClient, endpoint, image, request, create, get)
 	testBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)
 	testBuildBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)
-	testPhaseTwo(t, ctx, client, httpClient, endpoint, root, request, create, get)
+	testPhaseTwo(t, ctx, cluster, client, httpClient, endpoint, root, request, create, get)
 	testWebConsole(t, ctx, client, httpClient, endpoint, root)
 	testAuthentication(t, ctx, cluster, client, httpClient, endpoint, root)
 	t.Run("retention expires logs then history and keeps active run", func(t *testing.T) {

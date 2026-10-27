@@ -26,6 +26,7 @@ import (
 // The job-local v1/v2 cache facade transports opaque SDK archives inside a bounded
 // tar object. Storage scope, immutability, retention and quotas remain server-owned.
 type actCache struct {
+	objectBytes                  int64
 	exactDownloads               map[string]int
 	restoreMu                    sync.Mutex
 	downloadBytes                int64
@@ -52,9 +53,15 @@ type cacheUpload struct {
 }
 
 func startActCache(ctx context.Context, services Services, workspace string) (*actCache, error) {
-	return startActCacheAt(ctx, services, "127.0.0.1")
+	return startActCacheAt(ctx, services, "127.0.0.1", 0)
 }
-func startActCacheAt(ctx context.Context, services Services, host string) (*actCache, error) {
+func startActCacheAt(ctx context.Context, services Services, host string, objectBytes int64) (*actCache, error) {
+	if objectBytes == 0 {
+		objectBytes = blob.MaxArchive
+	}
+	if objectBytes < 2048 || objectBytes > blob.MaxCacheArchive {
+		return nil, fmt.Errorf("invalid act cache object budget")
+	}
 	if net.ParseIP(host) == nil {
 		return nil, fmt.Errorf("invalid act cache listen IP")
 	}
@@ -73,7 +80,7 @@ func startActCacheAt(ctx context.Context, services Services, host string) (*actC
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	c := &actCache{ctx: ctx, services: services, dir: dir, capability: hex.EncodeToString(random[:]), listener: listener, uploads: map[int]*cacheUpload{}, downloads: map[int]string{}, exactDownloads: map[string]int{}}
+	c := &actCache{objectBytes: objectBytes, ctx: ctx, services: services, dir: dir, capability: hex.EncodeToString(random[:]), listener: listener, uploads: map[int]*cacheUpload{}, downloads: map[int]string{}, exactDownloads: map[string]int{}}
 	c.token = cacheRuntimeToken(random[:], time.Now())
 	c.base = "http://" + listener.Addr().String() + "/" + c.capability + "/"
 	c.server = &http.Server{Handler: c, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 2 * time.Minute, WriteTimeout: 5 * time.Minute, BaseContext: func(net.Listener) context.Context { return ctx }}
@@ -187,11 +194,11 @@ func (c *actCache) restore(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	info, statErr := os.Stat(archive)
-	if statErr != nil || c.stagedBytes()+info.Size() > cacheStageLimit {
+	if statErr != nil || c.stagedBytes()+info.Size() > c.stageLimit() {
 		http.Error(w, "cache staging quota exceeded", http.StatusRequestEntityTooLarge)
 		return
 	}
-	file, err := unwrapCache(archive, filepath.Join(c.dir, fmt.Sprint(id)+".cache"))
+	file, err := unwrapCache(archive, filepath.Join(c.dir, fmt.Sprint(id)+".cache"), c.objectLimit())
 	if err != nil {
 		http.Error(w, "invalid stored cache", http.StatusInternalServerError)
 		return
@@ -243,7 +250,7 @@ func (c *actCache) upload(w http.ResponseWriter, r *http.Request, key string) {
 			return
 		}
 		var start, end int64
-		if _, err := fmt.Sscanf(r.Header.Get("Content-Range"), "bytes %d-%d/*", &start, &end); err != nil || start < 0 || end < start || end >= blob.MaxArchive-2048 || end-start >= 32<<20 {
+		if _, err := fmt.Sscanf(r.Header.Get("Content-Range"), "bytes %d-%d/*", &start, &end); err != nil || start < 0 || end < start || end >= c.objectLimit()-2048 || end-start >= 32<<20 {
 			http.Error(w, "invalid upload range", http.StatusBadRequest)
 			return
 		}
@@ -272,7 +279,7 @@ func (c *actCache) upload(w http.ResponseWriter, r *http.Request, key string) {
 				return
 			}
 		}
-		if c.stagedBytes()+int64(len(data)) > cacheStageLimit {
+		if c.stagedBytes()+int64(len(data)) > c.stageLimit() {
 			http.Error(w, "cache staging quota exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -298,7 +305,7 @@ func (c *actCache) upload(w http.ResponseWriter, r *http.Request, key string) {
 		return
 	}
 	var in struct{ Size int64 }
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256)).Decode(&in); err != nil || in.Size <= 0 || in.Size > blob.MaxArchive-2048 {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256)).Decode(&in); err != nil || in.Size <= 0 || in.Size > c.objectLimit()-2048 {
 		http.Error(w, "invalid cache size", http.StatusBadRequest)
 		return
 	}
@@ -362,7 +369,7 @@ func wrapCache(source, target string) error {
 	}
 	return errors.Join(err, writer.Close(), out.Close())
 }
-func unwrapCache(source, target string) (string, error) {
+func unwrapCache(source, target string, objectLimit int64) (string, error) {
 	in, err := os.Open(source)
 	if err != nil {
 		return "", err
@@ -370,7 +377,7 @@ func unwrapCache(source, target string) (string, error) {
 	defer func() { _ = in.Close() }()
 	reader := tar.NewReader(in)
 	header, err := reader.Next()
-	if err != nil || header.Name != "cache" || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > blob.MaxArchive-2048 {
+	if err != nil || header.Name != "cache" || header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > objectLimit-2048 {
 		return "", fmt.Errorf("invalid cache envelope")
 	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -387,3 +394,12 @@ func unwrapCache(source, target string) (string, error) {
 	}
 	return target, nil
 }
+
+func (c *actCache) objectLimit() int64 {
+	if c.objectBytes == 0 {
+		return blob.MaxArchive
+	}
+	return c.objectBytes
+}
+func (c *actCache) stageLimit() int64 { return 2 * c.objectLimit() }
+func (c *actCache) blockLimit() int   { return int(max(int64(maxCacheBlocks), c.objectLimit()/(1<<20))) }

@@ -117,6 +117,16 @@ USER 1000:1000
 # Opt-in Rust/PowerShell profile; no extra daemon is started while idle.
 FROM rust:1.97.0-slim-bookworm@sha256:6d220bf85c74e842a79da63997af8d2e74455c0b8847d8bb3a5888572334991d AS rust197
 RUN rustup component add rustfmt clippy
+ARG CARGO_REGISTRY_MIRROR
+RUN if [ -n "$CARGO_REGISTRY_MIRROR" ]; then \
+      case "$CARGO_REGISTRY_MIRROR" in *[[:space:]]*) exit 1;; esac; \
+      printf '%s' "$CARGO_REGISTRY_MIRROR" | grep -Eq '^sparse\+https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]+)?/$' && \
+      printf '[source.crates-io]\nreplace-with = "forgelet-mirror"\n[source.forgelet-mirror]\nregistry = "%s"\n' \
+        "$CARGO_REGISTRY_MIRROR" > "$CARGO_HOME/config.toml" && \
+      chown 1000:1000 "$CARGO_HOME/config.toml"; \
+    fi
+FROM rust197 AS executor-rust-build
+ENV CARGO_BUILD_JOBS=2
 FROM ubuntu:24.04 AS executor-act-rust-tools
 COPY --from=golang:1.27.3-alpine /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ARG UBUNTU_MIRROR

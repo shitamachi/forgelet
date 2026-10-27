@@ -45,6 +45,7 @@ type Profile struct {
 	MemoryRequest  string            `yaml:"memory_request" json:"memory_request"`
 	CPULimit       string            `yaml:"cpu_limit" json:"cpu_limit"`
 	MemoryLimit    string            `yaml:"memory_limit" json:"memory_limit"`
+	WorkspaceLimit string            `yaml:"workspace_limit,omitempty" json:"workspace_limit,omitempty"`
 	NodeSelector   map[string]string `yaml:"node_selector" json:"node_selector"`
 }
 
@@ -75,7 +76,7 @@ func (p Profile) Validate() error {
 	if strings.TrimSpace(p.Image) == "" {
 		return errors.New("profile image is required")
 	}
-	for name, value := range map[string]string{"cpu_request": p.CPURequest, "memory_request": p.MemoryRequest, "cpu_limit": p.CPULimit, "memory_limit": p.MemoryLimit} {
+	for name, value := range map[string]string{"cpu_request": p.CPURequest, "memory_request": p.MemoryRequest, "cpu_limit": p.CPULimit, "memory_limit": p.MemoryLimit, "workspace_limit": p.WorkspaceLimit} {
 		if value == "" {
 			continue
 		}
@@ -138,6 +139,10 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 		deadline = 1320
 	}
 	resources := corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}
+	workspaceLimit := profile.WorkspaceLimit
+	if workspaceLimit == "" {
+		workspaceLimit = "2Gi"
+	}
 	for name, value := range map[corev1.ResourceName]string{corev1.ResourceCPU: profile.CPURequest, corev1.ResourceMemory: profile.MemoryRequest} {
 		if value != "" {
 			resources.Requests[name] = resource.MustParse(value)
@@ -162,7 +167,7 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 				SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 				VolumeMounts:    []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}, {Name: "identity", MountPath: "/var/run/forgelet", ReadOnly: true}},
 			}},
-			Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer("2Gi")}}}, {Name: "identity", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: Audience, ExpirationSeconds: &expiry, Path: "token"}}}}}}},
+			Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer(workspaceLimit)}}}, {Name: "identity", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: Audience, ExpirationSeconds: &expiry, Path: "token"}}}}}}},
 		},
 	}
 	controlTimeout := profile.ControlTimeout

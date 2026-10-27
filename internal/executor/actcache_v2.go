@@ -93,7 +93,7 @@ func (c *actCache) cacheV2(w http.ResponseWriter, r *http.Request, method string
 		cacheJSON(w, 200, map[string]any{"ok": true, "signed_upload_url": c.base + "blob/" + strconv.Itoa(id)})
 	case "FinalizeCacheEntryUpload":
 		size, err := in.Size.Int64()
-		if err != nil || size <= 0 || size > blob.MaxArchive-2048 {
+		if err != nil || size <= 0 || size > c.objectLimit()-2048 {
 			http.Error(w, "invalid cache size", http.StatusBadRequest)
 			return
 		}
@@ -176,11 +176,11 @@ func (c *actCache) restoreV2(w http.ResponseWriter, r *http.Request, in cacheV2R
 		return
 	}
 	info, statErr := os.Stat(archive)
-	if statErr != nil || c.stagedBytes()+info.Size() > cacheStageLimit {
+	if statErr != nil || c.stagedBytes()+info.Size() > c.stageLimit() {
 		cacheJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"code": "resource_exhausted", "msg": "cache staging quota exceeded"})
 		return
 	}
-	file, err := unwrapCache(archive, filepath.Join(c.dir, fmt.Sprint(id)+".cache"))
+	file, err := unwrapCache(archive, filepath.Join(c.dir, fmt.Sprint(id)+".cache"), c.objectLimit())
 	if err != nil {
 		http.Error(w, "invalid cache envelope", http.StatusInternalServerError)
 		return
@@ -235,15 +235,15 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 			http.Error(w, "cache already sealed", http.StatusConflict)
 			return
 		}
-		if len(u.Blocks) >= maxCacheBlocks {
-			http.Error(w, "cache block count exceeded (maximum 256)", http.StatusRequestEntityTooLarge)
+		if len(u.Blocks) >= c.blockLimit() {
+			http.Error(w, fmt.Sprintf("cache block count exceeded (maximum %d)", c.blockLimit()), http.StatusRequestEntityTooLarge)
 			return
 		}
-		if u.Staged+int64(len(data)) > blob.MaxArchive-2048 {
+		if u.Staged+int64(len(data)) > c.objectLimit()-2048 {
 			http.Error(w, "cache object size exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}
-		if c.stagedBytes()+int64(len(data)) > cacheStageLimit {
+		if c.stagedBytes()+int64(len(data)) > c.stageLimit() {
 			http.Error(w, "cache staging quota exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -260,7 +260,7 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 		var list struct {
 			Latest []string `xml:"Latest"`
 		}
-		if err := xml.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&list); err != nil || len(list.Latest) == 0 || len(list.Latest) > maxCacheBlocks {
+		if err := xml.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&list); err != nil || len(list.Latest) == 0 || len(list.Latest) > c.blockLimit() {
 			http.Error(w, "invalid block list", http.StatusBadRequest)
 			return
 		}
@@ -332,7 +332,7 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 			return
 		}
 		defer func() { _ = os.Remove(temporary) }()
-		n, copyErr := io.Copy(out, http.MaxBytesReader(w, r.Body, blob.MaxArchive-2048))
+		n, copyErr := io.Copy(out, http.MaxBytesReader(w, r.Body, c.objectLimit()-2048))
 		closeErr := out.Close()
 		if copyErr != nil || closeErr != nil || n == 0 {
 			http.Error(w, "invalid blob length", http.StatusBadRequest)
@@ -347,7 +347,7 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 			azureCreated(w)
 			return
 		}
-		if c.stagedBytes()+n > cacheStageLimit {
+		if c.stagedBytes()+n > c.stageLimit() {
 			http.Error(w, "cache staging quota exceeded", http.StatusRequestEntityTooLarge)
 			return
 		}

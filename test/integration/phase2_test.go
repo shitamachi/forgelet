@@ -19,10 +19,12 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/testcontainers/testcontainers-go"
+
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
-func testPhaseTwo(t *testing.T, ctx context.Context, client *kubernetes.Clientset, httpClient *http.Client, endpoint, root string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
+func testPhaseTwo(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint, root string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
 	logs := func(t *testing.T, job run.Job) string {
 		var entries []run.Log
 		must(t, json.Unmarshal(request(t, "GET", "/api/jobs/"+job.ID+"/logs", nil, 200), &entries))
@@ -274,7 +276,9 @@ jobs:
 	t.Run("actual pinned setup go and setup node toolchains", func(t *testing.T) {
 		source, err := os.ReadFile(filepath.Join(root, "test/fixtures/toolchains.yml"))
 		must(t, err)
-		item := create(t, string(source))
+		preload := loadToolchainPreload(t, ctx, client, root)
+		item := create(t, preload.workflow(string(source)))
+		preload.stage(t, ctx, cluster, item, get)
 		defer func() {
 			if !t.Failed() {
 				return
@@ -288,7 +292,7 @@ jobs:
 				waitFor(t, ctx, "failed toolchain test cancels active run", func() bool { return get(t, item.ID).State.Terminal() })
 			}
 		}()
-		// These Actions download real toolchains. Allow the workflow's twelve-minute
+		// These Actions use real toolchains (optional verified preload). Allow the twelve-minute
 		// deadline plus scheduling time, independently of local state transitions.
 		waitForTimeout(t, ctx, "real toolchains finish", 13*time.Minute, func() bool {
 			item = get(t, item.ID)

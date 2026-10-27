@@ -15,6 +15,39 @@ import (
 	"github.com/shitamachi/forgelet/internal/blob"
 )
 
+func TestActCacheExplicitLargerObjectKeepsSeparateLimits(t *testing.T) {
+	c, err := startActCacheAt(t.Context(), &localServices{}, "127.0.0.1", blob.MaxCacheArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.stageLimit() != 2*blob.MaxCacheArchive || c.blockLimit() != 1024 {
+		t.Fatal("larger cache has no bounded staging/block budget")
+	}
+	u := &cacheUpload{File: filepath.Join(c.dir, "large"), Staged: blob.MaxArchive, Blocks: map[string]string{}, BlockDigests: map[string][32]byte{}}
+	c.uploads[1] = u
+	id := base64.StdEncoding.EncodeToString([]byte("0001"))
+	put := func(want int, message string) {
+		req := httptest.NewRequestWithContext(t.Context(), "PUT", c.URL()+"blob/1?comp=block&blockid="+id, strings.NewReader("x"))
+		res := httptest.NewRecorder()
+		c.azureUpload(res, req, "1")
+		if res.Code != want || !strings.Contains(res.Body.String(), message) {
+			t.Fatal(res.Code, res.Body.String())
+		}
+	}
+	put(201, "") // Configuration, rather than the former 256 MiB constant, governs admission.
+	u.Staged = blob.MaxCacheArchive - 2048
+	u.Blocks = map[string]string{}
+	u.BlockDigests = map[string][32]byte{}
+	put(413, "object size exceeded")
+	u.Staged = 0
+	c.downloadBytes = c.stageLimit()
+	put(413, "staging quota exceeded")
+	if _, err := startActCacheAt(t.Context(), &localServices{}, "127.0.0.1", blob.MaxCacheArchive+1); err == nil {
+		t.Fatal("accepted unbounded cache")
+	}
+}
+
 func TestActCacheV2SDK64MiBBlockBoundary(t *testing.T) {
 	c, err := startActCache(t.Context(), &localServices{}, t.TempDir())
 	if err != nil {

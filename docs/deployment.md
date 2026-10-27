@@ -805,7 +805,10 @@ package_tokens:
   shitamachi/steam-login: GHCR_TOKEN
 ```
 
-再通过仓库 Secrets 页面保存 `GHCR_TOKEN`，值由管理员在 GitHub 为所需 packages/仓库范围创建；不要填写源仓库只读 installation token。
+再通过仓库 Secrets 页面保存 `GHCR_TOKEN`，不要填写源仓库只读 installation token。
+若使用 GitHub 经典 PAT，`write:packages` 包含读取包；它无法限定为单个仓库，会覆盖该账号有权访问的包。
+Forgelet 的仓库绑定只限制产品内发放位置，不缩小 GitHub 凭据本身的权限。创建时显式核对 scopes 和到期日，避免额外勾选 repo/delete；
+续期通过同一仓库 Secret 更新值，并以一次真实包发布确认，不将凭据写入 YAML、计划或构建参数。
 Secret 仍加密保存在现有 SQLite；配置和计划只保存名称。运行时由 `secrets.GITHUB_TOKEN` 提供该 job 显式要求的包凭据，
 隐式 checkout 继续用独立的源只读 token。只有 act 的 push/manual job 可以要求 packages:write，PR 拒绝；
 packages:read 暂不提供可降权 token，其他未实现权限继续诊断。填写 YAML 不等于已获得 GitHub registry 授权。
@@ -837,15 +840,108 @@ Web target 的 `DEBIAN_BUILD_MIRROR` 仅在浏览器系统依赖安装期间临�
 
 | 组件 | 固定镜像 |
 |---|---|
-| server | `zot.k.mygo.rocks/forgelet/server@sha256:b0285b7105c3d51b45f8d5a7c2c25b538cc737f7c9cebe943037190cda272521` |
-| native executor | `registry.shitamchi.com/forgelet/executor@sha256:9b407caad70711c8112fa0e704640a2bdc76ec3455dcd779da8f7bf5f4ee723e` |
-| ubuntu-latest Web act | `zot.k.mygo.rocks/forgelet/executor-act-web@sha256:e6bbad13b83f13e3cf8ba34b72516a11dec2138777cc6a46eb8d4fd3a2e7a9df` |
+| server | `zot.k.mygo.rocks/forgelet/server@sha256:b7db174758a5b5f318acc1fae98f3482f55153aa00fa871c499b679197e3d9b4` |
+| native executor | `zot.k.mygo.rocks/forgelet/executor@sha256:ef6a469815533f59101ad4cf3624582bb6e5d2adb3fa171f36196b82e99ce716` |
+| ubuntu-latest Web/Go act | `zot.k.mygo.rocks/forgelet/executor-act-web-tools@sha256:3a55eef2f5748cb3e6320d2d8df656491b34b6c7a73eba49bc9a9fc8a17a794c` |
+| ubuntu-24.04 Rust act | `zot.k.mygo.rocks/forgelet/executor-act-rust-cn@sha256:54eab3ec053cf8ba14a0b9546001e473e72a7c675348d921a3e79c6e1afea6ac` |
 
-server 的 Deployment imagePullSecrets 保留 forgelet-registry 并加入 zot-registry；
-Web profile 继续使用 zot-registry。server 的 Zot digest 是原 registry 构建 index 的同一 amd64
-manifest，切换来源没有重编译代码或迁移 schema。升级前执行原子 SQLite 备份并归档数据 PVC、
-ConfigMap 和 Deployment，管理 API 中的仓库/workflow/target 配置继续保存在 SQLite。
+server Deployment 与执行 ServiceAccount 的 imagePullSecrets 保留 forgelet-registry 并加入 zot-registry；
+act profile 的 registry_secret 另用于 supervisor 读取内层 runner/公共镜像，不能替代 native Pod 的拉取授权。
+切换私有镜像 registry 时同步核对这两层配置。kubelet 使用拉取 Secret，执行 Pod 仍不挂载 Kubernetes API 身份。
+本批 native 首次拉取缺少 Zot 认证，保留原 Pod 并补齐其已引用 Secret，恢复结果单独记录在 status。
 
-两次真实 push 的原始 workflow、缓存与镜像发布已完成验收，运行和完整 digest 见 status。
-验证时临时关闭 GitHub 托管 Actions，完成后恢复原配置；常规使用时需要自行决定是否同时保留两边执行，
-避免重复消耗构建资源及覆盖同名发布标签。应用 GitOps/Flux 目标未由本次镜像发布自动建立。
+Web/Go 工具 profile 提供官方 Node24.14.0、Go1.26.0/1.26.4 toolcache 与 Playwright1.63.0 Chromium；
+Rust profile 提供 Rust1.97.0、rustfmt/clippy、Python3 与真实 PowerShell7.6.9。
+工具均属于按需镜像，原 setup/安装与业务命令仍运行，预装工具不计作应用冷/热缓存或在线下载验证。
+公开基础镜像在 `forgelet/dockerhub/` 保存上游原 amd64 manifest，逐层核对 digest；该保留路径仅允许匿名读取，
+匿名上传和其他私有路径读取仍拒绝。它用于独立 BuildKit 的显式镜像源，示例：
+
+```toml
+[registry."docker.io"]
+  mirrors = ["zot.k.mygo.rocks/forgelet/dockerhub"]
+```
+
+配置依据 [BuildKit registry mirror 路径支持](https://docs.docker.com/build/buildkit/toml-configuration/) 与
+[Zot 精确路径授权](https://zotregistry.dev/v2.1.22/articles/authn-authz/)。未知基础镜像仍可能访问上游，
+engine 的镜像别名与独立 BuildKit 镜像源分别配置；原 workflow 显式 builder 配置优先。
+镜像源命名空间只保存已验证的公开内容，不复制应用、执行器私有镜像或 registry 凭据。
+
+Rust 执行镜像可通过 `CARGO_REGISTRY_MIRROR=sparse+https://rsproxy.cn/index/` 构建参数显式选择
+[Cargo source replacement](https://doc.rust-lang.org/cargo/reference/source-replacement.html)。默认使用原源；
+参数仅接受无凭据的 HTTPS sparse URL，不进入工作流计划。下载继续遵守 Cargo.lock 的版本与 checksum，
+不使用 patch 替换库代码。[RsProxy 配置说明](https://rsproxy.cn/) 提供该公开服务的地址与格式。
+实际节点已核对 protoc-bin-vendored-linux-x86_64 3.3.0 的镜像内容与原 lock SHA256 一致。
+
+`executor-rust-build` target 使用同一固定 Debian/Rust1.97 工具链，提供 Cargo 镜像配置和
+`CARGO_BUILD_JOBS=2`，用于原 Dockerfile 的 Rust 编译环境。homelab 显式将对应 engine 别名绑定到
+`zot.k.mygo.rocks/forgelet/executor-rust-build@sha256:e628a2fa2bac96a75644174a70173f1c7d62467f1a91fdb9b6004c2a7a662152`。
+它是管理员选择的工具镜像变体，分别记录来源与验证，不把它称为上游镜像的原样复制。
+这些配置增加按需镜像与下载缓存，不增加常驻进程。
+
+升级前保存原子 SQLite、PVC、ConfigMap 与 Deployment，管理 API 中的仓库/workflow/target 继续由 SQLite 保存。
+实际 push、Checks、缓存、发布 digest 与 Flux/回滚的验收结果分别见 status。
+验证时临时关闭相应仓库的 GitHub 托管 Actions，完成后恢复原配置；常规使用需决定是否同时保留两边执行，
+避免重复消耗构建资源及覆盖同名发布标签。业务 platform-web 自动目标已完成真实 push、失败阻断、Flux 健康、回滚与恢复验收。
+
+
+### 共享 homelab 的执行节点保护
+
+不要将重型 act profile 固定到唯一的 etcd/control-plane 节点。管理员可仅给允许执行 CI 的 worker
+加 `forgelet.dev/execution=true` 标签，并在所有执行 profile 设置
+`node_selector: {forgelet.dev/execution: 'true'}`。没有匹配节点或资源不足时 Pod Pending，不能回退到控制面。
+标签是管理员配置，不能由 workflow 选择任意节点；更改不迁移已有 Pod。
+
+act 的 job 容器、Docker Actions 和嵌套构建进程位于引擎容器的 cgroup 中，
+profile 顶层资源只限制 supervisor。为 `act` 独立配置引擎资源，例如：
+
+```yaml
+profiles:
+  ubuntu-latest:
+    # image / act.runner_image / engine_image 等沿用实际固定 digest
+    image: example.invalid/forgelet/executor-act@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    node_selector: {forgelet.dev/execution: 'true'}
+    cpu_request: 100m
+    cpu_limit: 250m
+    memory_request: 256Mi
+    memory_limit: 512Mi
+    act:
+      cpu_request: '1'
+      cpu_limit: '1'
+      memory_request: 4Gi
+      memory_limit: 4Gi
+      data_limit: 12Gi
+```
+
+新增引擎字段省略时保持旧默认（100m / 256Mi request、3 CPU / 4Gi limit）；
+共享小集群应显式设置真实预算，不能将此旧默认视作安全容量。
+负数、无效量及高于最终 limit（含默认值）的 request 在访问 Kubernetes 前拒绝。
+全局并发是任务数量上限，Kubernetes 根据各容器 request 决定实际可执行数量；
+资源紧张时保留 Pending，现有 attempt 超时仍生效，不承诺无限等待。
+CPU/内存限制不提供磁盘 IOPS 隔离；镜像 registry 和 Longhorn 的跨节点写入仍可能影响 etcd 所在磁盘。
+后续若需更高构建吞吐，优先增加具有独立磁盘的执行节点，再调整并发，不能仅调大任务数。
+
+
+### 嵌套 Docker 资源与较大构建缓存
+
+act 现在要求 Linux cgroup v2。Pod 增加一次性 act-bootstrap（与 supervisor 使用同一镜像，只挂 socket emptyDir，不挂 API/registry 凭据），
+然后引擎启动器建立私有 cgroup 视图。仅更新 server 而仍引用旧 supervisor 镜像无法启动，两个镜像必须配套升级。
+引擎仍使用管理员固定的 Docker28.5.1镜像，启动器最终 exec dockerd；无新增常驻服务或额外引擎镜像。
+应检查真实嵌套 PID 的 cgroup 祖先和 cpu.stat/cpu.max/memory.max；Docker stats 可显示宿主总内存，不能据其单独判断祖先限额。
+
+当原始 BuildKit workflow 的缓存层超过默认256MiB，可显式设置以下预算；不删除 cache-to 或忽略导出失败：
+
+```yaml
+blobs:
+  object_bytes: 268435456       # artifact/default 仍256MiB
+  cache_object_bytes: 1073741824 # cache 最大1GiB，省略则沿用 object_bytes
+  total_bytes: 6442450944       # 全局保留+上传预留共6GiB，需结合 PVC 容量
+  objects: 4096
+profiles:
+  ubuntu-latest:
+    # 其余 image/worker/resources 配置继续保留
+    act:
+      cache_object_bytes: 1073741824
+```
+
+act 省略该项时仍256MiB；其暂存预算为对象预算两倍，可能同时存在分块/封装文件，应为节点临时磁盘预留容量。
+控制面的磁盘低水位仅检测 data_dir，不能代替执行节点临时磁盘容量管理。真实部署结果与自动测试范围分别见 status。

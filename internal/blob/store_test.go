@@ -14,6 +14,36 @@ import (
 	"time"
 )
 
+func TestCacheObjectBudgetDoesNotExpandArtifacts(t *testing.T) {
+	limits := Limits{ObjectBytes: 4, CacheObjectBytes: 8, TotalBytes: 64, Objects: 10}
+	store, err := Open(t.TempDir(), limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		kind    string
+		size    int
+		limited bool
+	}{{"artifact", 4, false}, {"artifact", 5, true}, {"cache", 8, false}, {"cache", 9, true}} {
+		scope := Scope{Repository: "o/r", Kind: tc.kind, Namespace: "run", Version: strings.Repeat("a", 64)}
+		_, err := store.Put(t.Context(), scope, tc.kind+string(rune('a'+tc.size)), "job", time.Hour, time.Now(), strings.NewReader(strings.Repeat("x", tc.size)))
+		if errors.Is(err, ErrLimit) != tc.limited || err != nil && !tc.limited {
+			t.Fatal(tc, err)
+		}
+	}
+	for _, value := range []int64{-1, MaxCacheArchive + 1} {
+		limits.CacheObjectBytes = value
+		if limits.Validate() == nil {
+			t.Fatal("accepted invalid cache limit", value)
+		}
+	}
+	limits.CacheObjectBytes = MaxCacheArchive
+	limits.TotalBytes = MaxCacheArchive - 1
+	if limits.Validate() == nil {
+		t.Fatal("cache exceeds total reservation budget")
+	}
+}
+
 func TestStoreAtomicImmutableScopedRetention(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()

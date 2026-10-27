@@ -60,7 +60,7 @@ func (s *Server) runtimeBlob(w http.ResponseWriter, r *http.Request) {
 		ttl = time.Duration(days) * 24 * time.Hour
 	}
 	if r.Method == http.MethodPut {
-		e, err := s.cfg.Blobs.Put(r.Context(), scope, key, job.ID, ttl, s.now(), http.MaxBytesReader(w, r.Body, blob.MaxArchive+1))
+		e, err := s.cfg.Blobs.Put(r.Context(), scope, key, job.ID, ttl, s.now(), http.MaxBytesReader(w, r.Body, s.cfg.Blobs.ObjectLimit(kind)+1))
 		if err != nil {
 			blobError(w, err)
 			return

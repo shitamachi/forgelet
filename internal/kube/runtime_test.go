@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -252,5 +255,50 @@ func TestRuntimeFailureClassificationAndTimeoutPolicy(t *testing.T) {
 	profile.ControlTimeout = 2 * time.Hour
 	if profile.Validate() == nil {
 		t.Fatal("unbounded outage timeout")
+	}
+}
+
+func TestWorkspaceLimit(t *testing.T) {
+	for _, kernel := range []string{"native", "act"} {
+		for _, tc := range []struct{ name, value, want string }{
+			{"default", "", "2Gi"}, {"configured", "12Gi", "12Gi"},
+		} {
+			t.Run(kernel+"/"+tc.name, func(t *testing.T) {
+				rt, client, job, profile := fixture(t)
+				profile.WorkspaceLimit = tc.value
+				if kernel == "act" {
+					profile.Act = &ActProfile{}
+				}
+				if _, err := rt.Ensure(t.Context(), job, profile); err != nil {
+					t.Fatal(err)
+				}
+				pod, err := client.CoreV1().Pods("ci").Get(t.Context(), job.PodName, metav1.GetOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, volume := range pod.Spec.Volumes {
+					if volume.Name == "workspace" {
+						if volume.EmptyDir == nil || volume.EmptyDir.SizeLimit == nil || volume.EmptyDir.SizeLimit.Cmp(resource.MustParse(tc.want)) != 0 {
+							t.Fatalf("workspace quota: %+v", volume)
+						}
+						return
+					}
+				}
+				t.Fatal("workspace volume missing")
+			})
+		}
+	}
+	for _, value := range []string{"0", "-1Gi", "bad", " "} {
+		t.Run("invalid/"+value, func(t *testing.T) {
+			rt, client, job, profile := fixture(t)
+			profile.WorkspaceLimit = value
+			_, err := rt.Ensure(t.Context(), job, profile)
+			if !errors.Is(err, ErrPermanent) || !strings.Contains(err.Error(), "workspace_limit") {
+				t.Fatal(err)
+			}
+			if len(client.Actions()) != 0 {
+				t.Fatal("invalid quota reached Kubernetes")
+			}
+		})
 	}
 }

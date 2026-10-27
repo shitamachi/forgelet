@@ -63,7 +63,7 @@ jobs:
 	if plan.Steps[0].Checkout.Path != "src" || plan.Steps[0].Checkout.FetchDepth != 0 || plan.Steps[1].TimeoutSeconds != 60 || plan.Steps[1].Env["BOOL"] != "true" {
 		t.Fatalf("incorrect steps: %+v", plan.Steps)
 	}
-	if len(plan.JobID) != 24 || plans[1].TimeoutSeconds != 1200 || plans[1].Steps[0].Shell != "bash" {
+	if len(plan.JobID) != 24 || plans[1].TimeoutSeconds != 360*60 || plans[1].Steps[0].Shell != "bash" {
 		t.Fatal("incorrect defaults")
 	}
 	again, err := Compile(source, testEvent, "run1")
@@ -212,6 +212,28 @@ func TestValidatedSetupActionInputs(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("accepted unsupported setup inputs")
+			}
+		})
+	}
+}
+
+func TestJobTimeoutMatchesGitHubDefaultAndKeepsExplicitLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		want        int
+	}{
+		{"omitted", "", 360 * 60},
+		{"explicit shorter budget", "    timeout-minutes: 20\n", 20 * 60},
+		{"explicit Rust budget", "    timeout-minutes: 45\n", 45 * 60},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := "on: push\njobs:\n  test:\n    runs-on: linux\n" + tc.field + "    steps:\n      - run: echo ok\n"
+			plans, err := Compile([]byte(source), testEvent, "timeout-run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plans[0].TimeoutSeconds != tc.want {
+				t.Fatalf("timeout=%d, want %d", plans[0].TimeoutSeconds, tc.want)
 			}
 		})
 	}

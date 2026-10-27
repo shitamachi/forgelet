@@ -204,7 +204,7 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	if cacheHost == "" {
 		cacheHost = "127.0.0.1"
 	}
-	cache, err := startActCacheAt(jobCtx, opts.Services, cacheHost)
+	cache, err := startActCacheAt(jobCtx, opts.Services, cacheHost, opts.ActCacheObjectBytes)
 	if err != nil {
 		return result, err
 	}

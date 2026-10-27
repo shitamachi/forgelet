@@ -25,6 +25,9 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version: '1.27', cache: true}
 `)
+	if item.Jobs[0].Plan.TimeoutSeconds != 360*60 {
+		t.Fatal("HTTP admission did not persist GitHub default timeout", item.Jobs[0].Plan.TimeoutSeconds)
+	}
 	if item.Jobs[0].Plan.Kernel != "act" {
 		t.Fatal("backend was not snapshotted")
 	}

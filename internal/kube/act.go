@@ -3,17 +3,24 @@ package kube
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/shitamachi/forgelet/internal/blob"
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
 // ActProfile explicitly opts trusted jobs into a Pod-owned privileged engine.
 // The registry Secret is mounted only into the supervising executor.
 type ActProfile struct {
+	CacheObjectBytes int64             `yaml:"cache_object_bytes,omitempty" json:"cache_object_bytes,omitempty"`
+	CPURequest       string            `yaml:"cpu_request,omitempty" json:"cpu_request,omitempty"`
+	MemoryRequest    string            `yaml:"memory_request,omitempty" json:"memory_request,omitempty"`
+	CPULimit         string            `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
+	MemoryLimit      string            `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
 	BuildkitConfig   string            `yaml:"buildkit_config,omitempty" json:"buildkit_config,omitempty"`
 	ImageMirrors     map[string]string `yaml:"image_mirrors,omitempty" json:"image_mirrors,omitempty"`
 	RunnerImage      string            `yaml:"runner_image,omitempty" json:"runner_image,omitempty"`
@@ -26,6 +33,20 @@ type ActProfile struct {
 const ActEngineImage = "docker:28.5.1-dind"
 
 func (a ActProfile) Validate() error {
+	if a.CacheObjectBytes != 0 && (a.CacheObjectBytes < 2048 || a.CacheObjectBytes > blob.MaxCacheArchive) {
+		return fmt.Errorf("act cache_object_bytes must be 2048..1GiB (0 uses 256MiB)")
+	}
+	if err := (Profile{Image: ActEngineImage, CPURequest: a.CPURequest, MemoryRequest: a.MemoryRequest, CPULimit: a.CPULimit, MemoryLimit: a.MemoryLimit}).Validate(); err != nil {
+		return fmt.Errorf("act engine resources: %w", err)
+	}
+	resources := a.resources()
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		request, limit := resources.Requests[name], resources.Limits[name]
+		if request.Cmp(limit) > 0 {
+			return fmt.Errorf("act engine %s request exceeds limit", name)
+		}
+	}
+
 	if len(a.BuildkitConfig) > 64<<10 || strings.ContainsRune(a.BuildkitConfig, 0) {
 		return fmt.Errorf("invalid act buildkit_config (maximum 64 KiB)")
 	}
@@ -59,12 +80,17 @@ func addAct(pod *corev1.Pod, a ActProfile, image string) {
 	if engine == "" {
 		engine = ActEngineImage
 	}
-	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{Name: "act-engine", Image: engine, RestartPolicy: &restart,
-		Command:         []string{"dockerd", "--host=unix://" + run.ActSocket, "--group=1000", "--storage-driver=overlay2"},
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{Name: "act-bootstrap", Image: pod.Spec.Containers[0].Image,
+		Command:         []string{"sh", "-ec", "cp /usr/local/bin/forgelet-executor /run/forgelet-act/engine-bootstrap; chmod 0555 /run/forgelet-act/engine-bootstrap"},
+		Resources:       pod.Spec.Containers[0].Resources,
+		SecurityContext: pod.Spec.Containers[0].SecurityContext,
+		VolumeMounts:    []corev1.VolumeMount{socket},
+	}, corev1.Container{Name: "act-engine", Image: engine, RestartPolicy: &restart,
+		Command:         []string{"/run/forgelet-act/engine-bootstrap", "act-engine", "--host=unix://" + run.ActSocket, "--group=1000", "--storage-driver=overlay2", "--exec-opt=native.cgroupdriver=cgroupfs"},
 		SecurityContext: &corev1.SecurityContext{Privileged: &yes, RunAsNonRoot: &no, RunAsUser: &root, RunAsGroup: &root, SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined}},
-		Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("4Gi")}},
+		Resources:       a.resources(),
 		StartupProbe:    &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"sh", "-ec", `test "$(docker --host=unix://` + run.ActSocket + ` info --format '{{.ServerVersion}}')" = 28.5.1`}}}, PeriodSeconds: 2, FailureThreshold: 60},
-		VolumeMounts:    []corev1.VolumeMount{socket, {Name: "act-data", MountPath: "/var/lib/docker"}, {Name: "workspace", MountPath: "/workspace"}},
+		VolumeMounts:    []corev1.VolumeMount{socket, {Name: "act-data", MountPath: "/var/lib/docker"}, {Name: "act-data", SubPath: "forgelet-tmp", MountPath: "/tmp"}, {Name: "workspace", MountPath: "/workspace"}},
 	})
 	if a.InsecureRegistry {
 		host, _, ok := strings.Cut(image, "/")
@@ -77,6 +103,9 @@ func addAct(pod *corev1.Pod, a ActProfile, image string) {
 	main := &pod.Spec.Containers[0]
 	main.VolumeMounts = append(main.VolumeMounts, socket)
 	main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_ACT_CACHE_HOST", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}}, corev1.EnvVar{Name: "DOCKER_HOST", Value: "unix://" + run.ActSocket}, corev1.EnvVar{Name: "FORGELET_ACT_IMAGE", Value: image})
+	if a.CacheObjectBytes > 0 {
+		main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_ACT_CACHE_OBJECT_BYTES", Value: strconv.FormatInt(a.CacheObjectBytes, 10)})
+	}
 	if a.BuildkitConfig != "" {
 		main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_BUILDKIT_CONFIG", Value: a.BuildkitConfig})
 	}
@@ -90,4 +119,20 @@ func addAct(pod *corev1.Pod, a ActProfile, image string) {
 		main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{Name: "act-registry", MountPath: "/var/run/forgelet-act-registry", ReadOnly: true})
 		main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_REGISTRY_CONFIG", Value: "/var/run/forgelet-act-registry"})
 	}
+}
+
+// resources accounts for all nested job containers in the Pod-owned engine cgroup.
+func (a ActProfile) resources() corev1.ResourceRequirements {
+	r := corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("4Gi")}}
+	for name, value := range map[corev1.ResourceName]string{corev1.ResourceCPU: a.CPURequest, corev1.ResourceMemory: a.MemoryRequest} {
+		if value != "" {
+			r.Requests[name] = resource.MustParse(value)
+		}
+	}
+	for name, value := range map[corev1.ResourceName]string{corev1.ResourceCPU: a.CPULimit, corev1.ResourceMemory: a.MemoryLimit} {
+		if value != "" {
+			r.Limits[name] = resource.MustParse(value)
+		}
+	}
+	return r
 }

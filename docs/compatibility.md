@@ -1,11 +1,11 @@
 # GitHub Actions 兼容范围
 
-更新：2026-10-25。包含阶段 10 第一批，以下为实际实现的子集，测试结果见 [status.md](status.md)。
+更新：2026-10-27。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
 forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为，不提供完整 GitHub Actions 云服务。
 
 专用生产形态测试仓库的 act/Docker 实验单独记录在 [test/productionlike](../test/productionlike/README.md)。
-它执行官方 Actions 并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry，镜像通过现有手动
-CD 入口交给 Flux；尚未接管产品 executor，因此不能用该实验扩大本页的线上兼容承诺。
+该历史实验执行官方 Actions，并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry。
+正式 act executor 已在 10.5b 接入；实验、正式临时 k3s 验证和 homelab 原始业务 workflow 验收分别记录，不能互相替代。
 
 ## Workflow 与触发
 
@@ -20,7 +20,7 @@ CD 入口交给 Flux；尚未接管产品 executor，因此不能用该实验扩
 | permissions | contents: read/none，调用不能提权；none 禁止 checkout。act 的显式 packages:write 另需管理员 Secret 引用绑定，见下文；其他权限诊断 |
 | shell step | id/name/if/continue-on-error/run/env/shell/working-directory/timeout-minutes；真实 bash（默认）或 sh |
 | 共享状态 | 同 job 内 shell、JS、Composite 共享 workspace、GITHUB_ENV、GITHUB_PATH；输出使用 GITHUB_OUTPUT；shell export 不跨 step |
-| 配额 | 最多 64 个逻辑 job、展开后合计 256 个 job，每 job 最多 256 steps；默认 job 超时 20 分钟，可设整数 1–1440 分钟 |
+| 配额 | 最多 64 个逻辑 job、展开后合计 256 个 job，每 job 最多 256 steps；省略 job timeout 时使用 GitHub 默认 360 分钟，显式整数 1–1440 分钟仍保留 |
 
 Filters 支持字面量、`*`、`**`、`?` 和按顺序覆盖的 `!` 排除；不支持字符组、`+`、转义语法。
 同类 include/ignore 不能同时声明；每列表 1–100 项，每 pattern 最多 256 bytes，至少一个正向 pattern。
@@ -338,3 +338,17 @@ Node24.14.0 toolcache / Playwright1.63.0 Chromium 是显式镜像能力；应用
   对象 256 MiB、attempt payload 512 MiB、最多 256 blocks 等预算保留。
 - 管理员可以在目标配置中绑定原始 workflow 的镜像任务；仅匹配 push 追加原生 CD，不改 GitHub YAML。
   等待全部原任务组成功，固定 digest；具体来源、发布/健康状态和使用边界见 deployment。
+
+
+### act 临时目录与嵌套 Docker bind
+
+job `/tmp` 与同 attempt 的 Docker 引擎共享有界目录（计入 act.data_limit），支持 `mktemp -d` 后以绝对路径交给嵌套 `docker run --mount type=bind`。
+工作区继续共享；其他 job 镜像自身路径不自动出现在引擎文件系统。supervisor 的私有临时元数据不共享，无宿主路径挂载。
+此行为由临时 k3s 中非 root 子容器读取临时文件、supervisor 私有文件不可见、缓存/重启/失败/取消回归验证；真实 Rust managed tests 另行记录。
+
+
+act 的 Docker/Buildx 资源约束要求 Linux cgroup v2 和配套升级后的 supervisor，正常容器及显式 /docker/buildx 父组均保留在引擎资源祖先下。
+默认缓存对象256MiB不变；管理员可显式将 opaque Actions/BuildKit cache 对象提高至1GiB，artifact仍最大256MiB。
+单块64MiB、全局保留/并发上传预留、每attempt有界暂存、错误/ACK/取消语义继续保留；未获配置的超限不会静默成功。
+
+新编译计划的默认 job timeout 对齐 [GitHub 官方语义](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes)：360 分钟。此前 Forgelet 独自采用20分钟，会在受限 CPU 的冷构建及外部 Action 下载时提前终止；显式 timeout-minutes 不变，已持久化计划/重跑仍保留原快照，零值旧计划的运行时20分钟兜底不变。

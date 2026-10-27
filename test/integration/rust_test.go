@@ -41,7 +41,7 @@ func testRustProfile(t *testing.T, ctx context.Context, cluster testcontainers.C
 			must(t, err)
 			restartServer(t, ctx, client, httpClient, endpoint)
 		}()
-		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  rust:\n    image: %s\n    memory_limit: 1Gi\n    act:\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n", supervisorImage, runner), 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  rust:\n    image: %s\n    memory_limit: 1Gi\n    workspace_limit: 8Gi\n    act:\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n", supervisorImage, runner), 1)
 		_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
 		must(t, err)
 		restartServer(t, ctx, client, httpClient, endpoint)
@@ -96,6 +96,11 @@ jobs:
 			return strings.Contains(logs(item), "rust-pwsh-checkpoint")
 		})
 		before := get(t, item.ID).Jobs[0]
+		pod, err := client.CoreV1().Pods("forgelet").Get(ctx, before.PodName, metav1.GetOptions{})
+		must(t, err)
+		if len(pod.Spec.Volumes) == 0 || pod.Spec.Volumes[0].Name != "workspace" || pod.Spec.Volumes[0].EmptyDir == nil || pod.Spec.Volumes[0].EmptyDir.SizeLimit == nil || pod.Spec.Volumes[0].EmptyDir.SizeLimit.String() != "8Gi" {
+			t.Fatal("configured workspace quota missing from actual Pod", pod.Spec.Volumes)
+		}
 		restartServer(t, ctx, client, httpClient, endpoint)
 		if after := get(t, item.ID).Jobs[0]; after.PodUID != before.PodUID || after.State != run.Running {
 			t.Fatal("attempt replaced", after)

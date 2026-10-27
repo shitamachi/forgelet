@@ -1,6 +1,6 @@
 # forgelet：homelab 设计
 
-更新：2026-10-26。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
+更新：2026-10-27。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
 暂停 spec 模式；设计随代码更新，不设审批或资源基线门禁。
 
 ## 当前结构
@@ -577,3 +577,30 @@ v2 RPC 暂存超限返回结构化 resource_exhausted，保留原有字节与对
 目标绑定和图在 admission 时确定并保存；后续配置更改不追溯改变旧计划或重跑，投递仍核对当前目标权限和来源范围。
 多个目标按名称稳定追加，内部任务/output 冲突、模糊 publisher、图或输出数量超限均拒绝并保留诊断。
 PR、workflow_dispatch 不自动追加；CI 失败/跳过会使发布任务按默认 success 门禁跳过，不创建执行 Pod 或投递。
+
+
+## 共享集群的执行资源边界（2026-10-27）
+
+执行节点由管理员 profile.node_selector 限定。homelab 使用显式 worker 标签，防止重型任务回落到单 etcd 节点。
+继续使用 Kubernetes 原生资源准入，不增加资源轮询控制器、消息队列或自动调节服务。
+act profile 独立配置引擎 CPU/内存 request/limit，顶层 profile 限制 supervisor；
+仅写引擎 resources 不能保证嵌套 Docker 继承：Docker 默认 /docker 和 Buildx 显式 /docker/buildx 曾绕过该预算。
+act-bootstrap 以 supervisor 镜像在 Pod 自有 socket emptyDir 放置同版本执行器；引擎启动器创建私有 cgroup/mount namespace，
+重新挂载以本引擎 cgroup 为根的 cgroup v2，将 daemon 放入 init 子组并委派 cpu/memory/pids 后 exec dockerd。
+普通 job、显式 Buildx 父组与其构建进程都位于该资源祖先下。无法建立该视图时启动失败，要求 Linux cgroup v2。
+调度预算必须包括引擎；未配置时兼容旧资源默认，部署需显式设定预算。此约束针对可信 workflow，不提供恶意 privileged Docker 的多租户安全隔离。
+并发上限和节点容量共同决定可执行数，超额 Pod Pending 并继续占现有 starting 额度及超时预算。
+emptyDir sizeLimit 限制容量而不限制写盘速率；worker 隔离能减少本地构建争用，不能隔离共享 registry/Longhorn 后端 I/O。
+
+
+act job 的 `/tmp` 与本 Pod 引擎共享 `act-data/forgelet-tmp` 子目录，启动时初始化 1777 权限。
+worker 通过 Docker bind mount 将该目录挂到 job 的同名绝对路径，支持脚本 mktemp 后交给嵌套 docker run 挂载。
+临时文件与 Docker 数据共用已有 act.data_limit，不增加独立无界卷；supervisor 的 `/tmp` 保持私有，计划/结果元数据不进入 job。
+嵌套 Docker 的 bind source 在引擎文件系统解析，共享路径为 workspace 与 `/tmp`，不承诺 job 镜像内任意路径均可直接 bind。
+
+
+构建缓存可以显式配置 blobs.cache_object_bytes 与 act.cache_object_bytes（最大1GiB）；默认仍256MiB，artifact/object_bytes仍最大256MiB。
+全局 Store 按种类预留对象预算，所有保留对象和并发上传仍受 blobs.total_bytes/objects 限制；不增加常驻缓存服务。
+job-local facade 的暂存累计预算为对象预算两倍；单块64MiB不变，1MiB BuildKit blocks 数按对象预算有界扩展。
+数据流式落盘/校验，只有 SDK 单块进入内存，较大缓存不会一次分配整个对象；重启/取消清理沿用既有语义。
+资源隔离依据：[Linux cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)、[Docker cgroup parent](https://docs.docker.com/reference/cli/dockerd/#default-cgroup-parent)。

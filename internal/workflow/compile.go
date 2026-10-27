@@ -250,7 +250,7 @@ func compileJob(node *yaml.Node, key, workflowName string, workflowEnv map[strin
 	for k, value := range jobEnv {
 		mergedEnv[k] = value
 	}
-	timeout, err := duration(fields["timeout-minutes"], 1200)
+	timeout, err := duration(fields["timeout-minutes"], 360*60)
 	if err != nil {
 		return run.Plan{}, err
 	}

@@ -22,11 +22,12 @@ import (
 
 func testBuildxCache(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint, image string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
 	t.Run("independent BuildKit gha v2 cache cold warm restart failure and cancellation", func(t *testing.T) {
-		// This functional layer exceeds 128 one-MiB client blocks. The larger
-		// temporary filesystem accommodates a persisted object and upload copy;
-		// the earlier disk-pressure test still uses its original 256 MiB mount.
-		clusterCommand(t, ctx, cluster, "mount", "-o", "remount,size=512m", testStorageRoot)
-		defer clusterCommand(t, ctx, cluster, "mount", "-o", "remount,size=256m", testStorageRoot)
+		// This layer needs room for a persisted object and its upload copy.
+		// Keep that capacity for the remaining shared-PVC scenarios: shrinking
+		// below retained cache data plus the disk-resume watermark pauses later
+		// jobs. The earlier pressure test still uses 256 MiB; container cleanup
+		// removes this disposable filesystem after the complete suite.
+		clusterCommand(t, ctx, cluster, "mount", "-o", "remount,size=1536m", testStorageRoot)
 		previousTimeout := httpClient.Timeout
 		httpClient.Timeout = 2 * time.Minute
 		defer func() { httpClient.Timeout = previousTimeout }()
@@ -50,8 +51,9 @@ func testBuildxCache(t *testing.T, ctx context.Context, cluster testcontainers.C
 			must(t, err)
 			restartServer(t, ctx, client, httpClient, endpoint)
 		}()
-		profile := fmt.Sprintf("profiles:\n  buildcache:\n    image: %s\n    memory_limit: 2Gi\n    act:\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n      image_mirrors:\n        moby/buildkit:buildx-stable-1: %s\n      buildkit_config: |\n        [registry.\"%s\"]\n          http = true\n", image, runner, builder, registry)
+		profile := fmt.Sprintf("profiles:\n  buildcache:\n    image: %s\n    memory_limit: 2Gi\n    act:\n      cache_object_bytes: 536870912\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n      image_mirrors:\n        moby/buildkit:buildx-stable-1: %s\n      buildkit_config: |\n        [registry.\"%s\"]\n          http = true\n", image, runner, builder, registry)
 		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", profile, 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(cm.Data["forgelet.yaml"], "blobs:\n", "blobs:\n  cache_object_bytes: 536870912\n", 1)
 		_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
 		must(t, err)
 		restartServer(t, ctx, client, httpClient, endpoint)
@@ -85,7 +87,7 @@ jobs:
       - run: |
           test "$ACTIONS_CACHE_SERVICE_V2" = true
           case "$ACTIONS_RESULTS_URL" in http://127.*) exit 9;; esac
-          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 135266304 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
+          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 314572800 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
           touch prepared
           while [ ! -f continue ]; do sleep 1; done
       - uses: docker/login-action@v3

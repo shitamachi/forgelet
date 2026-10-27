@@ -78,7 +78,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		actor = "forgelet"
 	}
 	cfg := &runner.Config{Actor: actor, Workdir: request.Workspace, DefaultBranch: "main", EventName: request.Plan.EventName, GitHubInstance: "github.com", Env: env, Secrets: secrets, Vars: request.Plan.Vars, Token: request.Token,
-		Platforms: map[string]string{"forgelet": request.Image}, BindWorkdir: true, ContainerOptions: "--user 0:0", ContainerDaemonSocket: run.ActSocket, LogOutput: true, NoSkipCheckout: true, AutoRemove: true, ActionCacheDir: filepath.Join(meta, "actions"), ActionCache: cache}
+		Platforms: map[string]string{"forgelet": request.Image}, BindWorkdir: true, ContainerOptions: "--user 0:0 --mount type=bind,source=/tmp,target=/tmp", ContainerDaemonSocket: run.ActSocket, LogOutput: true, NoSkipCheckout: true, AutoRemove: true, ActionCacheDir: filepath.Join(meta, "actions"), ActionCache: cache}
 	if cfg.EventName == "" {
 		cfg.EventName = "push"
 	}

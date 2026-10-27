@@ -45,7 +45,7 @@ func testActJobs(t *testing.T, ctx context.Context, cluster testcontainers.Conta
 			must(t, err)
 			restartServer(t, ctx, client, httpClient, endpoint)
 		}()
-		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  actions:\n    image: %s\n    act:\n      runner_image: %s\n      insecure_registry: true\n      registry_secret: forgelet-registry\n      image_mirrors:\n        forgelet-mirror-probe:stage10d: %s\n    memory_limit: 1Gi\n", image, runner, mirror), 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  actions:\n    image: %s\n    act:\n      cpu_request: 500m\n      cpu_limit: '1'\n      memory_request: 512Mi\n      memory_limit: 2Gi\n      runner_image: %s\n      insecure_registry: true\n      registry_secret: forgelet-registry\n      image_mirrors:\n        forgelet-mirror-probe:stage10d: %s\n    memory_limit: 1Gi\n    node_selector: {kubernetes.io/os: linux}\n", image, runner, mirror), 1)
 		_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
 		must(t, err)
 		restartServer(t, ctx, client, httpClient, endpoint)
@@ -95,6 +95,13 @@ jobs:
           test ! -e /var/run/forgelet/token
           test ! -e /var/run/forgelet-act-registry/config.json
           docker run --rm --network none forgelet-mirror-probe:stage10d sh -c 'echo mirrored-public-image-ready'
+          temp=$(mktemp -d /tmp/forgelet-nested-bind.XXXXXX)
+          chmod 755 "$temp"
+          printf 'same-job-temporary-data' > "$temp/proof"
+          chmod 644 "$temp/proof"
+          docker run --rm --network none --user 65534:65534 --mount "type=bind,source=$temp,target=/fixture,readonly" forgelet-mirror-probe:stage10d sh -ec 'test "$(cat /fixture/proof)" = same-job-temporary-data'
+          rm -rf "$temp"
+          echo shared-job-temporary-bind-ready
           git init .
           git config user.email fixture@example.test
           git config user.name fixture
@@ -151,9 +158,7 @@ jobs:
     secrets: {TOKEN: {required: true}}
     outputs: {answer: {value: '${{ jobs.act.outputs.answer }}'}}`, 1)
 			child = strings.Replace(child, "test ! -e /var/run/forgelet/token", "test '${{ inputs.enabled }}' = true\n          test '${{ github.job }}' = act\n          test ! -e /var/run/forgelet/token", 1)
-			var result run.Run
-			must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "event_name": "workflow_dispatch", "workflow": caller, "workflow_files": map[string]string{".github/workflows/act-child.yml": child}}, 201), &result))
-			return result
+			return createPublicWorkflow(t, ctx, httpClient, endpoint, map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "event_name": "workflow_dispatch", "workflow": caller, "workflow_files": map[string]string{".github/workflows/act-child.yml": child}})
 		}
 		source = strings.Replace(source, "cp -R /opt/forgelet/test-actions/docker ./docker", "cp -R /opt/forgelet/test-actions/docker ./docker\n          sed -i '1cFROM forgelet-mirror-probe:stage10d' docker/Dockerfile", 1)
 		item := createCall(source)
@@ -176,9 +181,39 @@ jobs:
 		// Touch only the supervisor's Pod-owned workspace, using its original UID.
 		pod, err := client.CoreV1().Pods("forgelet").Get(ctx, before.PodName, metav1.GetOptions{})
 		must(t, err)
+		engine := pod.Spec.InitContainers[1].Resources
+		if pod.Spec.NodeSelector["kubernetes.io/os"] != "linux" || engine.Requests.Cpu().String() != "500m" || engine.Requests.Memory().String() != "512Mi" || engine.Limits.Cpu().String() != "1" || engine.Limits.Memory().String() != "2Gi" {
+			t.Fatal("actual act Pod lost execution placement or engine resource budget", pod.Spec.NodeSelector, engine)
+		}
 		if string(pod.UID) != before.PodUID {
 			t.Fatal("Pod replaced")
 		}
+		budget := clusterCommand(t, ctx, cluster, "kubectl", "exec", "-n", "forgelet", before.PodName, "-c", "act-engine", "--", "sh", "-ec", `
+test "$(cat /sys/fs/cgroup/cpu.max)" = '100000 100000'
+test "$(cat /sys/fs/cgroup/memory.max)" = 2147483648
+root=$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)
+root=${root%/init}
+# Exec clients may retain the outer cgroup namespace; compare in that view.
+if [ "$root" = / ]; then root=''; fi
+ids=''
+trap 'test -z "$ids" || docker --host=unix:///run/forgelet-act/docker.sock rm -f $ids >/dev/null' EXIT
+before=$(awk '/usage_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+for parent in /docker /docker/buildx; do
+  id=$(docker --host=unix:///run/forgelet-act/docker.sock run -d --network none --cgroup-parent="$parent" forgelet-mirror-probe:stage10d sh -ec 'while :; do :; done')
+  ids="$ids $id"
+  pid=$(docker --host=unix:///run/forgelet-act/docker.sock inspect --format '{{.State.Pid}}' "$id")
+  case "$(cat /proc/$pid/cgroup)" in "0::$root$parent/"*) ;; *) echo 'nested container escaped engine budget'; exit 1;; esac
+done
+sleep 4
+after=$(awk '/usage_usec/{print $2}' /sys/fs/cgroup/cpu.stat)
+test "$((after-before))" -gt 1000000
+test "$((after-before))" -lt 7000000
+echo bounded-nested-cgroup-ready
+`)
+		if !strings.Contains(budget, "bounded-nested-cgroup-ready") {
+			t.Fatal("nested Docker resource budget not enforced", budget)
+		}
+		execInPod(t, ctx, cluster, before.PodName, `set -eu; trap 'rm -f /tmp/forgelet-private-probe' EXIT; echo supervisor-private > /tmp/forgelet-private-probe; docker exec $(docker ps --filter ancestor=`+runner+` --format '{{.ID}}') sh -ec 'test ! -e /tmp/forgelet-private-probe'`)
 		execInPod(t, ctx, cluster, before.PodName, "touch /workspace/repository/continue")
 		result := waitDone(item)
 		if actJob(result).Result.Outputs["answer"] != "real-act" || strings.Contains(logs(item), secret) || !strings.Contains(logs(item), "node24-post-ran") {

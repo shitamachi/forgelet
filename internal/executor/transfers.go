@@ -107,12 +107,16 @@ func (c *remoteClient) transferOnce(ctx context.Context, method, kind string, q 
 		return entry, err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, blob.MaxArchive+1))
+	limit := int64(blob.MaxArchive)
+	if kind == "cache" {
+		limit = blob.MaxCacheArchive
+	}
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, limit+1))
 	err = errors.Join(err, f.Close())
 	if err != nil {
 		return entry, errRuntimeTransport
 	}
-	if n > blob.MaxArchive {
+	if n > limit {
 		return entry, blob.ErrLimit
 	}
 	if hex.EncodeToString(h.Sum(nil)) != resp.Header.Get("X-Forgelet-Digest") {

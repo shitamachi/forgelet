@@ -1,7 +1,97 @@
 # 项目状态
 
-更新：2026-10-27（Asia/Shanghai）。当前：**阶段 10 执行内核与缓存修复已提交/推送并部署 homelab；steam-platform-web 两次真实 push 的原始 workflow、冷/热缓存与镜像发布全部通过，GitHub Checks 成功。**
+更新：2026-10-27（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 和最新全量回归仍在验证，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
+
+## 2026-10-27：homelab etcd 告警排查与资源保护
+
+owner 反馈集群 etcd 告警后，停止推进新的真实 push、构建与部署；排查时 Forgelet 命名空间已无执行 Pod，保留控制面服务。
+Prometheus 最近两小时记录确认 node1 的 etcdHighCommitDurations / etcdHighFsyncDurations warning 曾 firing；
+22:10 左右 5 分钟窗口 P99 commit 约 1.963 秒、WAL fsync 约 1.924 秒，node1 load1 峰值约 61.57。
+同一时间段 Forgelet act 任务集中在唯一的 control-plane/etcd 节点 node1，重型构建与控制面共享节点和磁盘，存在明显资源争用风险；尚未量化各工作负载贡献，不能称已完成唯一根因定位。
+k3s 于 22:13:42 exit-code=1 退出、22:14:01 恢复 active，实际 API 短时 connection refused；本次窗口未检索到内核 OOM 记录。
+22:23 左右 etcd 告警已不在当前告警列表，has_leader=1、proposals_failed_total=0、数据库约 75.4 MiB / 配额 2 GiB；
+WAL fsync P99 约 31 ms、commit 约 59 ms，节点 Ready、API readyz 包含 etcd 检查全部通过，但 k3s 仍有慢请求，不能称风险已消除。
+当前仍有 Longhorn 卷故障/用量、业务健康与资源超配等告警，单独保留，不在本次排查中删除数据或重启存储服务。
+已落地保护配置并于约 22:45 部署，不恢复重型业务验证作为本轮负载探针：
+- 所有 profile 改为 `node_selector: {forgelet.dev/execution: 'true'}`；仅 node2/node3 获此标签，node1 不参与执行。
+- 新增 `act.cpu_request/memory_request/cpu_limit/memory_limit`，校验正数及 request 不超过包含默认值的最终 limit；错误在 Kubernetes 调用前拒绝。保留未配置时的旧默认，实际 homelab 显式覆盖。
+- ubuntu-latest / ubuntu-24.04 引擎 request=limit=1 CPU / 4Gi；supervisor request=100m / 256Mi、limit=250m / 1Gi。native builder 单独 request=limit=1 CPU / 2Gi；其余 native supervisor 同预算。
+- 全局并发临时降到 1，部署保护版本后设为 2。节点余量只容一个重任务时，其余等待，不回退到 node1；Pending 仍受现有 starting 额度和超时机制约束，不承诺无限等待。
+- 真实集群只运行两个休眠调度探针：一个准入 node3，另一个 Insufficient cpu / Unschedulable，node1 selector 不匹配；探针全部删除。
+- `make verify` PASS（Go race / HTTP / SQLite、构建、lint/generate、35 Vitest、14 Chromium）；追加无效量/有效预算单测 race PASS。
+- Testcontainers act 专项 PASS 468.427 秒，实际子场景 359.52 秒：实际 Pod 资源与 selector、真实 Node/Docker Actions、65MiB 缓存冷热恢复、原 UID 重启接管、失败和取消清理。首轮在固定 SHA 的 actions/cache 元数据 HTTPS 请求 EOF 时失败，尚未进入执行；保留失败记录与独立成功重跑，不混称全量 Testcontainers 回归。
+- 已部署 server `zot.k.mygo.rocks/forgelet/server@sha256:f5289644b6abb8a79e6378e48134bbe270a59dc7e85a9b07da41a467a7385219`；控制面 Ready，启动日志 max_parallel=2。rollout 后首个外部健康探针短暂 503，后续 HTTP200、Service endpoint 与 API readyz 正常。
+- 部署后复查 etcd 当前告警为空、has_leader=1；WAL fsync P99 约 36ms、commit P99 约 55ms。此时没有重型构建，不能将此结果当作高负载验证或唯一根因已修复。
+
+保护措施沿用 Kubernetes 原生准入，不引入额外常驻组件。CPU/内存限制不提供 IOPS 隔离，
+Zot/Longhorn 共享后端仍可能影响 node1；下一步按受限预算逐个恢复真实 workflow，观察后再增加并发。
+如需要更高吞吐，优先增加独立磁盘 worker，并核对共享 registry/存储的负载，再扩充任务槽位。
+历史指标证据保存在本机私有目录 stage10-delivery-20261027/etcd-incident-20261027/，无凭据写入仓库。
+
+## 2026-10-27 23:50：恢复验证发现的两个实际缺口（代码已修复，验收继续）
+
+- **资源约束不能只看 Pod spec**：真实 API 构建中嵌套 BuildKit 超过2核，而 act-engine Kubernetes 指标只有数 millicores；其 PID 位于根 /docker/buildx，绕过引擎 cgroup。前述1CPU/4Gi请求/限额解决准入，但尚未约束该嵌套进程，原判断已修正。
+- **正式处理**：一次性 act-bootstrap 从 supervisor 镜像复制同版本执行器到 Pod 自有 emptyDir；引擎启动器建立私有 cgroup/mount namespace，重新挂载以本引擎为根的 cgroup v2，委派 cpu/memory/pids 后 exec dockerd；缺失能力立即失败。普通 Docker 与显式 Buildx 父组均留在资源祖先下。不新增常驻组件/引擎镜像，不挂宿主路径/身份。
+- **真实探针**：node2 的250m/512Mi有界独立 Pod，两个普通/显式 Buildx 父组忙循环共5秒消耗1785035µs CPU，读取父 cpu.max=25000/100000、memory.max=536870912，保存两条完整 PID 祖先；探针已清理。Docker stats 显示宿主总内存不代表内核祖先限额失效，检查实际 cgroup。
+- **API 缓存失败**：`c2ee4cb` / run `571ceefe8f6aff98b73e8556` 的测试成功，原镜像及latest/short-SHA manifest已推送 `6df02765f6cea27f7bfec5e6255877e9cd221486d4eeb04bd697b093952614e9`，但 BuildKit cache-to 超过256MiB对象上限返回413，任务整体 failure，不能计作验收通过。
+- **显式缓存预算**：新增 blobs.cache_object_bytes 与 act.cache_object_bytes，最大1GiB；默认256MiB、artifact最大256MiB不变。Store 按种类预留，HTTP/下载/envelope/v1/v2一致限额；每attempt逻辑payload预算2倍、SDK单块64MiB，BuildKit1MiB blocks数按预算有界扩展；磁盘流式传输，仍拒绝超限。封装/组装会有额外临时副本，需要节点临时空间，不能将逻辑额度等同物理占用。
+- **自动测试**：新资源/缓存代码 make verify PASS（Go race/HTTP/SQLite、35 Vitest、14 Chromium31.9秒、lint/generate/build）。前次全量 `testcontainers-resumed-full.log` 整体 FAIL2654.463秒：其余必选场景通过，BuildKit冷/热/负向构建已成功，取消探针在到达实际构建前因公共 setup-buildx 下载两次超时及EOF失败。保留失败，不记全量PASS。新版本专项已通过 act 内核限流/私有临时元数据隔离/重启/失败/取消，Rust与300MiB构建缓存冷热/重启/失败/取消仍在运行；最新完整命令另已启动，结果待收尾。
+- **配套部署**：server `15264fa2b167ef0c44c1d99d1bb72db8474a4fbc3ef9700dadd5dcdf731c9e2a`、act supervisor `855544c3cc3d9f61e6c207411b6c071d646a64138b3caa75e8df966a376bdcac`，保留 worker/并发2/1CPU4Gi和现有工具runner；ubuntu-latest显式cache对象1GiB、全局blob6GiB（现有PVC声明10GiB）。真实API新执行Pod读到1CPU/4GiB内核祖先预算。
+- **实际恢复**：API新真实push `a02aa7b99927fa5f07d6c105b73624a410ea1e86` / run `1ed6df7b9e8b1e152a07af5e`，原workflow运行中；旧README重复验证文案合并为CI说明。Tasks/手动PG/Rust依次等待，不删步骤、不放宽原job timeout/断言。检测到额外steam-admin真实push d2bf88f，保留其正常排队，不取消业务触发。
+- **现有CD**：Flux forgelet-platform-web Ready，仍为回滚恢复后的revision564223da；没有将其他仓库的镜像push写作Flux部署完成。
+
+## 2026-10-28 00:12：专项通过与默认超时修正
+
+- 新嵌套引擎/大缓存专项 Testcontainers **PASS 1836.080秒**：act协议/CPU祖先限额/私有临时目录隔离383.74秒、Rust/PowerShell130.45秒、真实300MiB随机层的独立BuildKit冷/热缓存、重启保留UID、失败/取消清理1150.63秒。临时k3s已清理；完整回归仍在运行，结果分别记录。
+- API `a02aa7b` / `1ed6df7b9e8b1e152a07af5e` 最终 **timed_out**：两轮业务测试及覆盖率测试成功，Codecov Action外部下载未完成时触及Forgelet旧20分钟默认值，image skipped；不是业务测试失败，也不是镜像验收成功。
+- 对照 [GitHub workflow timeout默认360分钟](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes)，新编译计划修正为360分钟，显式timeout-minutes原值不变；旧计划、重跑快照和零值运行时兜底不回写。新增默认/显式20/45分钟单测和HTTP持久化断言，race单测/集成与make verify通过（35 Vitest、14 Chromium30.4秒）。部署与新实际push待完成。
+- Mongo7.0原版镜像已完整SHA校验并同步Zot，供Tasks原版集成流程使用；PG/Mongo真实运行尚未完成，不能将普通unit模式跳过Mongo计作集成通过。
+- 00:13已部署默认超时修正 server `afa361e14261a9c2afa44f952412086896dfa4ac506a49c843d67bdd8190a0c2`，保留 supervisor `855544c3` 与全部worker/资源/缓存预算；仅新增Mongo7.0精确上游镜像别名。原执行Pod UID保留。API新真实push `b8f4702df72a5548b346f36ccc6ed75705d57853` / `2af5b0f85e41d382d4586ee4`已入队，两job计划均为21600秒；同步保留新业务提交，原workflow不变。包含默认超时的新完整Testcontainers回归另已启动，尚无最终结果。
+- Tasks复用最新业务提交已经触发的原始workflow，不额外制造重复构建；随后手动启用原版PG/Mongo集成，最后验证Rust。00:18复查现有Web HTTP200、Flux Ready、digest c85afdd/GitOps564223da保持；00:19 etcd无当前告警、leader=1、fsync约54ms/commit约63ms。
+
+## 进行中：Go/Node 实际接入 → 业务 CD → Rust 与其余仓库
+
+owner 已授权按上述顺序完成三批工作。2026-10-27 已重新读取 9 个仓库的默认分支 SHA 与原 workflows；
+GitHub App 经确认新增 8 个业务仓库，加上后续单独授权的业务 GitOps 仓库，当前共 13 个限定仓库。
+首批从 GitHub 当前版本独立检出，接入提交仅增加 CI 说明，原始源码与 workflow 保持。
+验证期间临时暂停托管 Actions 并保存原配置，两仓库验收完成后均已恢复。
+admin-web 冷 1c0ebb6、热 b9061de 的原 CI/镜像 workflow 已通过，npm cache false→true，Action/tag/registry digest 一致；托管 Actions 已恢复原配置。
+中间 8dada0ad 镜像任务因 registry 登录网络超时失败，保留独立失败记录。
+platform-server 原先两次 CI 成功但 Go 缓存保存失败的问题已修复：64 MiB 块边界、413 与默认 256 MiB/对象、512 MiB/attempt 预算保留。
+缓存专项 Testcontainers PASS（1534.701 秒，实际场景 558.76 秒，65 MiB 随机数据、重启/热恢复/失败/取消）。
+部署后真实冷 e4b90b1 / run 1ace135202cdfe4918bc5bf0 保存 181338460 bytes；热 ac3f90d / run 9fe77a46b5d9ee3cf43d834c cache-hit=true。
+原五步、GitHub Checks 全部成功，Pod UID 不同；两仓库托管 Actions 均已按保存配置恢复。
+自动 CD 补齐默认事件归一化：省略 event_name 的管理 API 与原编译器同为 push；新回归修复前失败、修复后 race 通过。
+自动发布/Flux 专项 Testcontainers PASS（633.030 秒；新增自动图场景 96.10 秒），覆盖持久化配置、重启保留 UID、digest 投递和 CI 失败不产生发布。
+业务 GitOps 仓库经授权加入 App，独立只读 deploy key、限定 Deployment 写权限及健康检查所需 ReplicaSet 只读权限已就绪，Flux 基线 Ready。
+业务原 workflow 真实 push → 自动 CD / Flux 健康 → 回滚/恢复已通过，具体记录见下。
+首轮 247a5d6 / f897af27 的原 CI 与镜像发布成功，native CD 在 node3 拉取外部旧 executor 时卡住。取消后 Pod 仍 Terminating；核对 UID、取消意图、未启动容器且无 containerID 后，仅强制清理该验证 Pod。保留人工恢复证据，不将此情形记作自动取消通过。
+native homelab/builder 已切换本批 Zot executor ef6a469，控制面成功重启；真实 push da2ec10 / 44844cf722f4ea74cbc877db 的 48 单测、28 Playwright、pnpm cache-hit=true 通过；镜像任务登录外部 registry 时 GET /v2/ EOF，native CD 正确 skipped，无发布记录。
+同节点独立 Pod 连续 6 次无凭据 /v2/ 探测：5 次预期 401、1 次 ECONNRESET，复现偶发连接故障，未改业务 YAML 或放宽 TLS。新真实 push baa4b54 / 2e2d793b86c11a33a8cae62e 三个 job 与 GitHub Checks 全部成功，48 单测、28 Playwright，pnpm cache-hit=true。
+镜像 Action、latest 与完整 SHA 标签 digest 均为 c85afddacd8f6d1b024692b7489200c91894856faf8931ee88020ba1d75418ce；GitOps/Flux revision 4f6695e98b498821cd60c35830c58de352838b27，实际 Deployment ready 且 HTTP200。
+原 native Pod 首次拉取缺 Zot 凭据，补齐其引用 Secret/执行 SA 后同一 UID a8d2149a-7c7c-47b3-b2a9-57900d684695 恢复成功，未重建 attempt。
+显式管理 API 失败探针 c257c94983053b8d30eb63b4 使用旧源 SHA 与故意修改的 workflow，build 失败，image/native skipped，无 Pod/新发布，线上 digest/revision 不变；不把它记作原始 GitHub push。
+实际回滚 e08720b9 → 基线 25e02b1 / GitOps ae647ceb，再恢复 1f4811bf → c85afdd / GitOps 564223da，均核对 Flux Ready、Deployment 与 HTTP200。Web 托管 Actions 已按保存配置恢复。
+完整 Testcontainers 首轮在并发组场景超时：大缓存场景结束后将共享 tmpfs 从512缩回256MiB，保留数据令 available=59314176 低于64MiB恢复阈值，产品正确暂停。夹具现保留容量至容器清理，磁盘压力场景仍用原256MiB；首轮不记 PASS。后一次全量因公网 SDK 下载耗时耗尽测试总 context，亦保留失败记录。当前重跑显式预装经过官方固定 SHA256 校验的 Go1.25.0/Node24.14.0 SDK，真实 setup Actions/版本断言仍运行，公网 SDK 下载不计入该次兼容验收。
+
+第三批进展（2026-10-27 23:15，尚未全部完成）：
+
+- steam-login：真实 push `a1779349f75b0ced28068761cafbcd4ec927c940` / run `a212d60035016b2ddec78fbf`，原六步成功。GHCR latest/full-SHA digest `6f3b286beb9c9ec3cf1de316d9a26d4854e49060c61876a2150141d5a56306e6`；原业务 registry latest/full-SHA digest `33847916197b338a6918178b9748278357bf185cfed748062f35215d57becfa2`，均与 Action 输出相同，Checks 成功、托管 Actions 已恢复。原 workflow 没有单测，不能称该仓库单测通过。
+- steam-admin：真实 push `aeca6d405f73b181d204229c63ffc90c85e84ccd`，原 CI `31f170f5` 与 image `77e621bf` 均成功；Go1.26/Buf1.72/生成差异检查实际执行，latest/sha-aeca6d4 digest `502de2aaee7ad693ffbe987b72cec245c6a69633c96f8cd33777abac9bece01a`，Checks 成功、托管 Actions 已恢复。两份原 workflow 仍独立触发。
+- steam-platform-etl：修正过旧 SDK 缺少 priceregion 的业务依赖，固定公开 `v0.6.1-0.20261023131147-712898751565`；业务提交 `6e57692518448b715158631dd759d37689b83961`。原手动 workflow run `1ad7843522bb27c33002e83d` 成功，本地 make check 亦通过；保持手动触发，不修改生产 CDC/数据库。前一轮代理404保留失败，工具镜像 GOPROXY 增加 direct 回退后成功。
+- steam-api：本地原 SHA Go1.26 测试成功；首次真实运行因 Redis 拉取超时失败，增加精确 Redis 公共镜像映射，未放宽测试超时或断言。事故后的真实 push `c2ee4cb1a129d45173a784f9b53e1194b83b701a` / run `571ceefe8f6aff98b73e8556` 测试任务成功，RedisAdmissionAndParentSnapshotIntegration 两次实际执行，镜像任务尚在运行。可选业务 fixtures 的 skip 不计入实际执行。
+- steam-tasks：已修正 SDK 固定及 standalone Docker context，业务提交 `ec7e7667bea44b6987901e316516ad9caff5fd36`，本地 short/race 通过。此前真实任务被集群事故中断，原 workflow 尚未验收；接下来重跑原两份 push workflow，再显式手动 postgres=true 验证真实 Testcontainers PostgreSQL。
+- steam-cm：原 Rust 测试任务成功，但最后一次 image 任务在 managed lifecycle 的临时目录 bind 失败。原因是 job 私有 /tmp 不在同 Pod Docker 引擎命名空间；已实现有界共享 /tmp，supervisor 元数据继续私有。专项 Testcontainers PASS 581.050 秒（实际 act 场景423.63秒），最新更强私有文件断言已随正在运行的全量通过 act 场景；真实 Rust 完整 workflow 待重跑，不记完成。
+
+GHCR 经典 PAT 经 owner 确认后生成：write:packages（含 read，不含 repo/delete），2026-11-26 到期；本机0600，服务端加密保存，仅 steam-login 的 package_tokens 引用，source clone token 分离。
+Rust 工具环境使用显式 Rust1.97/PowerShell7.6.9/Cargo mirror，workspace12Gi；自定义 compiler 镜像不是上游镜像逐字节副本。普通 push 保留 publish=false，不做实际 Steam 登录或生产部署。
+
+恢复验证使用所有 profile worker selector、max_parallel=2、act engine request=limit 1CPU/4Gi，逐库执行重型任务；控制面 node1 不接收执行 Pod。
+当前 server `zot.k.mygo.rocks/forgelet/server@sha256:53f5a7c3bcb9323dac0e16d3b996c24730ca067f38e2853c190a8f4bf0af6676`；act supervisor `zot.k.mygo.rocks/forgelet/executor-act@sha256:0ebfea0bf604225d612c9b89c1c56015265deb9824ef3c3583c0e69fca310053`。显式工具 runner_image 不变；部署从实时配置保留全部资源保护，活跃 API 测试 Pod UID 未更换。
+最新 make verify 通过（Go race/HTTP/SQLite、35 Vitest、14 Chromium、lint/generate/build）；全量 Testcontainers 已通过 act 临时目录/私有元数据隔离、缓存、重启与取消场景，整条命令仍运行中，不能提前记 PASS。
+恢复 API 重负载时复查 etcd 当前告警为空、leader=1，fsync P99约31ms/commit59ms；这不证明共享存储 I/O 已完全隔离。
+本轮证据目录：/Users/guo/.config/forgelet/stage10-delivery-20261027/。
 
 ## 已交付
 

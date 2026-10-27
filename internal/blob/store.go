@@ -22,22 +22,33 @@ var ErrConflict = errors.New("immutable blob conflict")
 var ErrLimit = errors.New("blob quota exceeded")
 
 const MaxArchive = 256 << 20
+const MaxCacheArchive = 1 << 30
 
 type Limits struct {
-	ObjectBytes int64 `yaml:"object_bytes"`
-	TotalBytes  int64 `yaml:"total_bytes"`
-	Objects     int   `yaml:"objects"`
+	CacheObjectBytes int64 `yaml:"cache_object_bytes,omitempty"`
+	ObjectBytes      int64 `yaml:"object_bytes"`
+	TotalBytes       int64 `yaml:"total_bytes"`
+	Objects          int   `yaml:"objects"`
 }
 
 func DefaultLimits() Limits {
 	return Limits{ObjectBytes: MaxArchive, TotalBytes: 2 << 30, Objects: 4096}
 }
 func (l Limits) Validate() error {
-	if l.ObjectBytes < 1 || l.ObjectBytes > MaxArchive || l.TotalBytes < l.ObjectBytes || l.TotalBytes > 1<<40 || l.Objects < 1 || l.Objects > 100000 {
-		return fmt.Errorf("invalid blob limits: object 1..256MiB, total >= object and <=1TiB, objects 1..100000")
+	if l.ObjectBytes < 1 || l.ObjectBytes > MaxArchive || l.CacheObjectBytes < 0 || l.CacheObjectBytes > MaxCacheArchive || l.TotalBytes < max(l.ObjectBytes, l.CacheObjectBytes) || l.TotalBytes > 1<<40 || l.Objects < 1 || l.Objects > 100000 {
+		return fmt.Errorf("invalid blob limits: artifact/object 1..256MiB, optional cache object 1..1GiB, total >= largest object and <=1TiB, objects 1..100000")
 	}
 	return nil
 }
+
+// ObjectLimit keeps larger opaque cache envelopes separate from artifact limits.
+func (l Limits) ObjectLimit(kind string) int64 {
+	if kind == "cache" && l.CacheObjectBytes > 0 {
+		return l.CacheObjectBytes
+	}
+	return l.ObjectBytes
+}
+func (s *Store) ObjectLimit(kind string) int64 { return s.limits.ObjectLimit(kind) }
 
 type Scope struct{ Repository, Kind, Namespace, Version string }
 type Entry struct {
@@ -119,6 +130,7 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	if !valid(scope, key) || owner == "" || ttl < time.Hour || ttl > 90*24*time.Hour {
 		return Entry{}, fmt.Errorf("invalid blob metadata")
 	}
+	objectLimit := s.ObjectLimit(scope.Kind)
 	s.mu.Lock()
 	if old, ok := s.entries[identity(scope, key)]; ok && !now.Before(old.ExpiresAt) {
 		tomb := filepath.Join(s.dir, ".upload-expired-"+old.ID)
@@ -144,11 +156,11 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		// Verify a duplicate without reserving another full temporary object.
 		// This permits acknowledgement recovery even at the storage quota.
 		h := sha256.New()
-		n, err := io.Copy(h, io.LimitReader(&contextReader{ctx: ctx, r: input}, s.limits.ObjectBytes+1))
+		n, err := io.Copy(h, io.LimitReader(&contextReader{ctx: ctx, r: input}, objectLimit+1))
 		if err != nil {
 			return Entry{}, err
 		}
-		if n > s.limits.ObjectBytes {
+		if n > objectLimit {
 			return Entry{}, ErrLimit
 		}
 		if n != old.Size || hex.EncodeToString(h.Sum(nil)) != old.Digest {
@@ -158,14 +170,14 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	}
 	// Reserve the maximum object size before accepting bytes, including every
 	// concurrent temporary upload in the global bound.
-	if s.used+s.reserved+s.limits.ObjectBytes > s.limits.TotalBytes || len(s.entries)+s.uploads >= s.limits.Objects {
+	if s.used+s.reserved+objectLimit > s.limits.TotalBytes || len(s.entries)+s.uploads >= s.limits.Objects {
 		s.mu.Unlock()
 		return Entry{}, ErrLimit
 	}
-	s.reserved += s.limits.ObjectBytes
+	s.reserved += objectLimit
 	s.uploads++
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.reserved -= s.limits.ObjectBytes; s.uploads--; s.mu.Unlock() }()
+	defer func() { s.mu.Lock(); s.reserved -= objectLimit; s.uploads--; s.mu.Unlock() }()
 	dir, err := os.MkdirTemp(s.dir, ".upload-")
 	if err != nil {
 		return Entry{}, err
@@ -176,7 +188,7 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		return Entry{}, err
 	}
 	h := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(&contextReader{ctx: ctx, r: input}, s.limits.ObjectBytes+1))
+	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(&contextReader{ctx: ctx, r: input}, objectLimit+1))
 	if copyErr == nil {
 		copyErr = f.Sync()
 	}
@@ -184,7 +196,7 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	if err != nil {
 		return Entry{}, fmt.Errorf("upload blob: %w", err)
 	}
-	if n > s.limits.ObjectBytes {
+	if n > objectLimit {
 		return Entry{}, ErrLimit
 	}
 	e := Entry{Scope: scope, ID: identity(scope, key), Key: key, Owner: owner, Digest: hex.EncodeToString(h.Sum(nil)), Size: n, CreatedAt: now, ExpiresAt: now.Add(ttl)}

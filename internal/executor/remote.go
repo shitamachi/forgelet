@@ -22,15 +22,16 @@ import (
 // RemoteOptions configures the Pod's connection to the control plane. Projected
 // workload tokens are read from TokenFile for every request, including retries.
 type RemoteOptions struct {
-	URL          string
-	JobID        string
-	PodUID       string
-	TokenFile    string
-	Workspace    string
-	Client       *http.Client
-	RetryTimeout time.Duration
-	PollInterval time.Duration
-	FlushTimeout time.Duration
+	ActCacheObjectBytes int64
+	URL                 string
+	JobID               string
+	PodUID              string
+	TokenFile           string
+	Workspace           string
+	Client              *http.Client
+	RetryTimeout        time.Duration
+	PollInterval        time.Duration
+	FlushTimeout        time.Duration
 }
 
 type remoteClient struct {
@@ -231,7 +232,7 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 			}
 		}
 	}()
-	result, executeErr := Execute(sessionCtx, plan, Options{BuildkitConfig: os.Getenv("FORGELET_BUILDKIT_CONFIG"), PackageToken: credentials.PackageToken, ActCacheHost: os.Getenv("FORGELET_ACT_CACHE_HOST"), ImageMirrors: mirrors, ActImage: os.Getenv("FORGELET_ACT_IMAGE"), BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: os.Getenv("FORGELET_REGISTRY_CONFIG"), Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
+	result, executeErr := Execute(sessionCtx, plan, Options{ActCacheObjectBytes: options.ActCacheObjectBytes, BuildkitConfig: os.Getenv("FORGELET_BUILDKIT_CONFIG"), PackageToken: credentials.PackageToken, ActCacheHost: os.Getenv("FORGELET_ACT_CACHE_HOST"), ImageMirrors: mirrors, ActImage: os.Getenv("FORGELET_ACT_IMAGE"), BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: os.Getenv("FORGELET_REGISTRY_CONFIG"), Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
 	cancelSession()
 	watchErr := <-watchDone
 	logErr := <-logDone

@@ -16,7 +16,7 @@ func TestRuntimeBlobsAreAuthenticatedAndScoped(t *testing.T) {
 	h := newHarness(t, 4)
 	h.http.Close()
 	var err error
-	h.cfg.Blobs, err = blob.Open(filepath.Join(t.TempDir(), "blobs"), blob.Limits{ObjectBytes: 1024, TotalBytes: 8192, Objects: 20})
+	h.cfg.Blobs, err = blob.Open(filepath.Join(t.TempDir(), "blobs"), blob.Limits{ObjectBytes: 1024, CacheObjectBytes: 2048, TotalBytes: 16384, Objects: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +55,15 @@ func TestRuntimeBlobsAreAuthenticatedAndScoped(t *testing.T) {
 	}
 	if code, _ := put(j1, "large", strings.Repeat("x", 1025)); code != 413 {
 		t.Fatal("quota", code)
+	}
+	cachePath := "/internal/jobs/" + j1.ID + "/blobs/cache?version=" + strings.Repeat("a", 64) + "&key="
+	for _, tc := range []struct {
+		key          string
+		size, status int
+	}{{"larger-cache", 2048, 200}, {"too-large-cache", 2049, 413}} {
+		if code, body := h.request("PUT", cachePath+tc.key, strings.Repeat("x", tc.size), map[string]string{"Authorization": "Bearer token-" + j1.ID}); code != tc.status {
+			t.Fatal(tc.key, code, string(body))
+		}
 	}
 	if code, _ := h.runtimeRequest("GET", "blobs/cache?key=test", j1, nil); code != 400 {
 		t.Fatal("cache without version", code)
