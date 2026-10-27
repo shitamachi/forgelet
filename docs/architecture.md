@@ -607,3 +607,11 @@ worker 通过 Docker bind mount 将该目录挂到 job 的同名绝对路径，�
 job-local facade 的暂存累计预算为对象预算两倍；单块64MiB不变，1MiB BuildKit blocks 数按对象预算有界扩展。
 数据流式落盘/校验，只有 SDK 单块进入内存，较大缓存不会一次分配整个对象；重启/取消清理沿用既有语义。
 资源隔离依据：[Linux cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)、[Docker cgroup parent](https://docs.docker.com/reference/cli/dockerd/#default-cgroup-parent)。
+
+### homelab 工具层的冷启动优化
+
+homelab ubuntu-latest额外预编译Go1.26.4公共标准库的普通和race缓存，位置为实际root job使用的/root/.cache/go-build；不包含业务源码、私有模块或凭据，不伪造setup-go仓库缓存命中，也不跳过原go mod verify/vet/build/race检查。构建时用该SDK执行go install -p=2 std及go install -p=2 -race std，GOTOOLCHAIN=local，不在镜像中持久设置GOMAXPROCS。额外压缩层约84.4MiB，代价是工具镜像/registry磁盘占用，未增加空闲常驻服务。模块及项目缓存继续由原Actions及Forgelet有界缓存协议管理。
+
+下载代理的复用HTTP/2连接出现长时间等待后，homelab工具镜像临时设置GODEBUG=http2client=0；新进程/三组空缓存已验证公共模块校验通过，尚不据此断言代理或Go的唯一缺陷。该网络绕行仅为部署环境设置，项目默认Dockerfile仍保持原配置。
+
+act超时/取消/返回前，supervisor杀停本Pod自有引擎中的运行容器，再次列举确认没有运行容器才允许终态ACK。无需等待大overlay文件系统删除，磁盘数据随引擎Pod回收；确认失败仍保持interrupted语义，不把未证明停止的执行当作完成。

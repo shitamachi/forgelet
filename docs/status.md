@@ -767,3 +767,5 @@ Tasks CIf495在原race步骤期间最终interrupted，server记录executor stopp
 代码发现停止确认使用docker rm --force，会把大overlay文件系统删除也计入10秒窗口。新增修正只列出运行中容器、SIGKILL后再次确认无运行容器，再允许终态回传；整个私有引擎及磁盘随Pod回收。退出竞态以最终观测为准；kill失败且仍运行、最终观测失败均继续fail closed。新增空引擎、运行容器、退出竞态、列举/kill/确认失败、仍运行及context取消回归，race专项PASS2.904秒。真实临时k3s超时场景增加独立后台容器及256MiB可写层，要求保留timed_out ACK及清理；make verify已PASS（Go race/进程内集成、构建/lint/generate、35前端单测与14浏览器31.4秒），新一轮完整Testcontainers正在运行。尚未部署这段新源码，之前PASS1654.999秒对应1842d17，不能代替本次结果。
 
 同时准备仅含Go1.26.4公共标准库普通/race编译缓存的homelab工具层，在本机有界Go并行度构建，不装业务模块、不保存任何业务token或私有源码、不更改原workflow的20分钟限制。该优化仍需实际完整运行验证，不能预先视为解决冷启动预算。API8ca9原test已开始执行，HTTP/1.1工具镜像的Tasks image重跑c43538a7排队中，业务验收未完成。
+
+03:59追加：make verify已完整PASS。新执行器06162882…（Go1.27.3从8220b7c原生交叉编译executor，act-worker与c021基础镜像层保持）及工具镜像1f8ecd0f…已rollout，活跃Pod UID/全部预算和别名保留；server仍为749b0bc6。公共标准库额外压缩层84.4MiB；3核设置下普通/race net/http均复用缓存，合计1.2秒，无重新编译。仅自主旧工具重跑c43538a7明确cancelled留存，非原业务push；新同fe3/固定原计划CI e35240de及image e4bf1c97已入队，原20分钟不变。原API镜像任务已先分配node3，原test已success；现有任务保留其创建时镜像，不回写。完整临时k3s仍进行，尚不把新源码的完整集成验证记为通过。
