@@ -428,8 +428,8 @@ func compileStep(node *yaml.Node, index int, scope referenceScope) (run.Step, bo
 		if err != nil {
 			return run.Step{}, false, err
 		}
-		if step.Shell != "bash" && step.Shell != "sh" {
-			return run.Step{}, false, diagnostic(fields["shell"], "supported shells are bash and sh")
+		if step.Shell != "bash" && step.Shell != "sh" && step.Shell != "pwsh" {
+			return run.Step{}, false, diagnostic(fields["shell"], "supported shells are bash, sh and pwsh (act profile)")
 		}
 		step.WorkingDirectory, err = optionalString(fields["working-directory"], "")
 		if err != nil {

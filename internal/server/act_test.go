@@ -73,6 +73,28 @@ jobs:
 	}
 }
 
+func TestPowerShellRequiresExplicitActProfile(t *testing.T) {
+	h := newHarness(t, 1)
+	h.server.cfg.Profiles["actions"] = kube.Profile{Image: "executor:act", Act: &kube.ActProfile{}}
+	for _, tc := range []struct {
+		profile, defaults string
+		want              int
+	}{
+		{"small", "", 422}, {"small", "defaults: {run: {shell: pwsh}}\n", 422},
+		{"actions", "", 201}, {"actions", "defaults: {run: {shell: pwsh}}\n", 201},
+	} {
+		shell := "        shell: pwsh\n"
+		if tc.defaults != "" {
+			shell = ""
+		}
+		source := "on: push\n" + tc.defaults + "jobs:\n  test:\n    runs-on: " + tc.profile + "\n    steps:\n      - run: Write-Output 'pwsh-ready'\n" + shell
+		code, body := h.admin("POST", "/api/runs", map[string]any{"repository": "me/repo", "sha": strings.Repeat("a", 40), "workflow": source})
+		if code != tc.want || tc.want == 422 && !bytes.Contains(body, []byte("pwsh requires an act")) {
+			t.Fatal(code, string(body))
+		}
+	}
+}
+
 func TestActContentsNoneDoesNotMintImplicitToken(t *testing.T) {
 	h := newHarness(t, 1)
 	h.http.Close()

@@ -190,7 +190,7 @@ jobs:
 	if plans[0].Steps[0].Shell != "sh" || plans[0].Steps[0].WorkingDirectory != "other" || plans[0].Steps[1].Shell != "bash" || plans[0].Steps[1].WorkingDirectory != "explicit" {
 		t.Fatal(plans)
 	}
-	for _, invalid := range []string{strings.Replace(source, "project", "/outside", 1), strings.Replace(source, "shell: sh", "shell: pwsh", 1), strings.Replace(source, "contents: read", "contents: write", 1)} {
+	for _, invalid := range []string{strings.Replace(source, "project", "/outside", 1), strings.Replace(source, "shell: sh", "shell: python", 1), strings.Replace(source, "contents: read", "contents: write", 1)} {
 		if _, err = Compile([]byte(invalid), testEvent, "bad"); err == nil {
 			t.Fatal("accepted invalid execution defaults")
 		}

@@ -60,7 +60,7 @@ func applyDefaults(p *run.Plan, steps *yaml.Node, nodes ...*yaml.Node) error {
 			if err != nil {
 				return err
 			}
-			if shell != "bash" && shell != "sh" {
+			if shell != "bash" && shell != "sh" && shell != "pwsh" {
 				return diagnostic(value, "unsupported default shell %q", shell)
 			}
 		}

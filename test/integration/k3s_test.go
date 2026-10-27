@@ -117,6 +117,17 @@ func TestK3sConcurrentExecution(t *testing.T) {
 			}
 		}
 	}
+	// The API can be ready while the pinned cluster's DNS/storage add-ons are
+	// still pulling images. Do not spend a workflow's deadline on cluster boot.
+	waitForTimeout(t, ctx, "cluster DNS and storage provisioner ready", 5*time.Minute, func() bool {
+		for _, name := range []string{"coredns", "local-path-provisioner"} {
+			deployment, err := client.AppsV1().Deployments("kube-system").Get(ctx, name, metav1.GetOptions{})
+			if err != nil || deployment.Status.ReadyReplicas < 1 {
+				return false
+			}
+		}
+		return true
+	})
 	cert, key := testCertificate(t)
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(cert) {
@@ -522,6 +533,7 @@ jobs:
 	testPhaseThree(t, ctx, cluster, client, httpClient, endpoint, root, request, create, get)
 	testBatchedLogRestart(t, ctx, cluster, client, httpClient, endpoint, create, get, request)
 	testActJobs(t, ctx, cluster, client, httpClient, endpoint, image, request, create, get)
+	testRustProfile(t, ctx, cluster, client, httpClient, endpoint, image, request, get)
 	testBuildxCache(t, ctx, cluster, client, httpClient, endpoint, image, request, create, get)
 	testBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)
 	testBuildBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)

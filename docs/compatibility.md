@@ -328,3 +328,13 @@ steam-build 的显式 hydration.patch；原始 YAML 不变。源码有补丁时�
 两轮分别核对 Action digest、latest 与完整源码 SHA 标签，结果见 status。
 Node24.14.0 toolcache / Playwright1.63.0 Chromium 是显式镜像能力；应用缓存独立保存。
 这项验收覆盖实际使用的 workflow，不扩大 artifact v4、其他工具链或业务 Flux CD 的兼容承诺。
+
+### 本轮新增能力（实际部署与验收见 status）
+
+- workflow run/defaults 可声明 `shell: pwsh`；只有显式 act profile 允许，管理员必须提供真实 PowerShell。
+  native profile 在 admission 时拒绝，不能误用 bash 解释 PowerShell。Ubuntu24.04/Rust1.97/PowerShell7.6.9 为可选镜像 target；
+  工具镜像构建、临时 k3s 和业务原 workflow 验收分别记录，不把语法支持算作工具运行完成。
+- setup-go 的固定 SDK 使用 64 MiB Azure blocks，缓存接口现接受该边界，超过单块限额返回 413；
+  对象 256 MiB、attempt payload 512 MiB、最多 256 blocks 等预算保留。
+- 管理员可以在目标配置中绑定原始 workflow 的镜像任务；仅匹配 push 追加原生 CD，不改 GitHub YAML。
+  等待全部原任务组成功，固定 digest；具体来源、发布/健康状态和使用边界见 deployment。
