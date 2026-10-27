@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 和最新全量回归仍在验证，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 的真实业务验收仍在进行，最新完整自动回归已通过，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -19,7 +19,7 @@
 | steam-tasks | 最新业务fe3f7df的已触发push | 队列中，随后手动启用PG/Mongo集成 | 待核对原发布流程 | 非本批部署目标 |
 | steam-cm | 旧729dd6b测试成功、镜像生命周期失败 | shared/tmp修复后待新真实push | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
 
-验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；尚未复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。
+验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。
 
 实现与资源/缓存修复已提交并推送 `c2aa4fa`。完整回归第一轮（默认超时修正之前）PASS2582.609秒，27个必选叶场景、2个需外部私有业务目录的可选SKIP；包含默认超时修正的最新完整回归也已PASS2066.079秒：27个必选叶场景、2个可选SKIP，真实SDK Actions35.05秒、浏览器33.61秒、登录/授权重启106.74秒、保留清理16.26秒；公共Action元数据首次读取失败后，在未持久化运行前有界重试成功。SDK预载仅使用官方SHA验证归档，不计公网SDK下载。实际仓库证据与可选fixture是否执行分别记录，不能互相替代。
 
@@ -46,6 +46,14 @@ Admin Web `4d5cd9d` 的原32个测试在独立Node24.14容器中，1 CPU和2 CPU
 CPU可见性修正后的完整Testcontainers PASS1522.854秒（27必选叶场景，2可选私有fixture SKIP），全部临时集群/registry已清理，无新增代码修正。实际API旧Pod `f-316f23ed5e1b780a0fa8479a` 仍为1 CPU/4Gi：祖先cpu.max=100000/100000、memory.max=4294967296，内层NanoCpus=1000000000，Node24实际availableParallelism=1（宿主4核）；证明升级保留已有配额且修正可见性，不计作该workflow已通过。新Tasks Pod `f-b728251526edc9398fde1b26` 的spec为request1/limit2 CPU、4Gi、CPU_COUNT=2，尚Pending，内核配额待运行核对。
 
 旧Tasks a69的CI及镜像入口均因reliability子任务20分钟超时而failure；镜像构建正确skipped，非业务测试失败。最新fe3两个入口仍待验收。01:40现有Web HTTP200、Flux Ready/revision564223da、Deployment digestc85afdd保持。node2预留CPU3300m/4、内存7214Mi/~9.8Gi，不能接纳4Gi引擎加256Mi supervisor；node3当前只能准入一个重任务，并发上限2不等于同时可运行两个重任务。本轮保留这些预留与现有业务任务，不以降低内存预留制造吞吐。若需稳定两重任务并行，需要额外worker余量。
+
+## 2026-10-28 02:19：Tasks 原超时保留与后续 CPU 预算
+
+最新fe3普通CI `c984f955` 的原20分钟任务 timed_out：模块/静态检查/构建通过（11分3.87秒），Atlas安装通过（1分1.89秒）、迁移校验通过，进入原short/race检查后达到总超时；不能记作测试失败或整库验收通过。其2CPU祖先限额与内层Node可见CPU=2已实测，内存4Gi保留。
+
+后续act引擎CPU limit由2调整到3，request保留1、内存request/limit4Gi、worker-only与并发2不变；02:19配置rollout通过，已有Pod UID及预算保留。争用时仍不保证持续3核，不提供磁盘I/O隔离。原fe3 CI固定快照重跑 `f495f8ff5a85b462d30d16cd057d3c43` 已入队，业务源码、Actions固定SHA与显式20分钟原值保持，旧失败记录保留。相同提交多attempt验收按每个原workflow的最新attempt核对，同时记录历史attempt，不将失败覆盖成成功。
+
+额外API344提交的原test任务已success，Go缓存已保存；Codecov因缺少token拒绝上传，原fail_ci_if_error=false允许Action成功，因此仅确认覆盖率生成，不能声称外部上传成功。原image仍运行中；目标APIb8、Tasks发布/PG/Mongo及Rust仍未完成。本次只调整运行配置和验收记录，无新增代码改动，沿用已通过的完整自动回归。
 
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
