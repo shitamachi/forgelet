@@ -192,3 +192,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 04:56追加：c1d1929准备预算/停止轮询真实k3s专项PASS507.893秒，已部署server724e776d/supervisor083b2a4d并保留活跃任务。全量仍进行；Tasks原fe3两入口7f025d00/86901c7e入队，Rust原test九步成功/image进行中，仍按实际结果逐项勾选。
 
 2026-10-28 05:02追加：10.6d实际8e265947/50d91035原test/image、GitHub Checks、原smoke及release内两项managed生命周期测试全部通过；普通push publish=false保持且托管Actions恢复。10.6e/10.7b仍待Tasks两个原入口与手动PG18/Mongo7，不因Rust成功提前勾选。
+
+2026-10-28 05:24追加：c1d1929全量Testcontainers PASS1653.055秒（27必选叶场景、2可选私有fixture跳过，临时资源已清理），make verify/专项/全量齐备；真实Rust已通过，Tasks两入口和手动PG/Mongo仍待结果，10.7b继续未完成。

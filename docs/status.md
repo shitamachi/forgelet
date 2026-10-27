@@ -799,3 +799,7 @@ c1d1929已提交/推送；真实临时k3s专项PASS507.893秒，act子场景342.
 真实push8e265947/run50d91035的原test九步及image五个执行步骤均success，手动publish条件在普通push下按原定义skipped。release镜像本地ID004cbb4536dafdb8ee804fed992b54134f18df31ac6b269a8e497ae7096e6f83；原smoke明确PASS容器UID、只读root、health/HTTP/metrics、SIGTERM及脱敏。managed-test-artifacts以原Dockerfile target构建3分23.82秒，随后在同release镜像内原两项managed测试全通过20.14秒，涉及双transport drain/retry与SIGTERM真实pending job关闭ACK；没有连接真实Steam、执行生产operator或发布/部署。GitHub Checks已核对success，托管Actions恢复。
 
 环境使用显式Rust/PowerShell profile及已记录的homelab自定义Rust1.97 Debian builder alias，不声称该alias与上游官方镜像字节相同。该实际任务启动于本次准备预算部署前，保留当时supervisor快照；新source c1d1929由专项及仍在执行的全量回归另证。Tasks原两入口与手动PG/Mongo仍待完成。
+
+## 2026-10-28 05:24：新准备策略完整自动回归通过
+
+c1d1929全量Testcontainers PASS1653.055秒：27个必选叶场景通过，2个依赖外部私有业务目录的可选fixture跳过，独立SDK checksum拒绝场景通过。act339.39秒（含65秒准备冻结/原一分钟执行预算、busy Node与大写层超时ACK/取消/重启）、Rust98.68秒、大缓存217.61秒、自动CD97.90秒、真实setup SDK11.96秒、浏览器56.18秒、GitHub登录授权/重启83.05秒、GC17.27秒。公共Action源在持久化前两次503，第三次有界重试成功，不跳过原Action或运行断言；SDK为校验后官方归档预载，不计公网下载。临时k3s3a08cb3cbb1a与registrya7168f1f8692均已清理。与本次make verify及专项组成完整自动验证；真实Tasks的CI/镜像/手动PG-Mongo仍需独立收尾，不能以自动测试替代。
