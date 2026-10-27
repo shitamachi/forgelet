@@ -15,11 +15,11 @@
 | steam-login | a177934 / a212d600 | 原六步全部通过；原流程没有单测步骤 | GHCR6f3b286… / 自定义registry3384791…，latest/完整SHA一致 | 非本批部署目标 |
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
-| steam-api | 最新b8f4702 / 2af5b0f8 | 排队；前a02测试成功后Codecov下载触及旧默认超时 | 待完整workflow验收；旧c2ee已push但缓存413使任务失败 | 非本批部署目标 |
-| steam-tasks | 最新业务fe3f7df的已触发push | 队列中，随后手动启用PG/Mongo集成 | 待核对原发布流程 | 非本批部署目标 |
+| steam-api | b8f4702；原2af5b0f8，修复后重跑8ca9acc3待执行 | 原test成功、Go缓存true；原image缓存400使整条失败 | 已push9b324d69但未通过整体验收，新执行器重跑待核对 | 非本批部署目标 |
+| steam-tasks | fe3f7df；CI重跑f495f8ff / image诊断5cbd3fb3 | 原CI超时、原image入口空间驱逐留证；3CPU/24Gi CI执行中，image下载HTTP/2阻塞已采栈 | 待网络绕行后重跑原发布流程，随后手动PG/Mongo | 非本批部署目标 |
 | steam-cm | 旧729dd6b测试成功、镜像生命周期失败 | shared/tmp修复后待新真实push | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
 
-验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。
+验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
 
 实现与资源/缓存修复已提交并推送 `c2aa4fa`。完整回归第一轮（默认超时修正之前）PASS2582.609秒，27个必选叶场景、2个需外部私有业务目录的可选SKIP；包含默认超时修正的最新完整回归也已PASS2066.079秒：27个必选叶场景、2个可选SKIP，真实SDK Actions35.05秒、浏览器33.61秒、登录/授权重启106.74秒、保留清理16.26秒；公共Action元数据首次读取失败后，在未持久化运行前有界重试成功。SDK预载仅使用官方SHA验证归档，不计公网SDK下载。实际仓库证据与可选fixture是否执行分别记录，不能互相替代。
 
@@ -74,6 +74,12 @@ fe3镜像入口 `f7c385c7` 的reliability子任务为interrupted：Kubernetes事
 源码1842d17的完整Testcontainers已PASS1654.999秒：27个必选叶场景通过，2个依赖私有业务fixture目录的可选场景SKIP，另有工具链归档校验拒绝测试通过。临时k3s 2c3cbbd3945e及registry0776253e05cc均已清理；384MiB BuildKit冷热/重启/失败/取消场景199.64秒（cold63fa1c44/warmcceb5295，digest979c1596…），act250.35秒、Rust101.26秒、自动发布依赖/失败阻断94.89秒、真实SDK14.40秒、浏览器34.68秒、登录/授权重启104.03秒、保留清理17.66秒。公共Action元数据首次读取临时失败后，在未持久化运行前有界重试成功。此前make verify与缓存专项已通过，无新代码变更或自动测试待重跑。
 
 这不代表全部真实业务仓库已验收：APIb8原test成功/Go缓存true，但原image仍使用更新前创建的执行器；Tasks原失败/驱逐历史保留，3CPU/24Gi的新原快照重跑仍待执行；PG18/Mongo7手动原workflow和Rust真实push尚未完成。进度清单保持相应待办，不以可选fixture跳过或模拟API替代homelab证据。
+
+## 2026-10-28 03:04：旧 API 执行器结果保留，启动修复后重跑
+
+b8原run2af5b0f8最终failure：test及Go缓存命中成功，镜像9b324d69…已push，但旧supervisor949b3b5f中的缓存分块清单提交HTTP400。现场只读取文件名/大小：24.upload已接受363个分块、共379721285字节，未超过1GiB对象预算；合法大清单超过旧32KiB上限，与回归重现一致。该Pod创建于缓存修复前，未回写运行中镜像或旧额度。
+
+同一b8固定原计划重跑8ca9acc34a41e8a89d433427d451ebce已入队，后续采用supervisorc021018d、CPU1/3、内存4Gi、act-data24Gi；源码、原Steps/Actions SHA和默认360分钟快照不变。旧校验进程在原失败后退出，已启动唯一可恢复验收流程，后续复用已有Tasks push、手动集成run和Rust验证push，避免重复写入。真实验收仍未完成，不把镜像push单独记作workflow成功。
 
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
@@ -743,3 +749,13 @@ Git 历史仍在，没有重写 main 历史。
 `staged.patch`、`unstaged.patch`、`status.txt`、`sha256.json` 和恢复说明。
 归档包括本地配置，保持私有，不提交进仓库。需要恢复时先解到另一个空目录核对，避免覆盖新工作。
 原 .idea 等本地编辑器设置保留；清理的是旧产品与开发部署实现。
+
+## 2026-10-28 03:29：Tasks 模块下载连接阻塞诊断
+
+fe3镜像入口的自主重跑5cbd3fb3在go mod download阶段等待三个公共模块，持续约7分钟没有写入ZIP；此时Go RSS约23MiB、引擎CPU空闲，不能沿用冷编译资源不足的归因。采集到三个下载goroutine均等待同一个net/http HTTP/2连接的roundTrip；未发现这三个请求等待文件锁。同容器新进程分别使用原代理、HTTP/1.1与官方代理下载能够成功，未改实际业务模块缓存或关闭sumdb。
+
+采栈对我们自主重跑内的go mod download发送SIGQUIT，因此5cbd3fb3最终failure属于明确的诊断中断，不能称原workflow自然失败或业务断言失败；原外部push及其他任务没有取消。对照随后在同Pod自有引擎内以独立0.5 CPU/256Mi临时容器，三组空缓存分别下载三个模块，共9次通过模块校验、耗时19.9秒，容器已自动清理。
+
+03:30已仅为homelab ubuntu-latest工具镜像设置GODEBUG=http2client=0，保留原goproxy.cn与全部镜像层，digest3d9cc8dc…；这是连接复用问题的运行环境绕行，尚未证明代理或Go实现的唯一根因，也不更改项目默认网络配置、业务workflow、模块校验或显式20分钟超时。后续实际原workflow结果另行记录。API8ca9已进入starting，Tasks原快照CIf495正在运行；剩余PG/Mongo及Rust验收继续待完成。
+
+该工具镜像配置已rollout，核对原活跃Pod UID未改变，CPU1/3、内存4Gi、data24Gi、并发2、worker-only、镜像别名与supervisor c021保持。新的原固定计划镜像重跑c43538a7已入队，仍为fe3提交；不把入队视为通过。当前CIf495已通过模块下载，进入go mod verify，使用其启动时的原网络设置。
