@@ -88,7 +88,12 @@ COPY --from=node24-toolchain /usr/local /opt/hostedtoolcache/node/24.14.0/toolch
 RUN arch="$(/opt/forgelet/node24/bin/node -p process.arch)" && \
     mv /opt/hostedtoolcache/node/24.14.0/toolchain "/opt/hostedtoolcache/node/24.14.0/$arch" && \
     touch "/opt/hostedtoolcache/node/24.14.0/$arch.complete"
-RUN npm exec --yes --package=playwright-core@1.63.0 -- playwright-core install --with-deps chromium && \
+ARG PLAYWRIGHT_DOWNLOAD_HOST
+ARG DEBIAN_BUILD_MIRROR
+RUN cp /etc/apt/sources.list.d/debian.sources /tmp/forgelet-debian.sources && \
+    if [ -n "$DEBIAN_BUILD_MIRROR" ]; then sed -i -E "s|https?://[^ /]+|$DEBIAN_BUILD_MIRROR|g" /etc/apt/sources.list.d/debian.sources; fi && \
+    PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_DOWNLOAD_HOST" npm exec --yes --package=playwright-core@1.63.0 -- playwright-core install --with-deps chromium && \
     chmod -R a+rX /opt/forgelet/browsers && \
+    mv /tmp/forgelet-debian.sources /etc/apt/sources.list.d/debian.sources && \
     rm -rf /root/.npm /var/lib/apt/lists/*
 USER 1000:1000

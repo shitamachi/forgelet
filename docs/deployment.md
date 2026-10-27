@@ -810,3 +810,11 @@ hosted toolcache 与 Playwright1.63.0 Chromium，浏览器位于 `/opt/forgelet/
 用于需要真实 Chromium 的可信 Web 仓库；原 `executor-act` 和 native target 保持独立。
 这增加按需执行镜像体积与首次拉取成本，不增加空闲常驻服务；pnpm 和 BuildKit 缓存继续由
 Forgelet 管理，预装工具不能算作应用热缓存或在线下载验收。
+
+构建时可用 `PLAYWRIGHT_DOWNLOAD_HOST` build arg 指向受控下载镜像；默认仍为官方 CDN。
+该参数仅影响构建命令，不保存在执行容器环境。离线/暂存构建需先校验官方归档来源、
+完整文件摘要与 ZIP 完整性，再由原版 Playwright installer 安装，并记录实际来源。
+
+Web target 的 `DEBIAN_BUILD_MIRROR` 仅在浏览器系统依赖安装期间临时替换软件源主机，
+完成后恢复原地址；APT 签名与包摘要校验不关闭。可用于本机构建转发官方 HTTPS 内容，
+避免交叉构建时的慢下载；运行环境不依赖本机转发进程。
