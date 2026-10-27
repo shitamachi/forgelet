@@ -306,7 +306,7 @@ Go/npm 冷热缓存、28 个原始主步骤和实际镜像发布 digest 核对�
 - GitHub Actions 托管的 GITHUB_TOKEN 与本产品 mint 的只读 token 能力不同。GHCR 外部发布需独立凭据配置和权限边界；不能靠接受 packages:write 字段获得授权，见 [GitHub GHCR 认证](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 - 当前 13 份 workflow 都没有部署到 Flux 的步骤；发布镜像与 CD 是两项验收。需要部署的仓库应接上现有 native CD，并明确 GitOps 路径、镜像 digest、环境、迁移/健康检查和回滚；不自动改写 steam-cm 等明确只发布的业务语义。
 
-实施顺序与待完成项见 [plan.md](plan.md) 的 10.6b–10.6e；此处只记录已经完成的只读检查。
+实施顺序与待完成项见 [plan.md](plan.md) 的 10.6b–10.6e；盘点表保留 10.6a 的只读检查结果，后续执行验收记录见下文。
 
 steam-platform-web 的比较状态失败已在 Forgelet 外的同提交 Chromium 慢 CPU 对照复现：
 业务控件在 hydration 前可操作，初始化恢复与早期输入存在竞态。源码修正与三项回归位于
@@ -318,3 +318,13 @@ steam-build 的显式 hydration.patch；原始 YAML 不变。源码有补丁时�
 新 builder 依赖 RUN 层 CACHED、缓存 export 与两轮 latest/SHA 标签 digest 对照均通过。
 实际缓存客户端超过 128 个 1 MiB blocks 的行为已有默认 129 MiB Testcontainers 回归；
 重复精确 key/version 复用本 attempt 的不可变缓存文件，原字节预算与仓库/ref/version 隔离保持不变。
+
+### 2026-10-27：platform-web 真实 GitHub push
+
+已部署正式 Web act profile，从 GitHub 读取已提交的 aff95ca / c6ac5b5，
+运行原始 check.yml、Dockerfile 与测试；两次 14 个主步骤及 GitHub App Checks 全部成功。
+[冷轮](https://forgelet.k.mygo.rocks/runs/47c54f11751abcb1ff782a7d) pnpm cache-hit=false；
+[热轮](https://forgelet.k.mygo.rocks/runs/c5313da9aff6f2592720df87) cache-hit=true，并在新 Pod/独立 builder 中实际命中依赖 RUN 层。
+两轮分别核对 Action digest、latest 与完整源码 SHA 标签，结果见 status。
+Node24.14.0 toolcache / Playwright1.63.0 Chromium 是显式镜像能力；应用缓存独立保存。
+这项验收覆盖实际使用的 workflow，不扩大 artifact v4、其他工具链或业务 Flux CD 的兼容承诺。

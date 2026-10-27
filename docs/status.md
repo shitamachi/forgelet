@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-27（Asia/Shanghai）。当前：**steam-platform-web 原始 workflow 已在临时 k3s 的标准工具 profile 完成冷/热两轮 CI、缓存和镜像发布。业务 hydration 竞态、缓存分块上限与重复恢复均已修复；make verify、默认大层与原业务 Testcontainers 专项通过。源码修复未提交/推送，本批未部署 homelab。**
+更新：2026-10-27（Asia/Shanghai）。当前：**阶段 10 执行内核与缓存修复已提交/推送并部署 homelab；steam-platform-web 两次真实 push 的原始 workflow、冷/热缓存与镜像发布全部通过，GitHub Checks 成功。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 已交付
@@ -15,15 +15,26 @@
 - 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证。
 - 2026-10-25 阶段 9 可靠性修正（review #3–#10 及 UI 仓库列表）已提交并部署；schema v6，详见本轮记录。
 
-## 本轮进行中：提交与 homelab 实际验收
+## 本轮：提交、homelab 部署与真实 push 验收（完成）
 
-- owner 已授权提交、推送、部署与 steam-platform-web 真实 push；升级前快照和操作证据保存于 `/Users/guo/.config/forgelet/homelab-web-20261027/`。
-- 提交包含阶段 10 尚未入 Git 的完整依赖实现与本批缓存修复；不是只部署两个缓存文件。
-- 本轮部署前 `make verify` 再次通过（14 Chromium / 35 Vitest / Go race、构建、lint/generate）。
-- 新增显式 `executor-act-web` 镜像 target：固定 Node24.14.0 toolcache 与 Playwright1.63.0 Chromium，按需执行，不新增常驻服务。
-- 实际集群为 amd64；新镜像构建、App 仓库授权及真实冷/热 push 尚在进行，以下临时 k3s 证据与实际验收分开。
+- Forgelet 的阶段 10 依赖实现与缓存修复已提交/推送：2504478；Web 工具镜像构建选项为 2970d8b，分支 chore/homelab-reset-20261023。业务修复 aff95ca 与验证说明 c6ac5b5 已推送 main，包含此前本机的价格修复 1b5dfad。两次 push 的 workflow、Dockerfile、pnpm lockfile 与原 75ed696 字节一致。
+- 经 owner 确认，GitHub App 仅新增 steam-platform-web，保留原三个仓库；原 check.yml 已启用，发布凭据经管理 API 加密保存。实际接收 GitHub push，读取对应提交源码，执行原始公开 Actions；每轮 14 个主步骤全部成功、48 单测与 28 Playwright，通过生产构建及 SSR smoke。
 
-## 本批：steam-platform-web 比较竞态与完整 workflow（代码与专项验收完成）
+| 运行 | 实际源码 | Forgelet | pnpm cache-hit | 单测 / Playwright |
+|---|---|---|---|---|
+| 冷 | [aff95ca](https://github.com/shitamachi/steam-platform-web/commit/aff95caaa8a75ad149eab293128e8a06a47d01a1) | [47c54f11](https://forgelet.k.mygo.rocks/runs/47c54f11751abcb1ff782a7d) | false | 48 / 28 |
+| 热 | [c6ac5b5](https://github.com/shitamachi/steam-platform-web/commit/c6ac5b56ac14759f6813df7d6bc07dbc3d46b7e4) | [c5313da9](https://forgelet.k.mygo.rocks/runs/c5313da9aff6f2592720df87) | true | 48 / 28 |
+
+- 冷发布 latest / sha-aff95caaa8a75ad149eab293128e8a06a47d01a1 / Action 输出均为 `sha256:72f7bd00a5ca2c9c9057ff506f8de99127110bc6cb6ff5d2b519b2f926ab8ce8`。
+- 热发布 latest / sha-c6ac5b56ac14759f6813df7d6bc07dbc3d46b7e4 / Action 输出均为 `sha256:3dd0eedeeb7b395d18fdebe366a1cd447d6be385a8b68f0c07583bb5cecdfcba`。新 image Pod UID 为 `6c8e053e-abaa-4f54-9cf8-6f657166a598`；冷轮为 `306004e6-d9da-479e-9012-22803ce7a6a6`。热轮实际导入 GHA manifest，原 RUN pnpm install --frozen-lockfile 层 CACHED。两轮共 4 个执行 Pod、28 个主步骤、96 单测与 56 Playwright。
+- 两次提交各有 2 个 GitHub App Checks，全部 completed/success。验证期间临时暂停该仓库的 GitHub 托管 Actions，避免并发覆盖相同标签；验证结束恢复原 enabled=true / allowed_actions=all。后续 push 会按原配置触发 GitHub 托管 Actions。
+- 最终 server：`zot.k.mygo.rocks/forgelet/server@sha256:b0285b7105c3d51b45f8d5a7c2c25b538cc737f7c9cebe943037190cda272521`；native：`registry.shitamchi.com/forgelet/executor@sha256:9b407caad70711c8112fa0e704640a2bdc76ec3455dcd779da8f7bf5f4ee723e`；ubuntu-latest Web act：`zot.k.mygo.rocks/forgelet/executor-act-web@sha256:e6bbad13b83f13e3cf8ba34b72516a11dec2138777cc6a46eb8d4fd3a2e7a9df`。BuildKit 固定源为 Zot 的 98cc6a3fc462；引擎继续使用既有 Pod 自有 Docker28.5.1，不挂宿主 socket 或 Kubernetes 身份。Web 工具 target 增加镜像体积，不增加空闲常驻服务。
+- server 最初从外部 registry 拉取，rollout 成功后的首个会话探针遇到短暂 503，随后独立 health/session 检查通过。已将同一 amd64 manifest 从原构建 index 49dd15d469a4 同步到 Zot b0285b7105c3，并在冷/热之间切换；无代码或 schema 变化，冷轮历史与应用缓存跨控制面重启保留。升级前保存原子 SQLite、PVC、Deployment 和 ConfigMap，最终服务 Ready。
+- Web 镜像提供官方 Node24.14.0 完整 toolcache 与 Playwright1.63.0 / Chromium153。原 setup/浏览器安装命令仍执行；冷/热指 pnpm 和 BuildKit 应用缓存，预装工具不计作在线下载验收。官方浏览器归档经官方 MD5 及 ZIP CRC 校验，并记录完整 SHA256，构建转发保持官方 HTTPS 上游及 APT 签名校验，软件源安装后恢复；node1 的 Node20/24/Chromium 实际启动检查通过。临时镜像站与端口转发已关闭，真实任务使用集群中的镜像与服务。
+- 自动验证：本轮复跑 make verify（Go race/HTTP/SQLite、实际构建、lint/generate、35 Vitest、14 Chromium）与业务 48 单测、tsc、28 Playwright 均通过。同一 Go 修复的默认 129 MiB 和原 workflow Testcontainers 专项见下方前批记录；本轮没有重跑全量 26 场景。实际 push 验收与 Testcontainers 证据分别保存；原 workflow 的终点为镜像发布，业务 Flux CD 接续仍属于 10.6e。
+- 备份、两轮分页日志/结果、Checks、registry 对照与构建来源位于 `/Users/guo/.config/forgelet/homelab-web-20261027`。真实运行没有注入 fixture 源码补丁，任务启动与缓存恢复不依赖本机代理。
+
+## 前批：steam-platform-web 比较竞态与完整 workflow（临时 k3s 专项验收记录）
 
 - **归因已确认**：原提交 `75ed69647af3c5aa4a44c416b5b60d1c491def48` 的失败用例在 Forgelet 外、相同 Node24/pnpm9.15.9/Chromium 下，普通单 worker 两次通过；仅增加 CDP 6 倍 CPU slowdown、桌面/移动端各重复三次后 6/6 失败，均等待“开始比较”，页面只剩 1 款。应用修复后同一条件 6/6 通过（24.5 秒）。这是业务 hydration 竞态，环境时序使它暴露。
 - **业务修复**：本机 `steam-platform-web` HEAD `1b5dfadd791a205fdec2a8a74768fcc32c4ef77c` 的相关逻辑与原提交一致；修改 `src/shared/state.tsx`、`src/shared/components.tsx`，增加 `src/shared/state.test.tsx`。状态恢复前禁用比较按钮，操作同时检查 hydration/ID，保留选择/移除/三款上限。新回归在修复前 2 failed/1 passed，修复后 3/3 通过；工作区 48 单测、tsc、28 Playwright（14.2 秒）通过。

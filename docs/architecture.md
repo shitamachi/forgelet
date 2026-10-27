@@ -559,3 +559,9 @@ BuildKit 的缓存客户端实际使用 1 MiB blocks；每对象 256 blocks 才�
 同一 attempt 对已恢复的精确 key/version 重复查询会复用下载 URL 和文件，不重复占暂存额度；
 映射只记录实际命中的不可变对象。fallback 查询仍访问后端，防止新创建的 primary 被旧 fallback 遮蔽。
 v2 RPC 暂存超限返回结构化 resource_exhausted，保留原有字节与对象数量限制。
+
+正式部署可显式选择 Dockerfile executor-act-web target，在现有 act 运行时预装固定版本的
+完整 Node24 toolcache 与 Chromium。应用 pnpm / BuildKit 缓存继续由原 PVC blob 服务管理，
+工具镜像与应用缓存分别验收；GitHub 原 workflow 继续执行 setup 和浏览器安装命令。
+代价为更大的按需执行镜像，空闲时仍只有原 Go 控制面；native 与普通 act target 保持独立。
+下载转发只属于镜像构建，执行 Pod 不依赖本机构建服务，不获得额外的 Kubernetes 权限。

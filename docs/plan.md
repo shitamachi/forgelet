@@ -122,7 +122,7 @@ GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/app
 - [x] **9.6 自动验证**：单测/HTTP/SQLite/race、make verify、35 个 Vitest、14 组 Chromium；全量 Testcontainers 20 个场景通过（1046.235 秒），覆盖 70 秒停机后同 UID 恢复、真实 Pod 所有权漂移与取消收尾。全量启动后追加的 needs 大小检查另用最新镜像专项通过（104.174 秒）；全量中的工作台 4 组和认证 1 组真实浏览器亦通过。
 - [x] **9.7 homelab 部署**：2026-10-25 部署 server `sha256:fbc91710...`、executor `sha256:cc230abb...`（amd64 digest 见 status）；schema v5→v6 迁移先在本地生产快照副本上验证，再升级线上库。健康/session/匿名 401/UI 与部署前后数据计数通过；未登录管理界面、未触发真实 CI。v5 备份和旧镜像记录保留，旧程序不能直接打开 v6。
 
-## 阶段 10：以完整 Workflow 运行驱动兼容层（10.5d 已部署，业务仓库盘点完成）
+## 阶段 10：以完整 Workflow 运行驱动兼容层（10.6c 已完成 platform-web 真实 push 验收，其余业务库按序推进）
 
 owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能执行完为目标；优先级高于新增仓库批量/后台同步和更多 UI 功能。不创建 spec 或审批门禁。
 
@@ -140,13 +140,13 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 - [ ] **10.6 steam-* 实际仓库交付**：以账号中已有 Actions 的 9 个仓库为验收对象，按以下批次交付；完整清单、固定提交与当前阻塞见 compatibility 的业务仓库盘点。不删除原测试、不以跳过 cache/publish 或空实现冒充兼容。
   - [x] **10.6a 只读盘点与当前编译检查**：使用 gh 扫描 15 个 steam-* 仓库，9 个包含 13 份 workflow；按各默认分支固定 SHA 下载并调用当前 ValidateFiles，6 份规划检查通过、7 份诊断拒绝。读取 Dockerfile、模块/脚本、近期 GitHub 运行记录；这不是 Forgelet 实际 CI/CD 成功。
   - [x] **10.6b Go/Node 首批原始 workflow 接入**：公共 Action tag/branch/full SHA 与远程 Composite 依赖在新运行保存前固定，重跑/重启/重复 delivery 不重新追踪 tag；编译保持纯逻辑。补齐可重试源故障和 job API provider 上下文。steam-platform-server 原 check 与 steam-admin-web 原 ci/image 在临时 k3s 完成 5 次运行、28 个原步骤：Go/race、Node24/npm、冷热缓存和原 login/metadata/build-push 的 manifest digest 核对通过。make verify、追加 race/lint、HTTP/SQLite 与最终全量 Testcontainers 25 场景通过；本批不部署 homelab，不算真实账号 push/Checks/CD 接入。通用解析支持账号盘点中的合法 tag，但 setup-go@v6、pnpm、Buf、setup-buildx 等仍需在后续对应仓库验证真实 metadata/运行行为；解析成功不等于执行完成。
-  - [x] **10.6c 镜像构建与缓存协议**：代码、单测/集成和临时 k3s 专项验收完成；包括实际大层分块、重复查询复用和原始业务两轮发布。实际 homelab 部署仍分开记录。
+  - [x] **10.6c 镜像构建与缓存协议**：代码、单测/集成和临时 k3s 专项验收完成；包括实际大层分块、重复查询复用和原始业务两轮发布。已部署 homelab，并以 steam-platform-web 两次真实 push 验证原 workflow、pnpm false→true、独立 builder 依赖层 CACHED、镜像发布和 GitHub Checks。
     - [x] CacheService v2、独立 BuildKit 可达端点/能力 token/有界分块、type=gha 冷热缓存；真实控制面重启保留执行、失败不覆盖发布、取消清理。单测/HTTP/SQLite、make verify、全量 Testcontainers 26 个必选场景及最终修改后的独立 BuildKit 专项通过；完整命令与最后小修复验证范围分别见 status。
     - [x] 管理员 builder image/TOML 默认配置，显式 workflow 输入优先；明确独立 builder 不自动继承 engine 镜像目录，拉取失败保留诊断。
     - [x] packages:write 显式 Secret 引用、领取时权限复核、源只读 token 分离，拒绝 PR/native；原始 steam-admin image 与 steam-login 的自有 registry/GHCR 两次隔离发布及 digest 验证通过。
     - [x] steam-platform-web 原 check 冷热两次与各自 needs:image 完整通过：在 Forgelet 外确认并修复业务 hydration 竞态，保留原 workflow/E2E/Dockerfile 字节；显式源码补丁与标准工具 profile 下，共 28 个原主步骤、56 Playwright、pnpm false→true、新 builder RUN 层 CACHED 及 latest/SHA 标签 digest 核对通过。默认 129 MiB 实际 SDK 分块、重启/失败/取消专项及 make verify 通过；单对象与暂存字节预算不变。steam-api 本批仍为原 YAML 编译样本，真实业务测试问题留在 10.6e。
   - [ ] **10.6d Rust 执行环境**：steam-cm 原 rust-ci.yml 使用 ubuntu-24.04、Rust 1.97/rustup、pwsh、Python3 和 Docker smoke/managed tests；补齐显式 profile、shell 行为及取消/退出码测试。保持 publish=false 默认，不把普通 push 改成发布，更不绕过容器安全/生命周期验收。工具与引擎均随 job 按需运行，不新增常驻服务。
-  - [ ] **10.6e 业务修正与 CD 接续**：steam-tasks 当前仍缺 SDK priceregion 和 steam_proto_go 构建 context，steam-api 当前 GitHub 测试也失败；steam-platform-web 比较竞态已修复并完成原 workflow 冷/热与镜像发布专项，改动仍未提交/部署；分别记录业务失败与平台失败，修正需保留真实测试语义。SDK 当前公开，不将其误报为已确认的私有授权阻塞。为实际需要部署的仓库明确镜像 digest、GitOps repo/path、环境与健康检查，接上现有 native CD → Flux；逐库记录 CI、镜像发布、部署、失败阻断、回滚/恢复，不能将原 workflow 的镜像 push 当成 CD 完成。跨仓库短期 token 仅在真实私有依赖需要时按管理员显式范围扩展。
+  - [ ] **10.6e 业务修正与 CD 接续**：steam-tasks 当前仍缺 SDK priceregion 和 steam_proto_go 构建 context，steam-api 当前 GitHub 测试也失败；steam-platform-web 比较竞态已修复并完成原 workflow 冷/热与镜像发布专项，相关修复已提交/推送，执行环境已部署，真实 push 冷/热 CI 与镜像发布通过；业务 CD 接续继续单独交付。分别记录业务失败与平台失败，修正需保留真实测试语义。SDK 当前公开，不将其误报为已确认的私有授权阻塞。为实际需要部署的仓库明确镜像 digest、GitOps repo/path、环境与健康检查，接上现有 native CD → Flux；逐库记录 CI、镜像发布、部署、失败阻断、回滚/恢复，不能将原 workflow 的镜像 push 当成 CD 完成。跨仓库短期 token 仅在真实私有依赖需要时按管理员显式范围扩展。
 - [x] **10.7a 第一批自动验证**：make verify、单测/真实 HTTP/SQLite/执行器、23 个全量 Testcontainers 叶子场景通过（1117.652 秒）；最新整对象诊断追加 2 场景专项通过（217.507 秒）。覆盖嵌套/括号 typed inputs/secret 作用域/outputs、失败/跳过/取消、rerun、并发、真实重启和原 CI/CD；workflow 88.2%，调度/调用核心细项见 status。修复真实 Pod 发现的领取→凭据阶段取消竞态。
 - [ ] **10.7b 完整业务与实际环境验证**：后续每批继续单测/集成/Testcontainers；独立记录 steam-tasks 完整 workflow 与 homelab 实际部署、GitOps/Flux 结果，解析样本或独立 fixture 不能代替业务运行。
 
@@ -154,7 +154,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 
 ## 接下来
 
-阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；接下来推进 10.6d Rust profile，并继续 10.6e 的业务修正与 CD 接续；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。本批没有部署 homelab 或触发真实账号 push/Checks；6.3b / 6.5 暂列后续。
+阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；接下来推进 10.6d Rust profile，并继续 10.6e 的业务修正与 CD 接续；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。

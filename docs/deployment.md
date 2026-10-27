@@ -818,3 +818,20 @@ Forgelet 管理，预装工具不能算作应用热缓存或在线下载验收�
 Web target 的 `DEBIAN_BUILD_MIRROR` 仅在浏览器系统依赖安装期间临时替换软件源主机，
 完成后恢复原地址；APT 签名与包摘要校验不关闭。可用于本机构建转发官方 HTTPS 内容，
 避免交叉构建时的慢下载；运行环境不依赖本机转发进程。
+
+### 2026-10-27 homelab 实际版本
+
+| 组件 | 固定镜像 |
+|---|---|
+| server | `zot.k.mygo.rocks/forgelet/server@sha256:b0285b7105c3d51b45f8d5a7c2c25b538cc737f7c9cebe943037190cda272521` |
+| native executor | `registry.shitamchi.com/forgelet/executor@sha256:9b407caad70711c8112fa0e704640a2bdc76ec3455dcd779da8f7bf5f4ee723e` |
+| ubuntu-latest Web act | `zot.k.mygo.rocks/forgelet/executor-act-web@sha256:e6bbad13b83f13e3cf8ba34b72516a11dec2138777cc6a46eb8d4fd3a2e7a9df` |
+
+server 的 Deployment imagePullSecrets 保留 forgelet-registry 并加入 zot-registry；
+Web profile 继续使用 zot-registry。server 的 Zot digest 是原 registry 构建 index 的同一 amd64
+manifest，切换来源没有重编译代码或迁移 schema。升级前执行原子 SQLite 备份并归档数据 PVC、
+ConfigMap 和 Deployment，管理 API 中的仓库/workflow/target 配置继续保存在 SQLite。
+
+两次真实 push 的原始 workflow、缓存与镜像发布已完成验收，运行和完整 digest 见 status。
+验证时临时关闭 GitHub 托管 Actions，完成后恢复原配置；常规使用时需要自行决定是否同时保留两边执行，
+避免重复消耗构建资源及覆盖同名发布标签。应用 GitOps/Flux 目标未由本次镜像发布自动建立。
