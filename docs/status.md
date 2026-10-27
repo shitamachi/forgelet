@@ -17,7 +17,7 @@
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
 | steam-tasks | fe3f7df；新准备策略CI 7f025d00 / image 86901c7e | 旧超时/空间驱逐/缺ACK历史保留；修复后原固定计划已入队 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
-| steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原9个测试步骤全部success，镜像job进行中 | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
+| steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
 
@@ -793,3 +793,9 @@ Rust原workflow已由真实push 8e265947触发run50d91035，正在编译；原pu
 c1d1929已提交/推送；真实临时k3s专项PASS507.893秒，act子场景342.68秒，包含准备时冻结executor65秒后同Pod成功执行原一分钟workflow，以及busy Node/2000小文件/256MiB helper超时ACK、缓存、取消、重启及失败；临时k3s30b53a078448和registry19d383bba192均已清理。全量Testcontainers另行进行，不能将专项称全量通过。
 
 已rollout server724e776d…与supervisor083b2a4d…，保留ubuntu工具1f8ecd0f/Rust工具、worker selector、CPU1/3、内存4Gi、data24Gi、并发2及原活跃Pod UID。Tasks原fe3/固定计划CI新7f025d00、image86901c7e已入队，仍为原20分钟；既有失败/取消attempt完整保留。Rust50d91035原test九步成功，image构建进行中。etcd当前无告警、leader=1，P99 fsync约30.6ms/commit50.3ms；该现场健康检查不替代剩余实际业务验收。
+
+## 2026-10-28 05:02：Rust 原始 workflow 完整通过
+
+真实push8e265947/run50d91035的原test九步及image五个执行步骤均success，手动publish条件在普通push下按原定义skipped。release镜像本地ID004cbb4536dafdb8ee804fed992b54134f18df31ac6b269a8e497ae7096e6f83；原smoke明确PASS容器UID、只读root、health/HTTP/metrics、SIGTERM及脱敏。managed-test-artifacts以原Dockerfile target构建3分23.82秒，随后在同release镜像内原两项managed测试全通过20.14秒，涉及双transport drain/retry与SIGTERM真实pending job关闭ACK；没有连接真实Steam、执行生产operator或发布/部署。GitHub Checks已核对success，托管Actions恢复。
+
+环境使用显式Rust/PowerShell profile及已记录的homelab自定义Rust1.97 Debian builder alias，不声称该alias与上游官方镜像字节相同。该实际任务启动于本次准备预算部署前，保留当时supervisor快照；新source c1d1929由专项及仍在执行的全量回归另证。Tasks原两入口与手动PG/Mongo仍待完成。

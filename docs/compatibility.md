@@ -356,3 +356,5 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 分块清单XML的字节上限随允许的block数量增长（每block预留128字节、整体1KiB格式开销）；支持最长64字节的base64 block ID，不再用固定32KiB截断合法的大对象清单。block数量、payload与对象额度分别继续校验。
 
 新编译计划的默认 job timeout 对齐 [GitHub 官方语义](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes)：360 分钟。此前 Forgelet 独自采用20分钟，会在受限 CPU 的冷构建及外部 Action 下载时提前终止；显式 timeout-minutes 不变，已持久化计划/重跑仍保留原快照，零值旧计划的运行时20分钟兜底不变。
+
+2026-10-28真实Rust验收：steam-cm 8e265947原rust-ci.yml在显式ubuntu-24.04 profile完成test、独立release构建、smoke和release内两个managed lifecycle测试，Checks成功；原普通push不触发远程publish，不扩展到真实Steam或自动部署。homelab使用自定义Rust1.97 Debian builder alias而非保证上游镜像字节一致；临时k3s与真实业务结果分别见status。
