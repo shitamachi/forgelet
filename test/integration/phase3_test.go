@@ -12,10 +12,8 @@ import (
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
-	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/shitamachi/forgelet/internal/run"
@@ -94,26 +92,7 @@ jobs:
 			}
 		})
 		t.Run("rootless BuildKit pushes immutable digest and cleans failed builders", func(t *testing.T) {
-			hash, err := bcrypt.GenerateFromPassword([]byte("integration-registry-password"), bcrypt.MinCost)
-			must(t, err)
-			_, err = client.CoreV1().Secrets("forgelet").Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry-htpasswd"}, Data: map[string][]byte{"htpasswd": append([]byte("test:"), hash...)}}, metav1.CreateOptions{})
-			must(t, err)
-			_, err = client.CoreV1().Pods("forgelet").Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-registry", Labels: map[string]string{"app": "test-registry"}}, Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "registry-htpasswd"}}}}, Containers: []corev1.Container{{Name: "registry", Image: "registry:2.8.3", Env: []corev1.EnvVar{{Name: "REGISTRY_AUTH", Value: "htpasswd"}, {Name: "REGISTRY_AUTH_HTPASSWD_REALM", Value: "integration"}, {Name: "REGISTRY_AUTH_HTPASSWD_PATH", Value: "/auth/htpasswd"}}, VolumeMounts: []corev1.VolumeMount{{Name: "auth", MountPath: "/auth", ReadOnly: true}}, Ports: []corev1.ContainerPort{{ContainerPort: 5000}}}}}}, metav1.CreateOptions{})
-			must(t, err)
-			_, err = client.CoreV1().Services("forgelet").Create(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "test-registry"}, Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Selector: map[string]string{"app": "test-registry"}, Ports: []corev1.ServicePort{{Port: 5000, NodePort: 30500, TargetPort: intstr.FromInt32(5000)}}}}, metav1.CreateOptions{})
-			must(t, err)
-			waitFor(t, ctx, "test registry ready", func() bool {
-				p, err := client.CoreV1().Pods("forgelet").Get(ctx, "test-registry", metav1.GetOptions{})
-				if err != nil {
-					return false
-				}
-				for _, c := range p.Status.Conditions {
-					if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			})
+			ensureTestRegistry(t, ctx, client)
 			image := registryImage(t, ctx, client)
 			source := fmt.Sprintf(`on: push
 jobs:
@@ -122,7 +101,8 @@ jobs:
     outputs: {digest: '${{ steps.build.outputs.digest }}'}
     steps:
       - run: |
-          printf 'FROM busybox:1.37.0\nRUN mkdir -p /www && echo healthy > /www/index.html\nUSER 1000\nCMD ["httpd", "-f", "-p", "8080", "-h", "/www"]\n' > Dockerfile
+          cp -R /opt/forgelet/test-rootfs rootfs
+          printf 'FROM scratch\nCOPY rootfs/ /\nENV PATH=/bin:/usr/bin:/sbin:/usr/sbin\nRUN mkdir -p /www && echo healthy > /www/index.html\nUSER 1000\nCMD ["httpd", "-f", "-p", "8080", "-h", "/www"]\n' > Dockerfile
       - id: build
         uses: forgelet/build@v1
         with: {image: %s}

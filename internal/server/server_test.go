@@ -177,7 +177,7 @@ func newHarness(t *testing.T, parallel int) *harness {
 	h := &harness{t: t, path: filepath.Join(dir, "forgelet.db"), store: s,
 		runtime:  &fakeRuntime{pods: map[string]fakePod{}},
 		provider: &fakeProvider{files: map[string][]byte{".github/workflows/ci.yml": []byte(testWorkflow)}},
-		cfg: Config{AdminToken: testAdmin, WebhookSecret: "webhook-secret", PublicURL: "https://ci.example.test", MaxParallel: parallel,
+		cfg: Config{ActionResolver: fixtureActionResolver(t), AdminToken: testAdmin, WebhookSecret: "webhook-secret", PublicURL: "https://ci.example.test", MaxParallel: parallel,
 			Repositories: []string{"me/repo"}, Profiles: map[string]kube.Profile{"small": {Image: "executor:test"}}, DataDir: dir},
 	}
 	h.start()

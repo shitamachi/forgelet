@@ -10,7 +10,7 @@ func TestFunctionsAndTypedInterpolation(t *testing.T) {
 		{"${{ join(fromJSON('[1,true,\"x\"]'), ':') }}", "1:true:x"},
 		{"${{ contains(fromJSON('[\"Main\",\"dev\"]'), 'MAIN') }}", "true"},
 		{"${{ startsWith('Main', 'ma') && endsWith('Main', 'IN') }}", "true"},
-		{"${{ toJSON(fromJSON('{\"a\":false}')) }}", `{"a":false}`},
+		{"${{ toJSON(fromJSON('{\"a\":false}')) }}", "{\n  \"a\": false\n}"},
 		{"${{ format('}}{0}', 'done') }}", "}done"},
 	} {
 		got, err := Interpolate(tc.source, ctx)
@@ -31,8 +31,8 @@ func TestFunctionsAndTypedInterpolation(t *testing.T) {
 func TestWholeInputAndMatrixContexts(t *testing.T) {
 	ctx := Context{Typed: map[string]any{"inputs": map[string]string{"value": "second"}, "matrix": map[string]any{"version": "1.25.0", "experimental": false}}}
 	for source, want := range map[string]string{
-		"${{ toJSON(inputs) }}": `{"value":"second"}`,
-		"${{ toJSON(matrix) }}": `{"experimental":false,"version":"1.25.0"}`,
+		"${{ toJSON(inputs) }}": "{\n  \"value\": \"second\"\n}",
+		"${{ toJSON(matrix) }}": "{\n  \"experimental\": false,\n  \"version\": \"1.25.0\"\n}",
 	} {
 		if err := ValidateTemplate(source, func(ref string) bool { return ref == "inputs" || ref == "matrix" }); err != nil {
 			t.Fatal(err)
@@ -42,7 +42,7 @@ func TestWholeInputAndMatrixContexts(t *testing.T) {
 			t.Fatal(got, err)
 		}
 	}
-	for _, source := range []string{"${{ inputs }}", "${{ matrix }}", "${{ toJSON(github) }}"} {
+	for _, source := range []string{"${{ inputs }}", "${{ matrix }}"} {
 		if _, err := Interpolate(source, ctx); err == nil {
 			t.Fatal("accepted unsupported direct object interpolation", source)
 		}

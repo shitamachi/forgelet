@@ -335,3 +335,21 @@ test -n "$GITHUB_WORKSPACE"`}}}, Options{Workspace: t.TempDir()})
 		t.Fatal(result, err)
 	}
 }
+
+func TestConfiguredGitHubAPIEnvironment(t *testing.T) {
+	plan := run.Plan{GitHubAPIURL: "https://proxy.example/api/v3", Repository: "owner/repo", TimeoutSeconds: 10, Steps: []run.Step{{ID: "api", Shell: "sh", Run: "test \"$GITHUB_API_URL\" = 'https://proxy.example/api/v3'; test '${{ github.api_url }}' = \"$GITHUB_API_URL\""}}}
+	result, err := Execute(t.Context(), plan, Options{Workspace: t.TempDir()})
+	if err != nil || result.State != run.Succeeded {
+		t.Fatal(result, err)
+	}
+}
+
+func TestConfiguredTokenEnvironmentDoesNotPermitRunnerVariableFileCommands(t *testing.T) {
+	result, err := executeWorkflow(t, "      - env: {GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}\n        run: test \"$GITHUB_TOKEN\" = explicit-secret-token\n", Options{Workspace: t.TempDir(), Secrets: map[string]string{"GITHUB_TOKEN": "explicit-secret-token"}})
+	if err != nil || result.State != run.Succeeded {
+		t.Fatal(result, err)
+	}
+	if validateEnvKey("GITHUB_TOKEN") == nil || validateConfiguredEnv("GITHUB_TOKEN", "literal") == nil {
+		t.Fatal("uncontrolled token environment became writable")
+	}
+}

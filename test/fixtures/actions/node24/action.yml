@@ -1,0 +1,9 @@
+name: Node24 runtime and post
+description: Validate real Node24 and state cleanup
+inputs:
+  value:
+    default: default
+runs:
+  using: node24
+  main: main.js
+  post: post.js

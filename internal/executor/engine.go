@@ -28,6 +28,12 @@ import (
 // Options supplies the execution workspace and scoped credentials. CloneToken is
 // passed only to git child processes and is never persisted in a git config file.
 type Options struct {
+	BuildkitConfig string
+	PackageToken   string
+	ActCacheHost   string
+	ImageMirrors   map[string]string
+	ActImage       string
+	ActWorker      string
 	Services       Services
 	Buildctl       string
 	BuildAddress   string
@@ -53,6 +59,12 @@ var commitSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 // Execute returns command failures as a failed Result with a nil error. An error
 // indicates an executor, protocol, or logging failure and still carries a terminal Result.
 func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Result, returnErr error) {
+	if plan.Kernel == "act" {
+		return executeAct(ctx, plan, opts)
+	}
+	if plan.Kernel != "" && plan.Kernel != "native" {
+		return run.Result{State: run.Failed, Error: "unsupported job kernel"}, fmt.Errorf("unsupported job kernel %q", plan.Kernel)
+	}
 	result.State = run.Failed
 	mask := newMasker()
 	// Every executor/protocol failure must carry a non-empty public error.
@@ -134,6 +146,8 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 	env["GITHUB_EVENT_PATH"] = eventPath
 	env["GITHUB_SHA"] = plan.SHA
 	env["GITHUB_REF"] = plan.Ref
+	public, _ := plan.Contexts()
+	env["GITHUB_REF_TYPE"], env["GITHUB_REF_NAME"] = public["github.ref_type"], public["github.ref_name"]
 	env["GITHUB_REPOSITORY"] = plan.Repository
 	env["GITHUB_EVENT_NAME"] = plan.EventName
 	if env["GITHUB_EVENT_NAME"] == "" {
@@ -141,6 +155,9 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 	}
 	env["CI"], env["GITHUB_ACTIONS"] = "true", "true"
 	env["GITHUB_SERVER_URL"], env["GITHUB_API_URL"] = "https://github.com", "https://api.github.com"
+	if plan.GitHubAPIURL != "" {
+		env["GITHUB_API_URL"] = plan.GitHubAPIURL
+	}
 	for key, sub := range map[string]string{"RUNNER_TEMP": "temp", "RUNNER_TOOL_CACHE": "toolcache", "HOME": "home"} {
 		env[key] = filepath.Join(meta, sub)
 		if err := os.MkdirAll(env[key], 0700); err != nil {
@@ -171,7 +188,7 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 	}()
 	jobEnv := copyEnvironment(env)
 	for _, key := range sortedMapKeys(plan.Env) {
-		if err := validateEnvKey(key); err != nil {
+		if err := validateConfiguredEnv(key, plan.Env[key]); err != nil {
 			return result, err
 		}
 		value, err := interpolate(plan.Env[key], plan, env, outputs, stepResults)
@@ -195,7 +212,7 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 		// override against the outer environment, then keep the merged map local.
 		stepEnv := copyEnvironment(env)
 		for _, key := range sortedMapKeys(step.Env) {
-			if err := validateEnvKey(key); err != nil {
+			if err := validateConfiguredEnv(key, step.Env[key]); err != nil {
 				result.State = run.Failed
 				return result, err
 			}
@@ -516,16 +533,25 @@ func interpolate(value string, plan run.Plan, env map[string]string, outputs map
 	ctx := conditionContext(plan, env, outputs, stepResults, true, false)
 	allowed := func(ref string) bool {
 		parts := strings.Split(ref, ".")
-		if parts[0] == "steps" && len(parts) > 1 {
+		if parts[0] == "steps" {
+			if len(parts) == 1 || parts[1] == "*" {
+				return true
+			}
 			_, ok := outputs[parts[1]]
 			return ok
 		}
-		if parts[0] == "needs" && len(parts) > 1 {
+		if parts[0] == "needs" {
+			if len(parts) == 1 || parts[1] == "*" {
+				return true
+			}
 			_, ok := directDependency(plan, parts[1])
 			return ok
 		}
 		switch parts[0] {
 		case "github":
+			if ref == "github" || ref == "github.event" || strings.HasPrefix(ref, "github.event.") {
+				return true
+			}
 			_, ok := ctx.Values[ref]
 			return ok
 		case "secrets":
@@ -629,4 +655,11 @@ func publicError(err error, mask *masker) string {
 		message = message[:8192] + "..."
 	}
 	return message
+}
+
+func validateConfiguredEnv(key, value string) error {
+	if run.TokenEnvironment(key, value) {
+		return nil
+	}
+	return validateEnvKey(key)
 }

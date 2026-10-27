@@ -1,7 +1,6 @@
 package expression
 
 import (
-	"math"
 	"strings"
 	"testing"
 )
@@ -73,16 +72,9 @@ func TestDefaultSuccessGateAndStatusOverrides(t *testing.T) {
 }
 
 func TestLogicalOperatorsShortCircuit(t *testing.T) {
-	// An invalid internal right node would panic if evaluated. Public parsing
-	// always validates both operands before evaluating either branch.
-	poison := &node{op: "!"}
-	for _, tc := range []struct {
-		op   string
-		left bool
-	}{{"&&", false}, {"||", true}} {
-		root := &node{op: tc.op, left: &node{op: "literal", literal: boolean(tc.left)}, right: poison}
-		if got := root.evaluate(Context{}).truthy(); got != tc.left {
-			t.Fatalf("short circuit %s returned %v", tc.op, got)
+	for _, source := range []string{"false && fromJSON('invalid')", "true || fromJSON('invalid')"} {
+		if _, err := Eval(source, Context{}); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -109,7 +101,7 @@ func TestRejectInvalidAndUnboundedConditions(t *testing.T) {
 		"${{ }}", "${{ true", "${{ true }} trailing", "true }}", "'unclosed", `"double quoted"`,
 		"true &&", "true || ()", "!", "(", "(true", "true)", "true false", "true = false", "true & false", "true | false",
 		"unknown('a', 'b')", "false && unknown()", "always(true)", "success(", "true == == false",
-		"env['A']", "github", "steps.*.outcome", "env.A + 1", "1.2.3", "--1", ".", "0xnope",
+		"env.A + 1", "1.2.3", "--1", ".", "0xnope",
 		strings.Repeat("!", maxDepth+2) + "true", strings.Repeat("(", maxDepth+2) + "true" + strings.Repeat(")", maxDepth+2),
 		"true" + strings.Repeat(" || true", maxDepth+2), "'" + strings.Repeat("x", maxBytes) + "'",
 		strings.Repeat("()", maxTokens+1),
@@ -122,26 +114,6 @@ func TestRejectInvalidAndUnboundedConditions(t *testing.T) {
 				t.Errorf("Validate(%q) accepted invalid condition", source)
 			}
 		})
-	}
-}
-
-func TestNumericCoercion(t *testing.T) {
-	for _, tc := range []struct {
-		text string
-		want float64
-	}{
-		{"", 0}, {"\t  ", 0}, {"+1", 1}, {".5", .5}, {"1.", 1}, {"1E+3", 1000},
-		{"Infinity", math.Inf(1)}, {"+Infinity", math.Inf(1)}, {"-Infinity", math.Inf(-1)},
-		{"1e9999", math.Inf(1)}, {"0xffffffff", -1}, {"0o37777777777", -1},
-		{"true", math.NaN()}, {"NaN", math.NaN()}, {"0x100000000", math.NaN()}, {"0o8", math.NaN()},
-	} {
-		got := parseNumber(tc.text)
-		if !(math.IsNaN(got) && math.IsNaN(tc.want)) && got != tc.want {
-			t.Errorf("parseNumber(%q) = %v; want %v", tc.text, got, tc.want)
-		}
-	}
-	if (value{kind: 'n', number: math.NaN()}).truthy() {
-		t.Fatal("NaN must be falsy")
 	}
 }
 

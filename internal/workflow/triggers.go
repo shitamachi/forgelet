@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
@@ -34,7 +34,7 @@ func compileTrigger(node *yaml.Node, event run.Event) (run.Event, error) {
 		}
 	case yaml.MappingNode:
 		var err error
-		triggers, err = mapping(node, "push", "pull_request", "workflow_dispatch")
+		triggers, err = mapping(node, "push", "pull_request", "workflow_dispatch", "workflow_call")
 		if err != nil {
 			return event, err
 		}
@@ -45,7 +45,7 @@ func compileTrigger(node *yaml.Node, event run.Event) (run.Event, error) {
 		return event, diagnostic(node, "on requires at least one supported event")
 	}
 	for name, n := range triggers {
-		if name != "push" && name != "pull_request" && name != "workflow_dispatch" {
+		if name != "push" && name != "pull_request" && name != "workflow_dispatch" && name != "workflow_call" {
 			return event, diagnostic(node, "unsupported trigger %s", name)
 		}
 		if n == nil || n.Tag == "!!null" {
@@ -59,6 +59,8 @@ func compileTrigger(node *yaml.Node, event run.Event) (run.Event, error) {
 			allowed = []string{"types", "branches", "branches-ignore", "paths", "paths-ignore"}
 		case "workflow_dispatch":
 			allowed = []string{"inputs"}
+		case "workflow_call":
+			allowed = []string{"inputs", "secrets", "outputs"}
 		}
 		f, err := mapping(n, allowed...)
 		if err != nil {
@@ -92,6 +94,10 @@ func compileTrigger(node *yaml.Node, event run.Event) (run.Event, error) {
 		if err != nil {
 			return event, err
 		}
+	}
+	if name == "workflow_call" {
+		event.Name = name
+		return event, nil
 	}
 	if name == "workflow_dispatch" {
 		event.Name = name

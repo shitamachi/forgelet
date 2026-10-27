@@ -82,6 +82,17 @@ func loadAction(directory string) (workflow.ActionDefinition, error) {
 	return workflow.ParseAction(data)
 }
 func (s *actionSession) invoke(ctx context.Context, plan run.Plan, step run.Step, env, global map[string]string, files map[string]string, sink *logSink, outputs map[string]map[string]string, records map[string]run.StepResult, depth int, status expression.Context) (int, error) {
+	if step.Action.Repository == "actions/setup-go" || step.Action.Repository == "actions/setup-node" {
+		copied := *step.Action
+		copied.Inputs = copyEnvironment(step.Action.Inputs)
+		if _, present := copied.Inputs["token"]; !present {
+			copied.Inputs["token"] = ""
+		}
+		step.Action = &copied
+		if err := action.ValidateNative(step.Action); err != nil {
+			return -1, err
+		}
+	}
 	s.count++
 	if depth > 8 || s.count > 256 {
 		return -1, fmt.Errorf("action nesting or invocation limit exceeded")

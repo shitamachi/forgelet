@@ -40,8 +40,9 @@ FORGELET_API_URL=http://127.0.0.1:8080 npm --prefix web run dev
 它使用正式 Dockerfile 的 executor 环境和实际 server 二进制，验证调度/身份/恢复/清理、签名 webhook、matrix/并发组、
 Node/Composite、加密 secrets/typed inputs，以及公开固定 SHA 的 setup-go/setup-node 实际下载工具并运行程序，**不会连接当前 kubectl context**。
 Web 用例启动 Chromium 访问该集群的正式嵌入页面，验证手动运行、needs、日志/产物下载、重跑、运行中取消、仓库设置、备份和重启持久化；浏览器不拦截 API。
-GitHub App API 使用测试 HTTPS sidecar；不会创建真实 GitHub Check。公开 Actions/工具链下载仍访问真实外部服务，测试超时上限 30 分钟。
-Docker 在这里用于开发测试；执行 Pod 不挂载 Docker socket。容器测试结果以实际运行输出为准。
+GitHub App API 使用测试 HTTPS sidecar；不会创建真实 GitHub Check。公开 Actions/工具链下载仍访问真实外部服务，Go 命令超时上限 95 分钟；临时 k3s 场景默认 context 为 55 分钟，显式启用 10.6c 原业务构建专项时为 90 分钟。
+10.6b 可设置 `FORGELET_TEST_BUSINESS_DIR` 验证两个固定提交的原业务 workflow；快照准备、隔离发布和 skip 边界见 [原业务测试说明](../test/fixtures/steam-business/README.md)。
+上述 Docker 用于开发测试；native 执行 Pod 不挂载 Docker socket。10.5b 可选 profile 见本文末尾。容器测试结果以实际运行输出为准。
 
 ## 镜像与安装文件
 
@@ -627,3 +628,185 @@ App 第一次进入新账号/组织仍需安装；组织审批/策略不允许�
 运行时永久拒绝/所有权冲突立即结束对应 attempt；临时创建、观测或取消删除失败最多重试 12 次，释放并发并留下诊断，不自动重跑 shell。外来 Pod 不删除，需要管理员处理冲突。profile.control_plane_timeout 默认 5m，配置为时长字符串；控制面中断超过该窗口仍会停止执行。最终 flush 只有 20 秒，Pod grace 为 45 秒，不能把 5 分钟中断容忍误读成任务结束后的无限等待。
 
 登录限速按直接连接的 RemoteAddr，每分钟最多 6 次。代理共用源地址时同一地址共享限额；当前不信任转发头，尚无 trusted-proxy 配置。blob 数据目录由程序独占；未知文件会使启动失败，不要在其中写入 Finder 元数据或其他文件。
+
+## 生产形态应用实验（10.5c）
+
+`test/productionlike` 是显式操作真实 homelab 的开发工具，不能替代 `make test-integration`。
+后者继续只用 Testcontainers 临时 k3s，不读取用户 kubeconfig。工具只允许专用测试仓库，
+执行 namespace 为 `forgelet-lab`，每轮使用 Pod 自有的 privileged Docker/overlay2；
+不改正式 server/executor 清单、不接管产品调度，也不向 CI 下发 Kubernetes 或 operator 管理凭据。
+
+先在 `forgelet-demo` 部署 PostgreSQL/任务 API 基线，再验证真实 Actions 和 GitOps/Flux。
+PostgreSQL 是被测应用的依赖，控制面继续使用 SQLite；应用数据库 Secret/PVC 独立创建，
+其余 Deployment/Service 由测试 GitOps 仓库管理。应用新镜像先执行幂等迁移，再等待 readiness。
+发布 target 仍为 `demo`，只投递不可变 digest；故障镜像通过原 rollback API 恢复前一个 digest。
+
+每轮采集结果后删除对应实验 Job/Secret；确认 engine 已退出才允许发布。取消使用 foreground
+删除并检查没有剩余 Pod。仅保留单个 local-path cache PVC，不保留空闲 Docker daemon。
+该 provisioner 的 PVC 容量不是硬配额；实验 cache 不等同于生产缓存的配额、隔离和清理协议。
+命令、凭据路径要求及兼容边界见 [实验说明](../test/productionlike/README.md)，实际结果见 status。
+
+
+## 显式 act job profile（10.5b）
+
+构建 `server`、`executor` 与可选 `executor-act` 三个 Dockerfile target，部署时固定 digest。
+原 native profiles 使用 executor；需要原版 Actions/Docker 的可信仓库使用 executor-act。
+示例中的 digest 必须替换为实际构建结果：
+
+```yaml
+profiles:
+  ubuntu-latest:
+    image: registry.example/forgelet/executor-act@sha256:REPLACE
+    act:
+      registry_secret: forgelet-registry
+      data_limit: 12Gi
+    cpu_request: 100m
+    memory_request: 192Mi
+    cpu_limit: '2'
+    memory_limit: 1Gi
+repository_tokens:
+  owner/application:
+    PRIVATE_MODULE_TOKEN: owner/private-sdk
+```
+
+`act` 存在才启用；engine_image 默认 docker:28.5.1-dind，也允许固定 SHA256 的镜像，启动探针必须确认实际引擎版本 28.5.1。
+runner_image 默认等于 profile.image，仅当测试/内部 registry 路径不同时才覆盖。
+insecure_registry 默认 false，仅供明确使用 HTTP 的临时测试 registry。
+依赖仓库必须属于源 GitHub App installation 授权范围；每个领取 job 动态换取单仓库只读 token，
+不存储 PAT，不把 registry pull Secret 挂进 job 容器。普通 workflow secrets 仍通过管理员 API 加密保存。
+
+该 profile 为按需 privileged Docker，有独立 emptyDir/socket，不挂宿主路径/Kubernetes identity。
+native sidecar 在主进程结束后退出；空闲时只有原 Go 控制面，无 Docker/cache 服务常驻。
+引擎内存/CPU 和 data_limit 见 architecture；不能用于不可信或多租户代码。
+CD 使用 native profile 的 forgelet/deploy@v1，通过 needs 的 digest 接续，继续使用既有 Flux 目标。
+
+本批沿用 schema v6，但新 Plan 增加 kernel/call 节点；降级旧二进制前必须恢复升级前的原子 SQLite
+快照和匹配的数据/config，不要仅回滚 image。升级前执行 POST /api/backup，并单独备份整个 PVC、
+ConfigMap 和 Deployment；快照不包含 artifact/cache 文件。
+
+本批 homelab/test 构建使用 `GOPROXY=https://goproxy.cn` 和
+`DEBIAN_MIRROR=https://mirrors.aliyun.com` build args；默认仍为官方源。
+act 镜像也使用对应 GOPROXY 环境默认值，workflow 可以覆盖。未关闭 go.sum、CA 或 Debian 签名校验。
+容器测试可用 FORGELET_TEST_IMAGES 预载相同版本的 k3s 系统镜像、docker:28.5.1-dind；
+预载后重建仍在等待外部拉取的临时系统 Pod，不改变安装清单或跳过功能检查。
+公开 Actions 源码采用三次有界下载重试、完整临时目录原子发布，失败不会留下可被误认成完整源码的缓存。
+
+10.6b 的新 act 运行在控制面解析公共 Action tag/branch 到 commit，保存完整依赖锁再调度；
+因此控制面需访问 `codeload.github.com` 和 `raw.githubusercontent.com`，executor 仍以固定 SHA 访问 codeload。
+默认读取 Git 归档的完整 commit 标识再按 SHA 获取 metadata，不消耗 REST core 的匿名配额，也不携带安装/OAuth token。
+限流/网络故障保留事件并退避重试，手动 API 返回可诊断的 503。
+管理员可用顶层 `action_api_url` 显式选择受控 REST 公共源代理或测试替身（受对应上游配额约束），默认无需配置；workflow 不能设置该地址。
+重复首次运行请求、重跑和重启恢复不会重新解析已保存运行的 tag；新运行重新解析。
+普通原生 profile 保留原固定版本限制，未承诺私有 Actions、workspace-local Composite 的新远程依赖扫描或全部 Marketplace 行为。
+
+act job 的 workspace 由 UID 1000 的 supervisor 创建，内层工具以 root 运行；执行镜像仅将
+`/workspace/repository` 登记为 Git system safe.directory，使 Go VCS stamping 正常工作。
+没有信任任意路径，也没有关闭 Go 的 VCS 校验。Testcontainers 覆盖真实 Git 初始化与状态读取。
+
+每个 attempt 的 Docker 镜像存储为空；节点 containerd 缓存不等于 job 引擎缓存。
+若需预加载，必须加载到该 attempt 自有引擎。对固定 manifest digest 的 runner 镜像，supervisor
+校验远端原始 manifest 的 SHA 与本地完整 config digest 后可复用；tag、index 或校验失败走标准 pull。
+这不提供共享 Docker data 或常驻镜像缓存。真实验证中的手工预加载需在状态文档单独记录。
+
+homelab 后续已将 `ubuntu-latest` 的 image 改用 `zot.k.mygo.rocks/forgelet/executor-act`，
+沿用相同 manifest digest，act.registry_secret 使用现有 `forgelet/zot-registry`。
+Secret 同时用于主 Pod imagePullSecrets 和 supervisor 拉取内层 runner，不挂入内层任务容器。
+实际空引擎自动拉取探针通过，细节见 status；没有关闭 HTTPS 校验或增加常驻 Docker。
+新版本必须先把不可变镜像同步到 Zot，再切换 profile。此配置仅改变 runner 镜像来源，
+不会自动替换 workflow 的 Docker Hub 依赖、应用镜像构建 registry 或 GitOps image 名称。
+
+10.5d 可为显式 act profile 增加管理员镜像目录，先把所需公开镜像按执行节点架构复制到现有 registry，
+再填写原 manifest digest；示例不能直接部署：
+
+```yaml
+profiles:
+  ubuntu-latest:
+    image: zot.example/forgelet/executor-act@sha256:REPLACE
+    act:
+      registry_secret: zot-registry
+      engine_image: zot.example/mirrors/docker-engine@sha256:REPLACE
+      image_mirrors:
+        postgres:18-alpine: zot.example/mirrors/postgres@sha256:REPLACE
+        testcontainers/ryuk:0.14.0: zot.example/mirrors/ryuk@sha256:REPLACE
+        golang:1.26.4-bookworm: zot.example/mirrors/golang@sha256:REPLACE
+        alpine:3.22: zot.example/mirrors/alpine@sha256:REPLACE
+        docker/dockerfile:1.7: zot.example/mirrors/dockerfile@sha256:REPLACE
+```
+
+mirror 源必须与 runner 同 registry、固定 SHA256；alias 必须是唯一的 Docker Hub 显式 tag，最多 16 项。
+失败阻断步骤，无公网回退。引擎仍必须为 Docker 28.5.1，startup probe 检查实际版本。
+目录只供 supervisor，先自动拉取并核对完整 config identity，再在该 job 的空引擎登记原名；
+不挂共享 Docker data，不将 pull Secret 挂给 engine/内层任务。更换 registry 时使用对应 Secret，
+不要将管理员 registry 密码复制到 workflow。强制 `--pull` 或独立 BuildKit 引擎需自行配置对应 registry。
+
+日志不需要新服务或安装参数：同 step 小写入合并，8 KiB/200ms 刷新，保留原 seq/ACK/SQLite 协议。
+10.5d 回退到本批 10.5b 时恢复匹配的 profile 配置与镜像即可；没有 SQLite schema 变更，
+不要为该回退用旧备份覆盖新增运行。回退到不认识 kernel/call 计划的更早版本仍遵守前述恢复边界。
+
+10.6b 新计划会将已有 `github_api_url` 配置快照到 job 的 REST API 上下文及 GITHUB_API_URL，
+供 metadata 等原版 Actions 使用。默认无需配置，仍访问 GitHub.com；若配置内部代理，地址必须能从执行 job 访问，
+对应 CA 也应在管理员执行镜像中受信任。公开 Action ref 的 `action_api_url` 与此独立，不接收 job token。
+
+## 独立 BuildKit 缓存与包发布（10.6c）
+
+act job 启动时 supervisor 在 Pod IP 的随机端口提供 job-local cache v1/v2，端点/能力不进入持久计划。
+Pod 内 bridge BuildKit 必须可访问该 Pod IP；不要把端点改成 localhost，也不需要开放公网 ingress。
+服务随 attempt 关闭，持久内容复用现有数据 PVC、blob 配额和保留期，不增加空闲 cache/BuildKit 服务。
+每 attempt 保留 payload 上限 512 MiB；临时 envelope/assembly 和下载归档可额外占用空间，详见 architecture。
+对象超过现有 blob 配额时明确报错；不承诺大型仓库所有层都能放进默认 256 MiB/对象配额。
+
+管理员可给原始 setup-buildx workflow 配置执行环境默认值，例如：
+
+```yaml
+profiles:
+  ubuntu-latest:
+    image: zot.example/forgelet/executor-act@sha256:REPLACE
+    act:
+      runner_image: zot.example/forgelet/executor-act@sha256:REPLACE
+      registry_secret: zot-registry
+      image_mirrors:
+        moby/buildkit:buildx-stable-1: zot.example/forgelet/mirrors/buildkit@sha256:REPLACE
+      buildkit_config: |
+        [registry."docker.io"]
+          mirrors = ["public-read-mirror.example"]
+```
+
+占位符必须替换为真实完整 digest。镜像目录的固定 BuildKit 先由 supervisor 拉取并验证；
+顶层 docker/setup-buildx-action 在未显式指定 driver image 时使用该固定源。已有 workflow 的显式 driver/image/config
+优先；buildkit_config 是默认 TOML，不是 shell 脚本，不要在其中写账号凭据。
+这里没有把 supervisor 的 Zot Secret 交给 job；内层 BuildKit 的 Dockerfile FROM 拉取仍需要可达的 upstream，
+或独立配置可读取的 registry mirror/认证。Docker engine 中预加载成功不代表独立 builder 已有该基础镜像。
+生产 HTTPS/CA 与测试隔离 registry 的 insecure/http 配置分别管理；测试示例不要求生产关闭 TLS 验证。
+
+原始 `cache-from: type=gha` / `cache-to: type=gha,mode=max` 可使用 job 注入的 ACTIONS_RESULTS_URL、
+ACTIONS_RUNTIME_TOKEN 与 ACTIONS_CACHE_SERVICE_V2。固定验证的 BuildKit 版本与实际结果见 status。
+CacheService/Azure 风格协议来自 [BuildKit cache 客户端](https://github.com/tonistiigi/go-actions-cache) 与
+[Actions toolkit](https://github.com/actions/toolkit/tree/main/packages/cache)，不连接 GitHub 托管的缓存账户。
+Build record/artifact v4 不属于这个 cache API；build-push 的非阻断记录上传警告不能算 artifact 上传成功。
+
+GHCR 原始 workflow 的 packages:write 需先登记独立 Secret 引用：
+
+```yaml
+package_tokens:
+  shitamachi/steam-login: GHCR_TOKEN
+```
+
+再通过仓库 Secrets 页面保存 `GHCR_TOKEN`，值由管理员在 GitHub 为所需 packages/仓库范围创建；不要填写源仓库只读 installation token。
+Secret 仍加密保存在现有 SQLite；配置和计划只保存名称。运行时由 `secrets.GITHUB_TOKEN` 提供该 job 显式要求的包凭据，
+隐式 checkout 继续用独立的源只读 token。只有 act 的 push/manual job 可以要求 packages:write，PR 拒绝；
+packages:read 暂不提供可降权 token，其他未实现权限继续诊断。填写 YAML 不等于已获得 GitHub registry 授权。
+绑定删除/变更会停止旧计划继续领取包凭据；需要恢复原绑定或创建新运行，不能让旧重跑悄悄换一个授权引用。
+
+原业务构建专项的固定源码、隔离 GHCR/registry 路由、完整运行与子集边界见
+[test/fixtures/steam-build](../test/fixtures/steam-build/README.md)。默认 make test-integration 总是运行独立 BuildKit
+冷热缓存/恢复/失败/取消场景；原始私有源码专项仍需显式准备 Git 快照目录。
+
+
+### 可选 Web 工具 profile（10.6c）
+
+Dockerfile 的 `executor-act-web` target 在正式 act executor 上预装官方 Node24.14.0 完整
+hosted toolcache 与 Playwright1.63.0 Chromium，浏览器位于 `/opt/forgelet/browsers`。
+按目标集群架构构建；Node toolcache 使用 Node 的 x64/arm64 名称，不直接使用 OCI amd64 名称。
+用于需要真实 Chromium 的可信 Web 仓库；原 `executor-act` 和 native target 保持独立。
+这增加按需执行镜像体积与首次拉取成本，不增加空闲常驻服务；pnpm 和 BuildKit 缓存继续由
+Forgelet 管理，预装工具不能算作应用热缓存或在线下载验收。

@@ -87,7 +87,7 @@ func getRun(ctx context.Context, q queryer, id string, summary ...bool) (run.Run
 	}
 	query := "SELECT body FROM jobs WHERE run_id=? ORDER BY created_at,id"
 	if len(summary) > 0 && summary[0] {
-		query = "SELECT json_remove(body,'$.plan.event','$.plan.steps','$.plan.env','$.plan.vars','$.plan.inputs','$.plan.needs_context','$.result.steps','$.result.outputs') FROM jobs WHERE run_id=? ORDER BY created_at,id"
+		query = "SELECT json_remove(body,'$.plan.event','$.plan.steps','$.plan.env','$.plan.vars','$.plan.inputs','$.plan.call_inputs','$.plan.call_values','$.plan.needs_context','$.result.steps','$.result.outputs') FROM jobs WHERE run_id=? ORDER BY created_at,id"
 	}
 	jobs, err := queryJobs(ctx, q, query, id)
 	if err != nil {

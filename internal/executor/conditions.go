@@ -33,9 +33,16 @@ func conditionContext(plan run.Plan, env map[string]string, outputs map[string]m
 		if !ok {
 			continue
 		}
-		values["needs."+id+".result"] = contextResult(dependency.Result)
+		local := id
+		if alias, ok := plan.NeedsAliases[id]; ok {
+			local = alias
+		}
+		if id == plan.ParentGate {
+			continue
+		}
+		values["needs."+local+".result"] = contextResult(dependency.Result)
 		for key, value := range dependency.Outputs {
-			values["needs."+id+".outputs."+key] = value
+			values["needs."+local+".outputs."+key] = value
 		}
 	}
 	return expression.Context{Values: values, Typed: typed, Success: success, Failure: failure}
@@ -50,8 +57,11 @@ func contextResult(state run.State) string {
 
 func directDependency(plan run.Plan, id string) (run.Dependency, bool) {
 	for _, need := range plan.Needs {
-		if need == id {
-			dependency, ok := plan.NeedsContext[id]
+		if need == plan.ParentGate {
+			continue
+		}
+		if need == id || plan.NeedsAliases[need] == id {
+			dependency, ok := plan.NeedsContext[need]
 			return dependency, ok
 		}
 	}

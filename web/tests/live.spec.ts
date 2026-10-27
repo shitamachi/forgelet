@@ -96,7 +96,15 @@ test('repository settings, delivery records and SQLite backup use real managemen
   await page.getByRole('button', { name: '新增变量' }).click()
   await page.getByRole('dialog').getByLabel('名称').fill('BROWSER_TEST')
   await page.getByRole('dialog').getByLabel('值', { exact: true }).fill('persisted-in-sqlite')
-  await page.getByRole('dialog').getByRole('button', { name: '保存', exact: true }).click()
+  const [savedVariable] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/repositories/test/project/vars/BROWSER_TEST') &&
+        response.request().method() === 'PUT',
+    ),
+    page.getByRole('dialog').getByRole('button', { name: '保存', exact: true }).click(),
+  ])
+  expect(savedVariable.status()).toBe(200)
   expect(await (await request.get('/api/repositories/test/project/vars')).json()).toMatchObject({
     BROWSER_TEST: 'persisted-in-sqlite',
   })
@@ -106,7 +114,15 @@ test('repository settings, delivery records and SQLite backup use real managemen
   await page.getByRole('button', { name: '新增 secret', exact: true }).click()
   await page.getByRole('dialog').getByLabel('名称').fill('BROWSER_SECRET')
   await page.getByLabel('新的 secret 值').fill('test-only-secret')
-  await page.getByRole('dialog').getByRole('button', { name: '保存', exact: true }).click()
+  const [savedSecret] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/repositories/test/project/secrets/BROWSER_SECRET') &&
+        response.request().method() === 'PUT',
+    ),
+    page.getByRole('dialog').getByRole('button', { name: '保存', exact: true }).click(),
+  ])
+  expect(savedSecret.status()).toBe(200)
   const secrets = await (await request.get('/api/repositories/test/project/secrets')).text()
   expect(secrets).toContain('BROWSER_SECRET')
   expect(secrets).not.toContain('test-only-secret')

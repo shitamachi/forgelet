@@ -3,7 +3,7 @@ on: push
 jobs:
   tools:
     runs-on: homelab
-    timeout-minutes: 6
+    timeout-minutes: 12
     steps:
       - id: go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

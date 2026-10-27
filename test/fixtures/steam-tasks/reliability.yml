@@ -1,0 +1,56 @@
+name: Task reliability acceptance
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      postgres:
+        description: Run optional PostgreSQL integration (Testcontainers preferred)
+        type: boolean
+        default: false
+jobs:
+  reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOPRIVATE: github.com/shitamachi/*
+      STEAM_TEST_MODE: unit
+      TEST_POSTGRES_IMAGE: postgres:18-alpine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Configure private module access
+        env:
+          GH_MODULE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: git config --global url."https://x-access-token:${GH_MODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - name: Verify modules, static checks and build
+        run: |
+          go mod download
+          go mod verify
+          go vet ./...
+          go build ./...
+      - name: Install Atlas for migration acceptance
+        run: |
+          curl -fsSL https://atlasbinaries.com/atlas/atlas-linux-amd64-latest -o /usr/local/bin/atlas
+          chmod +x /usr/local/bin/atlas
+      - name: Verify migrations
+        run: |
+          atlas migrate validate --dir file://migrations/steam_games
+          atlas migrate validate --dir file://migrations/steam_steamdb
+      - name: Unit and race checks (no containers)
+        run: go test -short -race -count=1 -coverprofile=coverage.out -timeout=15m ./...
+      - name: Optional PostgreSQL integration
+        if: github.event_name == 'workflow_dispatch' && inputs.postgres
+        env:
+          STEAM_TEST_MODE: integration
+          REQUIRE_POSTGRES_TESTS: '1'
+          TEST_POSTGRES_ADMIN_DSN: ${{ secrets.TEST_POSTGRES_ADMIN_DSN }}
+        run: go test -p=1 -race -count=1 -timeout=15m ./...
+      - name: Upload unit coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+          fail_ci_if_error: false
+# Full ETL/serving/P4 fixtures and cross-service checks use the workspace driver.

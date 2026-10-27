@@ -1,0 +1,141 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  GO_VERSION: '1.26'
+  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+        
+    - name: Set Go proxy for China
+      run: |
+        go env -w GOPROXY=https://goproxy.cn,direct
+        go env -w GOSUMDB=sum.golang.google.cn
+        go env -w GOPRIVATE=github.com/shitamachi/*
+
+    - name: Configure private module access
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        
+    - name: Download dependencies
+      run: go mod download
+      
+    - name: Verify dependencies
+      run: go mod verify
+      
+    - name: Run tests
+      run: go test -v ./...
+      
+    - name: Run tests with coverage
+      run: go test -v -coverprofile=coverage.out ./...
+      
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        fail_ci_if_error: false
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v'))
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Get short SHA
+      id: sha
+      run: echo "short_sha=${GITHUB_SHA:0:8}" >> $GITHUB_OUTPUT
+
+    - name: Prepare Docker tags and registry
+      id: prep
+      run: |
+        # 设置默认值并验证输入
+        DOCKER_REGISTRY="${{ env.DOCKER_REGISTRY }}"
+        DOCKER_USERNAME="${{ env.DOCKER_USERNAME }}"
+        SHORT_SHA="${{ steps.sha.outputs.short_sha }}"
+        
+        # 调试输出
+        echo "DOCKER_REGISTRY: '$DOCKER_REGISTRY'"
+        echo "DOCKER_USERNAME: '$DOCKER_USERNAME'"
+        echo "SHORT_SHA: '$SHORT_SHA'"
+        
+        # 确定镜像名称
+        if [ -n "$DOCKER_REGISTRY" ] && [ "$DOCKER_REGISTRY" != "null" ]; then
+          IMAGE_NAME="$DOCKER_REGISTRY/steam-api"
+          REGISTRY="$DOCKER_REGISTRY"
+        elif [ -n "$DOCKER_USERNAME" ] && [ "$DOCKER_USERNAME" != "null" ]; then
+          IMAGE_NAME="$DOCKER_USERNAME/steam-api"
+          REGISTRY="docker.io"
+        else
+          echo "错误: DOCKER_REGISTRY 或 DOCKER_USERNAME 必须设置其中之一"
+          exit 1
+        fi
+        
+        # 生成标签
+        TAG_SHORT="${IMAGE_NAME}:${SHORT_SHA}"
+        TAG_LATEST="${IMAGE_NAME}:latest"
+        if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+          echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
+          TAG_SHORT="${IMAGE_NAME}:${GITHUB_REF_NAME}"
+        fi
+        
+        echo "生成的标签:"
+        echo "  短SHA标签: $TAG_SHORT"
+        echo "  最新标签: $TAG_LATEST"
+        
+        # 输出到 GitHub Actions
+        echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+        echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+        echo "tag_short=${TAG_SHORT}" >> $GITHUB_OUTPUT
+        echo "tag_latest=${TAG_LATEST}" >> $GITHUB_OUTPUT
+
+    - name: Log in to Docker registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ steps.prep.outputs.registry }}
+        username: ${{ env.DOCKER_USERNAME }}
+        password: ${{ env.DOCKER_PASSWORD }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64
+        push: true
+        tags: |
+          ${{ steps.prep.outputs.tag_short }}
+          ${{ steps.prep.outputs.tag_latest }}
+          ${{ steps.prep.outputs.tag_latest }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        secrets: |
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-25（Asia/Shanghai）。当前：**阶段 9 已部署 homelab（schema v5→v6，server/executor 新 digest）；迁移、健康、session、匿名 401、嵌入 UI 与备份/数据计数验证通过。未触发真实 CI，也未扩大 GitHub App 授权。**
+更新：2026-10-27（Asia/Shanghai）。当前：**steam-platform-web 原始 workflow 已在临时 k3s 的标准工具 profile 完成冷/热两轮 CI、缓存和镜像发布。业务 hydration 竞态、缓存分块上限与重复恢复均已修复；make verify、默认大层与原业务 Testcontainers 专项通过。源码修复未提交/推送，本批未部署 homelab。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 已交付
@@ -14,6 +14,220 @@
 - 旧实现已清理并保留仓库外完整快照；恢复位置见本页末尾。
 - 2026-10-25 阶段 8 server/executor 已部署 homelab；review #1/#2 已修复并验证。
 - 2026-10-25 阶段 9 可靠性修正（review #3–#10 及 UI 仓库列表）已提交并部署；schema v6，详见本轮记录。
+
+## 本轮进行中：提交与 homelab 实际验收
+
+- owner 已授权提交、推送、部署与 steam-platform-web 真实 push；升级前快照和操作证据保存于 `/Users/guo/.config/forgelet/homelab-web-20261027/`。
+- 提交包含阶段 10 尚未入 Git 的完整依赖实现与本批缓存修复；不是只部署两个缓存文件。
+- 本轮部署前 `make verify` 再次通过（14 Chromium / 35 Vitest / Go race、构建、lint/generate）。
+- 新增显式 `executor-act-web` 镜像 target：固定 Node24.14.0 toolcache 与 Playwright1.63.0 Chromium，按需执行，不新增常驻服务。
+- 实际集群为 amd64；新镜像构建、App 仓库授权及真实冷/热 push 尚在进行，以下临时 k3s 证据与实际验收分开。
+
+## 本批：steam-platform-web 比较竞态与完整 workflow（代码与专项验收完成）
+
+- **归因已确认**：原提交 `75ed69647af3c5aa4a44c416b5b60d1c491def48` 的失败用例在 Forgelet 外、相同 Node24/pnpm9.15.9/Chromium 下，普通单 worker 两次通过；仅增加 CDP 6 倍 CPU slowdown、桌面/移动端各重复三次后 6/6 失败，均等待“开始比较”，页面只剩 1 款。应用修复后同一条件 6/6 通过（24.5 秒）。这是业务 hydration 竞态，环境时序使它暴露。
+- **业务修复**：本机 `steam-platform-web` HEAD `1b5dfadd791a205fdec2a8a74768fcc32c4ef77c` 的相关逻辑与原提交一致；修改 `src/shared/state.tsx`、`src/shared/components.tsx`，增加 `src/shared/state.test.tsx`。状态恢复前禁用比较按钮，操作同时检查 hydration/ID，保留选择/移除/三款上限。新回归在修复前 2 failed/1 passed，修复后 3/3 通过；工作区 48 单测、tsc、28 Playwright（14.2 秒）通过。
+- **真实构建发现并修复缓存协议边界**：实际 BuildKit 客户端使用 1 MiB blocks，旧 128 blocks 限制导致合法大层失败；现为最多 256 blocks，保留原 32 MiB/block、256 MiB/对象、512 MiB/attempt 及对象数量限制，分别诊断块数/对象/暂存超限。热运行导出还会重复查询大层；现对同 attempt 已恢复的精确不可变 key/version 复用 URL/文件，fallback 仍查后端，避免遮蔽新 primary。无新依赖、常驻服务或 schema 迁移。
+- **单测/集成**：256 blocks/257 拒绝、字节限额分类、重复查询不增加文件/字节、fallback 后新 primary 优先均有回归。最终 `make verify` 通过：Go race/真实 HTTP/SQLite、lint/generate、35 Vitest、14 Chromium（31.1 秒，`verify-cache-reuse.log`）；独立缓存回归 `cache-reuse-unit.log` 通过。
+- **默认大层 Testcontainers 完整命令通过**：`buildcache-large-reuse.log` PASS（720.983 秒，场景 519.35 秒）。真实 129 MiB 不可压缩层覆盖 SDK 超过旧 128 块上限的行为，继续验证冷/热、重启保留 Pod、失败不覆盖发布、运行中取消清理。冷/热 `9c3e071d891578cba795c200` / `27e7289eba301b13d3d3704f`，失败 `f504723f0511770257680169`、取消 `35cbfdba70e6fec10a4eac38`。tmpfs 仅该场景临时扩到 512 MiB 后恢复，磁盘压力用例仍为原 256 MiB；不设性能门禁，不依赖私有源码。
+- **原始 workflow 验证来源**：`hydration.patch` SHA256 `f75a19ea428ea581d88af7c7de1730513266136315399dc43a7cec1bbb796917` 显式应用到临时 clone，生成固定测试对象 `17ea226bfde9179845fbfeb745bcb6ed5670a8ed`。原 YAML/Dockerfile/E2E 断言字节不变；源码带修复，不把它宣称为 GitHub 原 SHA 的全部原字节。未更新输入快照或 owner 的 HEAD/index，业务修复留为未提交改动。
+- **最终业务专项**：`platform-workflow-reuse-final.log`。冷运行 `0072294bf20fda672b4e5e61` 的 14 个原主步骤全部成功（47 单测、28 Playwright、build、smoke、原 setup-buildx/login/build-push 与 cache export）；pnpm cache-hit=false。latest/SHA 标签与 Action digest 核对一致：`sha256:da3a3e05ba99777c3d87dffe4fdeb77746477ce06fef8b0b81c66d975677a7b5`。热运行 `779b52250521d030a504343b` 也完整通过：pnpm cache-hit=true，47 单测、28 Playwright（17.0 秒），新 builder UID `52732faa-6464-4394-9968-2cef3f10afa0` 的 `RUN pnpm install --frozen-lockfile` 实际 CACHED；latest/SHA 标签与 Action digest 均为 `sha256:dd003f342fd89bbeaf5c3325873ce176d8ed6c0af7ad6b632ea139e16e57ec42`。完整专项命令 PASS（1550.930 秒，业务场景 1348.72 秒）；共 4 个执行 Pod、28 个原主步骤、94 项单测与 56 项 Playwright，原 source workflow/YAML 不变。
+- **执行环境边界**：显式 `FORGELET_TEST_TOOL_CACHE_IMAGE` 提供官方 Node24.14.0 toolcache 与 Playwright1.63.0 / Chromium153；浏览器归档经 HTTPS、官方 MD5/ZIP CRC 校验，Node 来源和 digest 记录于证据目录。setup Actions、浏览器安装命令仍执行；pnpm/GHA 数据缓存从空开始。原始在线工具安装曾在前述排查运行成功，最终预装工具 profile 不算新的在线下载验收，也不改变 formal executor 默认镜像。
+- **保留失败证据**：`platform-workflow.log` / `platform-workflow-retry.log` 的 413 最初误判为总额度；实测约 195 MiB、128 个 1 MiB blocks 后确认块数限制，已撤回非必要额度配置。`platform-workflow-tools-final.log` 冷运行完整通过，热运行虽然依赖 RUN 层 CACHED 仍因重复恢复超限而整体 FAIL（1642.832 秒），促成查询复用修正。其他 TLS/下载失败、主动取消的环境排查与最终通过分开，不吞错或跳过测试。
+- **范围与证据**：`/Users/guo/.config/forgelet/platform-web-fix-20261027/` 保存本批前快照、失败 trace/截图、固定来源、完整运行与日志。本批运行 make verify、单测/HTTP/SQLite、默认大层与原业务 Testcontainers 专项；未重跑上批全量 26 场景，不冒充本批全量。仅临时 k3s/隔离 registry，不写真实 Checks/业务 registry，不提交/推送业务仓库，不部署 homelab。
+
+## 上批：10.6c 镜像构建、缓存与包发布凭据（历史记录，platform-web 阻塞现已解除）
+
+- 复用原控制面/PVC 与按需引擎，在 supervisor 中接入 CacheService v2 JSON、Azure 风格 block/single PUT、block list、finalize、HEAD/range 下载；旧 v1 路径保留。新 runtime token 为每 attempt 的短时 JWT 兼容能力标识，服务端仍按精确随机能力校验，不信任客户端 claims。
+- 缓存监听 Pod IP，供同 Pod 引擎内的 bridge BuildKit 访问；native 不新增 Docker 依赖。临时服务随 attempt 退出，持久隔离/不可变 key/配额/保留继续由原 blob 服务负责。
+- 管理员可用 act.buildkit_config 设置 builder 默认 registry/TLS 配置；现有镜像目录中的 moby/buildkit:buildx-stable-1 固定源作为 setup-buildx 的默认 image。显式 workflow 输入优先，不把引擎预加载扩称独立 BuildKit 自动继承镜像目录。
+- packages:write 需要 act profile、push/manual 事件与管理员 package_tokens → 加密 Secret 名绑定；计划只存引用。运行时 package credential 与 source clone token 分开；隐式 checkout 继续只读源 token。禁止 PR 获取包发布凭据，缺绑定/缺 Secret/撤销时明确失败。
+- 原始 workflow 暴露的 github.ref_type 与显式 GITHUB_TOKEN Secret 环境绑定已补齐，保留其他 runner 身份变量和 file-command 写保护。原始样本位于 test/fixtures/steam-build；源码固定提交的仓库外快照通过 gh 只读获取。
+- 公共 Action 归档读取补上 HTTP/2 早关流回归：只为读取 Git PAX commit 标识的归档请求使用独立连接，避免下一次请求卡在已取消的大流；metadata 完整读取继续复用连接，不携带用户凭据。真实临时 Pod 连续请求两次成功，HTTP/2 回归单测通过。
+- **单测/进程内集成**：最终 `make verify` 通过（`verify-last.log`）：构建、Go race、真实 HTTP/SQLite、lint/generate、35 Vitest、14 Chromium（32.0 秒）；workflow 覆盖率 88.1%。覆盖 v2 分块/整对象/重试/限额/版本隔离、Put Blob 替换未提交 blocks 后的磁盘清理与计数、凭据引用/加密/重启/轮换/撤销、PR 拒绝、源 token 分离、默认 builder 与显式输入优先。
+- **独立 BuildKit Testcontainers 已通过**：使用真实 BuildKit v0.20.2、原版 setup-buildx@v3/login@v3/build-push@v6；冷运行 `efc2df4d289d3ef3c7324d24`、热运行 `a78857db45c2f5f3e18deef0`，实际 RUN secret mount 层恢复后显示 CACHED。冷运行期间重启控制面保留 Pod UID `24e238f0-f2f3-44dd-8b24-3f1e58187e80`；失败运行 `2a925c58b954e307180f76c4` 不改变镜像 digest，取消运行 `3acf9d66f9f53df392911cdf` 清理按需引擎/Pod。
+- **原始 steam-admin image 已通过**：固定提交 `2d6d2f5eb0f7236ff68bec49b3db1aa09a38e07d`，运行 `ee279133c662c5c86e9d39a6`，隔离 registry digest `sha256:98c203cfaf30ccc5b4a4ac1c012950ecaf9462fb9f4c26c16cb559b152f57a4b`。原 YAML、源码、Dockerfile 不改字节。
+- **原始 steam-login docker 已通过**：固定提交 `0a5ce9753cf4b6f429cf273eea000353a9a19106`，专项命令 PASS（335.048 秒），运行 `97d46b224f59e593edc53f7d`。原 checkout/buildx/login/build-push@v5 和 packages:write 六个主步骤成功；自有 registry digest `sha256:692bbf076be8de170978ddac847c80e1094d018e72d0f6595ad97b16fc43e8f6`，隔离 GHCR namespace digest `sha256:10aff2802ccaf9718a47aa81ac9dba10e9d77fc275b2e63b6e53a962aea7c6e6`。两处均核对 Action 输出与实际 manifest；GHCR 代理单独校验测试 package token，不连接真实 GHCR（`login-original.log`）。
+- **原始 steam-platform-web 仍受阻**：固定提交 `75ed69647af3c5aa4a44c416b5b60d1c491def48`，运行 `384e5eb6db2dafdd19234d37`。Node24、pnpm9.15.9、安装、单测与 Chromium 安装成功；真实 Playwright 26 passed、1 flaky、1 failed。桌面 `tests/e2e/catalog-search.spec.ts:52` 切换搜索页后找不到“开始比较”链接，重试也失败；镜像 job 按 needs 正确 skipped。源码中 CompareButton 未等 hydration，toggleCompare 可能覆盖 sessionStorage 恢复值，是待独立复现的线索，不能直接认定根因。未改业务代码、删测试或把跳过发布记为成功；冷热两次完整 workflow 尚未完成。
+- **最终缓存修正复验**：Put Blob 替换旧 blocks 的磁盘清理/计数回归通过（`cache-replacement.log`）；最终产品代码的独立 BuildKit 专项 PASS（702.191 秒，`buildcache-last.log`），包括冷热、重启、失败和取消。该次发现取消触发所依赖的 Buildx 日志可能延迟刷新，测试现改为观察本 job 独立 builder 中的真实 RUN 进程，避免日志时序影响。最终专项 PASS（339.990 秒，场景 216.29 秒；`buildcache-process-signal.log`），冷/热运行 `f48636c67969f3a87b48c780` / `824845023363eeaa7a177b3e`，失败 `63559e864603e4e4cea159c4`、取消 `c6c7b4c1d5714a3e2081e37e`；日志/ACK 本身继续由独立日志场景验证。最终 integration 编译与 lint（0 issues）通过。
+- **组合全量结果**：`testcontainers-combined-final.log` 用时 2138.808 秒，26 个必选产品叶子场景均通过，但命令整体 FAIL（上述可选 platform-web 业务 E2E）。包括实际 BuildKit/GitOps/Flux、低水位、取消/恢复、日志、原生 Go/Node、Web 与认证；不能把这个命令报告成全量 PASS。默认 `make test-integration` 独立完整命令 PASS（1763.748 秒，`testcontainers-product-final.log`）：26 个必选叶子场景通过，两项需私有源码目录的可选业务测试显式 skip。真实 Go/Node 工具链 71.61 秒，集群 Web 4 项 27.1 秒、认证浏览器 1 项 8.3 秒，保留清理通过。该全量命令在最后的 Put Blob 旧分块清理修正前已启动；修正后的最终代码另经上述 make verify、缓存回归和 BuildKit 专项验证，最终取消测试改进也经专项验证，不将其称为重新执行全部场景。
+- 本批证据和工作区修改前快照：`/Users/guo/.config/forgelet/stage106c-20261026/`；未提交/推送任何仓库，未部署 homelab 或写真实 GHCR/业务 registry。
+
+## 上批：10.6b 公共 Action 引用与原始业务 workflow
+
+- **实现**：纯 workflow 编译器接受公共 tag/branch/full SHA 的合法语法；控制面在新 act 运行保存前解析精确引用与远程 Composite 依赖，保存 Action.SHA / ActionPins。默认从 GitHub Git 归档的 global PAX commit 标识固定 SHA，再读取该 SHA 的 metadata；精确 tag 优先于 branch，避免匿名 REST core 配额。可选受控 REST 源保留 annotated tag 解引用。重跑、重复 delivery 与恢复沿用已保存值；旧原生版本限制和无锁旧计划恢复保留。不新增依赖、常驻服务或数据库迁移。
+- **运行上下文修正**：原 metadata-action 的 repoData 调用暴露了 provider 地址未传入 job 的问题；新计划保存既有 github_api_url，并传入 act/native 的 github.api_url 与 GITHUB_API_URL。重跑沿用原地址；公共 Action 源解析仍无账号 token，不与 job API 凭据混用。
+- **单测与进程内集成**：最终 `verify-accepted.log` 的 make verify 通过：构建、Go race/HTTP/SQLite、lint/generate、35 Vitest、14 Chromium（30.7 秒）。覆盖 mutable tag 更新、新运行刷新而重跑/重启/重复请求不漂移、远程 Composite/循环/子目录、上下文取消、非法 metadata/源地址、临时限流返回 503 与事件退避、不保存半份计划和首次运行只解析一次。追加的归档 404/限流/中断回归另经 action 包 race 验证通过；workflow 包覆盖率 88.1%。
+- **原始业务 Testcontainers 验收已通过**：一次完整专项命令 PASS（728.470 秒；业务场景 615.60 秒）。steam-platform-server 固定提交 `e37944b787fc89cc4e96c327e377dab09a09a940` 的 check.yml 两次、steam-admin-web 固定提交 `40140fc9e3281467d4199586f2f5f988fad0731f` 的 ci.yml 两次和 image.yml 一次，共 5 个运行、28 个原始主步骤全部成功。Go/npm 均验证 cache-hit=false → true；3 份 YAML、源码与 Dockerfile 保留原字节。
+- **原始运行记录**：Go 冷/热为 `c3db1faed139aaec5e677a7b` / `0edb0235ce88c995e30df60f`；Node 冷/热为 `4fb0647e58c360c8f5c07025` / `5536a4c237a004f2692bf1ee`；image 为 `c2bffa8dcc2166d7cc715c4e`。实际执行原版 checkout、setup-go、setup-node、login、metadata、build-push；其中 setup-node@v4 固定到 `49933ea5288caeca8642d1e84afbd3f7d6820020`。临时 registry 的 manifest 与 Action 输出相同：`sha256:b102ce41a284135eb66c4d45b4c569ff772d169ed4ac35c8ad37262ab26abdda`。
+- **全量回归**：最终 `make test-integration` 一次完整命令 PASS（1344.762 秒，`testcontainers-accepted.log`），25 个既有叶子场景全部通过。包括真实 BuildKit/GitOps/Flux、重启恢复/取消/身份隔离、低水位、Unicode 日志 ACK、act 缓存/运行时（217.45 秒）、matrix/并发组、真实 Go/Node 和保留清理；集群 Web 4 项（27.7 秒）及认证 1 项（8.0 秒）通过。默认命令未设置业务目录，显式 skip 可选原业务场景；该场景已由上述单独的最终 5 次运行验证。追加测试后的最终 lint 也通过（lint-last.log）。
+- **实验中发现的问题**：修正测试引擎 ctr 入口、重复 insecure-registry 配置、内层 registry 域名路由/TLS 与 API fixture 的 token scheme；随后真实源解析遇到 REST 匿名限流，改用 Git 归档 commit 标识并加回归。初轮失败、仅 image 专项和最终 5 次运行分别保存，只有最终命令计入完整业务验收。
+- **范围**：这是临时 k3s 中的真实执行；源码 checkout 经同 SHA Git 对象镜像，API/发布使用隔离测试替身，公共 Actions 与 Go/npm 依赖真实下载。不携带宿主 gh 凭据，不写真实 GitHub Checks 或业务 registry，不等于账号 push 接入或 homelab 部署。build-push 的 build record 上传仍有 artifact 协议警告，不记为 artifact v4 兼容；现有原始 ci/image 独立触发，没有隐含的跨 workflow 发布门禁或 Flux CD。
+- 证据与工作区变更前快照：`/Users/guo/.config/forgelet/stage106b-20261026/`，最终业务证据 `business-final.log`，最终全量 `testcontainers-accepted.log`，最终单测 `verify-accepted.log` / `archive-final-unit.log`。未提交、推送本项目或业务仓库，未部署 homelab。
+
+## 上批：10.6a 业务仓库盘点与后续实施顺序（仅检查和文档）
+
+- **读取范围**：使用当前 gh 登录的 shitamachi 账号，扫描全部 15 个 steam-* 仓库的默认分支固定 SHA；9 个包含 Actions，获取 13 份原始 workflow，以及关联 Dockerfile、go.mod/package.json、Makefile 和 Buf 配置。未执行仓库脚本、触发业务 workflow、提交或推送业务改动。
+- **当前代码检查**：临时 Go 探针直接调用当前 `workflow.ValidateFiles`，加载同 SHA 的全部辅助 workflow。13 份中 6 份规划通过、7 份拒绝；另逐条检查 Action 引用。主要拒绝点是 6 个未支持的 tag 别名与 pwsh；源文件、完整 SHA、诊断 JSON 和 GitHub 记录保存在 `/Users/guo/.config/forgelet/steam-inventory-20261026/`。探针已移除。此结果不包含 profile admission、真实步骤或外部发布验证。
+- **实际仓库差异**：Go/race/Buf/rg、Node24/npm/pnpm/真实 Playwright、Rust1.97/pwsh/Python3，以及 Buildx/type=gha/双 registry 发布均有真实需求。当前源码未引用远程 reusable、动态 matrix、artifact v4 或 OIDC，暂不优先扩展这些能力。
+- **业务问题已重新核对**：steam-tasks 默认分支仍是 `8265ad9772c5`；GitHub run `39965363438` 失败于 `steam-proto-go/priceregion` 缺包，v0.6.0 的树也没有该目录。Dockerfile 必需的 steam_proto_go context 仍未由 image workflow 提供。steam-api 当前 run `39959378343` 失败于 `TestRedisAdmissionAndParentSnapshotIntegration`，尚未进一步诊断该业务测试的原因，不能归类为 Forgelet 执行失败。SDK steam-proto-go 当前公开，不能把它列为已确认的私有授权阻塞。
+- **优先顺序**：先 steam-platform-server（当前 GitHub 同提交 CI 成功）与 steam-admin-web（当前 GitHub 同提交 CI/image 成功），交付通用 Action ref 固定、真实 Go/Node 与镜像发布；再覆盖 Buf、pnpm/Chromium、独立 BuildKit 缓存、GHCR 与 Rust profile；随后逐库接续所需 GitOps/Flux、健康检查与回滚。全部 13 份原 workflow 均无 Flux 部署步骤，镜像发布不等于 CD。详情见 [compatibility.md](compatibility.md) 业务仓库表和 [plan.md](plan.md) 10.6b–10.6e。
+- **验证与完成范围**：本批只有 gh 只读盘点、当前编译器探针和文档修改，未修改产品行为，未重跑 make verify、单测/集成或 Testcontainers，未部署 homelab。下文 10.5d 的最终 25 场景 PASS 仍是该实现批次的历史结果，不冒充本批业务验收。
+
+## 上批：10.5d（代码、自动验证与 homelab 全链路完成）
+
+- **公共镜像目录**：管理员将 Docker Hub tag 映射到 runner 同 registry 的固定 SHA256，最多 16 项，拒绝重复别名、未固定的源及其他 credential host。supervisor 自动拉取、登记原名并核对完整 config identity，再启动 worker；失败阻断步骤，无公网回退。Secret 仍只供 supervisor/Kubelet，不进入 engine/内层任务。Docker 引擎也使用镜像 digest，startup probe 检查实际 28.5.1；不增加常驻缓存或共享 Docker data。
+- **Zot 实际目录**：按 amd64 原 manifest/blob 同步 PostgreSQL 18-alpine、Ryuk 0.14.0、Go 1.26.4-bookworm、Alpine 3.22、Dockerfile frontend 1.7 与 Docker 28.5.1-dind；在 `zot.k.mygo.rocks/forgelet/mirrors/` 保存固定源。上传采用本机 OCI 暂存后经临时 SSH 隧道写入现有 Zot Service，避免慢速上游流式上传中断；执行仍用正常 HTTPS。没有改动 Zot 服务配置，原 workflow/Dockerfile 镜像名均未修改。
+- **日志**：同 step 小写入合并为最多 8 KiB、每 200ms 刷新的块，保留原 seq/SQLite/ACK 协议、1 MiB 待确认上限、大写入背压。首次尝试后内容不可再合并；ACK 丢失以相同字节重试。网络 I/O 不持队列锁，上传串行、等待可取消，避免上传挂起阻塞 job/step 超时；终态前以独立有界 context 排空并上报已确认序号。Unicode 与动态秘密跨块边界保持完整。控制面独立复制 profile 的目录 map，避免调用者修改运行配置。
+- **构建**：Dockerfile 分离不随 Go 代码变动的系统工具层，native/act 继续各自交付，单 module 和四个真实二进制不变。`distribution/reference` 仅将已有依赖转为直接使用，负责镜像引用校验；没有新增 registry 客户端 Go 运行时依赖。
+
+| 自动验证 | 最终结果 |
+|---|---|
+| `make verify` | 通过：真实构建、Go race/进程内集成、lint/generate、35 Vitest、14 Chromium（31.7 秒）；最后格式检查通过 |
+| 日志/配置单测 | Unicode/动态脱敏、同 step 合并、ACK 丢失且尾部继续到达、永久上传失败停止代码、上传挂起时本地 job 超时、源/tag identity、目录/版本/credential host 校验与 profile 深拷贝通过 |
+| HTTP/SQLite | 真实 executor → HTTP → SQLite 验证连续 ACK、精确文本、脱敏、步骤归属和最终 LastLogSeq，通过 |
+| 最终 `make test-integration` | **25 个叶子场景全部通过，1746.332 秒**；一次完整命令 PASS，不用专项结果替代 |
+| 新核心 k3s 场景 | 持续 Unicode/脱敏输出时重启控制面，原 Pod UID、完整行计数及顺序、唯一 seq 均保持（最终场景 3.82 秒）；act 场景 207.05 秒，包含私有 registry 自动准备、原名 Docker Action FROM、不可用 mirror 阻断、cache/调用/超时/取消/引擎退出 |
+| 既有链路回归 | 真实 BuildKit/GitOps/Flux、故障/回滚、身份隔离、磁盘保护、多任务/并发组、Go/Node、浏览器/认证、保留清理通过 |
+
+首轮 24 场景 23 个通过（1674.686 秒），唯一失败为浏览器点击保存后立即 GET，未等待异步 PUT 完成。
+测试改为等待真实 200 响应再检查持久化结果，未放松断言；最终全量已包含修正。
+上传锁问题另以挂起请求/秘密尾部/本地超时回归复现和修正，修正后的执行器用于最终全量和部署。
+
+### 10.5d 实际部署与原 workflow
+
+- 最终 server `registry.shitamchi.com/forgelet/server@sha256:99c01b9ace81809850a9f2e418b3869390299fc499c5995b14073da1d3cc2981`；native executor `registry.shitamchi.com/forgelet/executor@sha256:c0783df3e13e4219c79fad964705cfb28edbb8c7acac83463f4885ac917d3e5d`；act executor `zot.k.mygo.rocks/forgelet/executor-act@sha256:68189ab98e304637ca70532c05bdf98618c0b06b3ad44ddc61720b593497fe9e`。升级前已保存 ConfigMap/Deployment/原子 SQLite；会话保留，无 schema 变化。
+- 仅提交专用测试应用 README，提交 `7f31a49360bbe55f42d2eff83f107b14775b804a`；workflow、Dockerfile、应用逻辑和 SDK tag 保持原样。run `e73fb60d516157d9c6df5a8f` 的 reliability/call gate/build-push/native deploy 全成功。原版公开 Actions、私有 SDK、Atlas、race、必跑 PostgreSQL 验收、cache-hit=true、BuildKit secret/命名 context 和真实 registry push 通过；Codecov 沿用非阻断策略，不记为外部覆盖率上传成功。
+- 两个 act job 各自动准备全部 5 个公共别名，使用新的空引擎，无手工预热。控制面运行中重启，reliability 以原 Pod UID `3a595bff-7bd5-4309-87fe-9942741623bc` 完成，没有重放；Pod 完成后已 GC，以持久记录和重启前快照核对 UID。build-push 保存 109 个已 ACK 块、56,535 bytes；10.5b 同结构流程为 1624 块、51,477 bytes，这是两次实际运行的观察值，不作为性能基线或普遍速度保证。
+- 三个本次 push 的 [GitHub Checks](https://github.com/shitamachi/forgelet-e2e-app/commit/7f31a49360bbe55f42d2eff83f107b14775b804a/checks) 均 completed/success。release digest `sha256:8ed01d4b12c9e8235e5e8dd90328c5599c801acf2b8b6405642fb38db60627d0`；delivery `21a38fd52ae5436aec42e4d0e8dbc643`，GitOps `385e2e04ec347150633cec9e963b119097e9203c`，实际 deployed / Flux Ready / Deployment image / HTTP 新 SHA 均相符。
+- 回滚记录 `f3cf3c14149ec19cd5a25e09e1482a05`、GitOps `68cddb6cc66b207ffec874bdea05205cdf86c965` 恢复上一 digest `sha256:303ec3408f323cab25ddc01456f95887766829dded75c0707c63517677eccf42`，应用健康；随后记录 `d9cdb2c92af96ce52f91c80daf679c13`、GitOps `dc3a148ddbc3043d62aab4bbd95e125fc2b0244c` 恢复新镜像，最终 deployed / Flux Ready / HTTP SHA=7f31a493。三次观测中任务 id=1 均为 completed、worker=homelab-worker、version=3，内容完全相同；历史被替代的记录转为 superseded。
+- 实际取消探针使用旧测试 SHA，避免影响本次三个成功 Checks。`b0e9ae87a6b2a426163eb0da` 在准备/执行交界发出取消，日志显示 step 已开始 sleep，按运行中取消记录，后续命令未执行；`86b879c5ca4a55129d2978d3` 在 runner 拉取阶段取消，尚未准备目录/启动用户 step。两者均 cancelled，原 Pod 与 engine 移除。取消是轮询后的停止，不把请求前快照冒充“用户代码从未启动”。
+
+证据与升级前备份保存在私有目录 `/Users/guo/.config/forgelet/live-20261023/stage10d/`：
+`verify-complete.log`、`testcontainers-final.log`、`public-images.json`、`images-release.json`、各 run/分页日志、
+GitHub Checks、重启快照、三次 Flux/HTTP/Deployment 快照及取消记录。未修改或运行业务仓库，本项目没有自动提交或推送。
+
+**范围**：这是管理员镜像目录，不是所有 Docker Hub tag 的透明代理；强制拉取/独立 BuildKit 引擎仍需配置源。
+归档与版本维护方式见 deployment/compatibility；执行器仍只适用于显式 opt-in 的可信仓库/profile。
+
+收尾复核：forgelet namespace 仅保留一个健康控制面 Pod，执行 Pod 数为 0，forgelet-lab 无 Pod。
+停止本轮临时 SSH 隧道，移除本轮 builder、Testcontainers 镜像 tag 和可重建的 OCI 暂存；
+用户的 lg-multiarch builder、Zot 镜像/Secret、控制面数据、应用与数据库 PVC 均保留。
+最终三个成功 Checks、三次发布/回滚/恢复的 digest/revision/HTTP/任务数据、两次取消及日志秘密扫描均已复核。
+
+## 本批：10.5b 正式单 job worker（已部署，真实链路通过）
+
+- 已接入独立 act worker 子进程、显式 act profile/Pod 自有按需 Docker、Node20/24 分派；控制面继续 SQLite 图调度，原 executor 保留 claim/日志 ACK/control/result 协议。取消由父进程终止 worker 并停止自有引擎容器，避免 stock 的取消后 post 行为；不走有已知 PTY race 的 host backend。
+- 已实现 job 本地缓存协议 facade，归档仍进入原控制面 blob 服务，保持仓库/ref/version、配额和保留语义；短期依赖仓库 token 引用由管理员显式配置，按领取身份临时签发，不持久化 token。
+- `make verify` 最终一轮已通过：真实构建、Go race/进程内集成、lint/generate、35 Vitest、14 Chromium（31.0 秒）。workflow 单测覆盖率 88.1%；reserveGraph 89.6%、dependencyContext 100%、调用状态处理 88.6%。
+- 实际 k3s 的 act 专项最新通过（829.803 秒，act 场景 679.02 秒）：Node20/24/post、Docker Action workspace/outputs、typed workflow_call/inherit/outputs、冷/热缓存、同 Pod UID 重启恢复、真实 exit 7/失败与 always 下游、job 超时、取消后全部引擎清理；新增真实 Git workspace 信任回归。测试日志按游标拼接，检查点输出越过脱敏尾部缓冲，避免匹配命令回显或漏读 post。
+- 最终全量回归实际结果：24 个叶子场景中 23 个通过（整轮 1355.210 秒），包含 act（680.45 秒）、工具链（98.21 秒）、真实浏览器、认证和保留清理。唯一未通过项为 GitHub 下载固定 Flux v2.6.4 清单时连接重置，CD 场景中止；为测试夹具添加三次有界重试、4 MiB 限制，永久 HTTP 错误不重试。race 回归通过（2.228 秒），真实 BuildKit/GitOps/Flux 发布、故障、回滚和构建取消专项补跑通过（492.600 秒）。24 个行为场景已跨全量与补跑验证，不能将全量命令写成整体 PASS。
+- 较早整轮曾因真实 Node 下载超过 6 分钟 fixture 窗口失败；仅将该下载 fixture 的 job/测试等待改为 12/13 分钟，未改变产品默认 deadline 或测试断言。工具链专项通过（514.473 秒），最终全量中的该项也通过。
+- 新增不可变镜像预加载快路：校验 registry manifest SHA 和本地完整 config digest 后复用已加载镜像；任何校验失败回退标准 pull。单测/race/make verify 与真实 Docker Testcontainers 通过（4.111 秒）。不写 Docker 内部元数据，不信任 tag 或未经验证的缓存。
+- 权限回归额外发现空 permissions map 被 omitempty 省略，恢复成默认能力；HTTP/SQLite 已复现并修复，保留 null/{} 区别。最终镜像专项和全量中的 act 场景包含无权限 job 不获得 token。
+- act v0.2.89 只链接独立 worker；单产品 Go module 保留。go-archive 固定兼容 v0.1.0（v0.2.0 移除 act 所用弃用别名，上游 diff 已核对）；完整产品和 Testcontainers 一起验证，待上游迁移后移除此兼容 pin。
+
+### 10.5b 实际 homelab 验证
+
+- 正式镜像固定为 server `sha256:c362fd59b22ed212c28ee67f72fdb42c8fbdc0a7151c101c773e0c88549db312`、native executor `sha256:3d204029bf622689f4e190c29a69c929370c5e1e451b05c84ed65019d8767434`、act executor `sha256:480bc4a1aa5ff07662b83884290f3957ded3cc35dd1336bcc522f981f96db33a`，对应 `registry.shitamchi.com/forgelet/{server,executor,executor-act}`。单控制面位于 node3，act 任务在 node1 按需运行。
+- 只在三个专用测试仓库操作，未修改/运行业务仓库。启用测试应用原 `image.yml` 的 push 规则，调用 reliability，再通过 needs.digest 接续 native `forgelet/deploy@v1`；GitHub 原生 Actions 仍关闭。registry secrets 由原加密设置服务保存，依赖 SDK token 按管理员的单仓库引用临时签发。
+- 成功源码 `6777baadefac3574ed1899a68a586f556877fc8a`，run `77f821bf3dcf0c8514ad5d19`。原版 checkout/setup-go/Codecov/login/metadata/build-push 均实际执行；私有模块校验、vet/build、Atlas、race、必跑 PostgreSQL Testcontainers（3.45 秒）、私有 SDK v0.1.0 checkout、BuildKit secret 和命名 context 通过。Codecov 有网络/无上传 token 警告，非阻断，未计为上传成功。
+- 运行中实际重启控制面，reliability Pod UID `01070288-51b1-4bba-9b85-b675d67f9832` 保持不变，executor 重启数为 0；原任务继续完成。三个实际 [GitHub Checks](https://github.com/shitamachi/forgelet-e2e-app/commit/6777baadefac3574ed1899a68a586f556877fc8a/checks) 均 completed/success。
+- 构建 digest `sha256:303ec3408f323cab25ddc01456f95887766829dded75c0707c63517677eccf42`；delivery `6426676552d79ab2ded88852b57acbb0` 为 deployed；产品提交 GitOps `d17859cf10454486557072ae0d2517ae1a7b5c2f`，Flux Ready/Healthy=True、实际 Deployment digest 相符。HTTP 返回 healthy=true / production-like / 上述源码 SHA；原任务 id=1 仍为 completed、worker=homelab-worker、version=3。没有 operator 传递构建 digest 或代替产品提交 GitOps。
+- 实际调用原 rollback API：记录 `45854256cbc6688f73381f6d83d1a539`、GitOps `2f75f7993fbe61ce9cf2e633b9ee8d3f910b62ce`，恢复前一个 v2 digest，deployed / Flux Ready / HTTP healthy。回滚 commit 只修改 `apps/demo/kustomization.yaml` 的一行 digest。随后回滚该回滚记录以恢复新版：记录 `c4f4bd6795a671fff96325651b770af4`、GitOps `3df5af133477d61efb886ccbb88a1a50927f81c2`，最终 deployed、应用为本次源码 SHA。三次发布/回滚/恢复均核对实际 Deployment digest，任务 id=1 内容完全相同；原发布记录随后为 superseded，历史快照保留。
+- 环境准备边界：节点到 Docker Hub 曾返回 EOF，私有 runner 镜像冷拉取也较慢。本轮 operator 向相应 job 自有引擎预加载了相同版本的 runner/PostgreSQL/Ryuk/Go/Alpine/Dockerfile 镜像，保留了日志；没有共享 Docker data、跳过步骤或以预建应用镜像替代构建。细粒度日志逐条 ACK 也使终态可见性延迟；镜像分发和日志批量效率留待后续优化，本批不宣称无预热冷启动已优化。
+- 失败记录保留：`7763c989c7a653be86c55a75` 在冷拉取中 interrupted；`45002450931a28b84b98bfcc` timed_out；`e6a53245d04200cd208672e5` 在 Go VCS 状态检查失败，修复精确 workspace Git 信任；`d3bb4a8e78c71e1f4cff3707` 在 Docker Hub 拉取 PostgreSQL 时 EOF。各次构建/发布均被依赖门禁阻断，没有错误交付。
+
+证据保存于本机私有目录 `/Users/guo/.config/forgelet/live-20261023/stage10b/`：最终 `verify-release-final.log`、`testcontainers-complete-final.log`、`testcontainers-flux-retry-final.log`、`testcontainers-git-workspace-act-final.log`、`testcontainers-preloaded-image-final.log`，以及 run/日志/Checks/Flux/HTTP/重启快照。升级前的 patch、未跟踪文件、原子 SQLite、PVC/config/Deployment 备份均保留；本项目未自动提交或推送。
+
+收尾：forgelet namespace 仅一个控制面 Pod，执行 Pod 数为 0，forgelet-lab 也无 Pod；临时 Testcontainers 容器全部清理。删除本轮 18 个本机 integration 镜像 tag、私有 builder 和可重建的镜像归档/节点临时脚本，停止预热 watcher 与 Zot 端口转发，保留原 `lg-multiarch` builder。未改变 Zot 配置、用户业务部署或数据库 PVC。最终作业日志未发现实际 registry 密码或 GitHub token 模式泄露。
+
+### 后续配置：Zot 内网执行镜像（2026-10-26）
+
+- owner 提供现有 `forgelet/zot-registry`（kubernetes.io/dockerconfigjson）；实际认证 `https://zot.k.mygo.rocks/v2/` 返回 200。未读取 README 中的密码，也未回显凭据。
+- 将已验证 act 镜像原样同步到 `zot.k.mygo.rocks/forgelet/executor-act`，manifest digest 仍为 `sha256:480bc4a1aa5ff07662b83884290f3957ded3cc35dd1336bcc522f981f96db33a`。只修改 `ubuntu-latest` profile 的 image 和 act.registry_secret 为该镜像及 `zot-registry`，重启原控制面；server/native 镜像、应用构建 registry 和 GitOps 目标保持原配置。配置与数据库先备份。
+- HTTPS 入口的大层上传曾返回 404 upload unknown / 503 reset；最终通过临时 Kubernetes 端口转发直接同步到 Zot Service，完成后关闭转发。执行器仍使用正常 HTTPS/证书验证，无 insecure registry、Zot 服务配置变更或额外常驻服务。
+- 实际手动探针 run `ffb52f11c898aa4a4426afa4` 成功：新 Pod、自有空 Docker data，无手工镜像预热，自动从 Zot 拉取 runner，运行 Docker 28.5.1、真实 Node20.20.0/24.14.0。内层任务确认不可读取 registry config、workload token 和 Kubernetes token，空 permissions 下无 GITHUB_TOKEN；日志包含 ZOT_COLD_PULL_OK，未发现 Zot 密码或 auth 值泄露。节点 containerd 已缓存相同 digest 的层，主 Pod 拉取引用为 261ms；这不代表节点全冷启动耗时，内层空引擎拉取确实执行。
+- 本次只有部署配置/相同镜像分发和实际探针，没有修改产品代码，也未重复 make verify 或 Testcontainers。此前 CI/CD 发布与回滚记录仍有效；workflow 自行拉取的 Docker Hub 镜像未切换到 Zot，日志逐条 ACK 的效率也尚未改变，10.5d 保持未完成。
+
+本批证据与配置备份位于私有目录 `/Users/guo/.config/forgelet/live-20261023/zot-20261026/`。后续升级 act 镜像时须先同步新 digest 到 Zot，再更新 profile；原 registry 镜像保留可用于配置回退。
+
+## 上批：10.5c 生产形态测试应用与实际 homelab 实验
+
+按 owner 最新要求，不再用现有业务仓库试验。本轮只修改、提交并推送三个已有专用测试仓库；forgelet 工作区保留未提交变更，没有提交或推送本项目，也没有升级线上控制面。
+
+- **应用与私有依赖**：`forgelet-e2e-app` 当前固定实验提交 `1941631595363a2e2c67e9baf1d1c3ee09008168`。Go/PostgreSQL 任务 API 包含幂等创建、请求冲突、乐观锁领取、归属校验、完成和持久化；迁移有事务、版本记录和 advisory lock。`forgelet-onboarding-e2e` 新增 contracts SDK，提交 `67ce93e`、发布专用 `v0.1.0`；20 个并发领取者只能有一个成功，迁移重入、重新连接和严格 HTTP 输入均有测试。未修改业务 SDK 或业务 tag。
+- **接近实际的 workflow**：ci/image → reliability，typed inputs、secrets inherit、step/job/workflow outputs；原版 checkout@v4、setup-go@v5、Codecov@v4、login@v3、metadata@v5、build-push@v6。实际执行私有模块下载/校验、vet/build/race、Atlas、PostgreSQL Testcontainers、私有 SDK checkout、BuildKit secret/命名 context、真实 GitHub API 与 registry push。公开 Actions 固定 SHA，版本见 `test/actkernel/actions.json`。Codecov GPG 签名验证在最终 profile 通过；未配置该私有仓库上传 token，不能记为覆盖率上传成功。
+- **先部署再实验**：`forgelet-e2e-gitops` 提交 `d8dc972` 增加应用迁移 initContainer、PostgreSQL Deployment/Service；数据库 Secret 和 1 GiB PVC 独立创建。先以基线 digest `sha256:da919d55470f4d87c72a1b710d1641442ed27b0dced1b73da7a864d5d911e5d9` 部署健康任务 API，再开始新内核 workflow。数据库属于被测应用，控制面仍是 SQLite。真实创建/重复请求/领取/完成任务 id=1；数据库 Pod 重启后仍为 completed、version=3。
+- **真实运行与缓存**：修正事件输入后，`clean-ci-v2` 的 setup-go cache-hit=false、必跑 PostgreSQL 步骤通过；`verified-image` 在新 job 目录实际恢复 cache-hit=true，`TestPostgresAcceptance` 通过（47.03 秒，整步 51.29 秒），两个 workflow job 成功、SDK output=v0.1.0。源码和 SDK 分别使用只读单仓库 installation token，operator session/App 私钥/Kube 凭据不进入 CI。
+- **失败与取消**：`ci-failure` 确实执行注入失败点，reliability=failure，构建未执行、无 digest，实际调用发布工具被拒绝；不把 stock 引擎留下的空 job 结果冒充 skipped。取消探针记录运行中 Pod/engine，foreground 删除后 Pod 数为 0，同名凭据 Secret 删除。所有最终 CI Pod 均确认 engine 已退出，采集结果后清理 Job/Secret。
+- **发现并修复的实验问题**：vfs 超过 12 GiB emptyDir 被驱逐，改 overlay2；初始 dispatch 把 boolean 直接放进 event 导致条件步骤跳过，改为事件字符串并增加必跑步骤验收和回归测试。初始 `cold-overlay` 的镜像成功不计为完整 PostgreSQL 验收；上述 v2 运行才计入。补齐 GPG；执行镜像分开 apt 层，采用 gzip 通过 registry 入口，最终验证 profile 为 `sha256:39211b7e2e1946e5afe06eb35c7b92b03bfa3ccc5645f3711065a11887df4e18`，保留 `production-like-20261025-verified` tag。失败、取消和准备日志保留，不混称全部尝试都成功。
+
+| 验证 | 本轮结果 |
+|---|---|
+| 产品 `make verify` | 最终通过：真实构建、Go race/进程内集成、lint/generate、35 Vitest、14 Chromium（31.3 秒） |
+| `make test-kernels` | 最终通过，319.571 秒；16 个 k3s 叶子探针（含既有 3 项缺口观测）+ 新 Docker backend race Testcontainers（29.62 秒），两个候选各 9 项行为测试；私有业务探针明确 SKIP |
+| 应用单测/集成 | SDK race、应用 HTTP/领域 race、真实 PostgreSQL Testcontainers 通过；本机应用最终整包 9.624 秒；线上另实际运行必跑数据库验收 |
+| operator 工具 | 8 个行为测试通过：事件类型、条件误跳过、发布门禁、被驱逐记录、凭据范围、私有文件权限、取消归属 |
+| 全量产品 k3s 23 场景 | 本轮未重复；上批最终 1072.166 秒记录保留，不能混称本轮再次通过 |
+
+实际发布记录：
+
+| 阶段 | 结果与证据 |
+|---|---|
+| 正常发布 v2 | CI digest `sha256:3c5780c83251125b2f453ada865d38ed510b50d274c1f81b0e2fe0c2dd70b188`；CD run `23caa78a929660316af4b2f6`，delivery `20ac3c2247f6d31c442c9b3994473983`，GitOps `d69c4c6834a009980c2c5319a378c10c596757fd`；deployed、HTTP healthy/version/SHA/digest 相符，任务 id=1 保留 |
+| 故障发布 | digest `sha256:44e974af332ef29ac65321b8411db705796fcaa383b7cbedc8b7bd40f9136321`；CD run `f1f7c1b19ac0b3e2a33e89cf`；CI 成功，应用 readiness 故意失败；Flux Ready=False/HealthCheckFailed，delivery 保持 delivered，坏 Pod 不进入 Ready endpoints，旧 v2 继续服务，任务数据不变 |
+| 回滚 | 原 rollback API record `580da273b9d01a4af3c0c9fb76dc3465` 恢复前一个 v2 digest；GitOps `475d734e933795760094e92e9ef1c549cf5dd4bb`；deployed、Flux Ready=True、HTTP healthy/version/SHA/digest 相符，坏 Pod 消失，原任务仍为 completed/version=3 |
+
+证据保存在本机私有目录 `/Users/guo/.config/forgelet/live-20261023/production-like/`：`forgelet-verify-final.log`、`kernels-final.log`、`app-tests-final.log`、`operator-tests-final.log`、各轮脱敏日志/结果，以及 `verified-image-live.json`、`database-restart-http.json`、`unhealthy-image-live.json`、`rollback-live.json`、`cancel-probe-cancel.json`。顶层证据/凭据文件权限 0600、私有根目录 0700，不提交凭据或原始请求 Secret。
+
+收尾确认：`forgelet-lab` 无 Pod、无实验 Job，仅保留 registry Secret 与单个 5 GiB local-path cache PVC；所有短时请求 Secret 已删除。本机只移除本次 `forgelet-lab-20261025` builder 和测试镜像，原 `lg-multiarch` builder 保留；临时端口转发停止。被测应用/PostgreSQL 保持健康，数据库 PVC/Secret 保留供后续使用，没有空闲 Docker 引擎。
+
+**边界**：这是独立 homelab sandbox 的完整 workflow 实验，再由 operator 把固定 SHA/digest 送入现有手动 homelab workflow → GitOps → Flux。产品 allowlist 仅保留该手动 CD 路径，GitHub 原生 Actions 继续关闭；产品自动 push 调度、claim/result/日志协议与新内核整合仍属 10.5b，不能称为已接管。执行器是 privileged/rootful Docker Exec 实验配置，无宿主 socket/hostPath/Kube token；没有宣称 stock host PTY race 修复或生产隔离完成。工具与重现方法见 [test/productionlike](../test/productionlike/README.md)。
+
+## 上批：10.5a 执行内核对比（历史，未生产接入）
+
+- **代码与选型**：新增 `test/actkernel` / `make test-kernels`，分别构建固定 nektos/act v0.2.89、Gitea act v0.262.0；依赖 mod/sum 隔离在临时模块，产品 go.mod 未引入这两个执行库。用导出的单 RunContext、stdin JSON/结果、job logger 和 ActionCache 做窄接入，验证单 job 选择、外部 needs 快照、outputs、skipped 与秘密边界。**优先上游 act**：Gitea 的平台特化导致额外 GitHub API/结果适配，详细取舍见 architecture。
+- **真实公开 Actions / 按需形态**：两者都验证 Node/Composite/post、失败清理、取消、workflow_call/typed inputs/inherit/outputs、实际缓存冷→热命中和 Docker Action。上游 act 跑完真实 login@v3 → metadata@v5 → build-push@v6 → BuildKit secret/命名 context → Pod 内临时 Registry push → pull/run。四个公开 Action 固定 SHA，源码归档通过库现有 ActionCache 接口提供，未改脚本。metadata 通过带 token 校验的只读 GitHub HTTP fixture；这不是实际 GitHub token/CD 成功。
+- **明确复现的兼容缺口**：Gitea withGithubEnv 强制把 GITHUB_API_URL 写成 instance + `/api/v1`，使真实 metadata-action 调错端点失败；已改为确定性的 `build-push_github_api_gap` 负向回归，不能称 Gitea 构建通过。两者完整 workflow 模式遇子 workflow 失败都会提前结束，后续 always job 未执行；保留 forgelet 的 SQLite 图/调度，不委托完整 workflow。Gitea disabled/父调用还可能留下空结果，probe 显式转换，禁止发布未求值 outputs。
+- **单测与竞争检查**：两套候选各 **9 个行为叶子用例**通过；输入拒绝与日志边界另跑 race 通过，覆盖并发/分片脱敏、固定 Action 归档路径/前缀、needs 输出和失败跳过、不重跑依赖、取消。**两套 stock host 的完整 race 均失败**，定位 PTY AutoStop 读写竞争；原失败日志保留，未打补丁或关闭检查后宣称 stock host 无竞争。生产接入前还须修复/替换该路径、保持严格 Node runtime 与现有可靠取消/日志协议。
+- **新 Testcontainers**：临时 k3s 的 **16 个叶子探针完成，TestKernelPods 184.98 秒**；连同候选单测整个命令 **196.192 秒通过**。其中两项完整 workflow always 与一项 Gitea GitHub API 是明确的缺口观测，其余为行为回归，不能将 16 项写成两套库全面兼容。Docker 只对相关 Pod 添加 native sidecar，数据/socket/cache/workspace 都是本 Pod 的 emptyDir，无宿主 socket、hostPath 或 Kube token；测试确认主任务完成时 engine 已退出。PoC 是 privileged/rootful/vfs，**不是生产/rootless 隔离完成**，普通 job 无引擎，未增加常驻服务。
+- **真实业务运行（失败，不记为通过）**：使用 steam-tasks 提交 `8265ad9772c5c92d3724a0372f17c31a4a8e498d` 的干净 archive，并校验 ci/image/reliability 三份原文件一致，运行原 ci → reliability；Linux amd64 匹配 Atlas 下载架构。两者实际完成 setup-go@v5（版本文件 → Go 1.26.4 / cache restore）、私有依赖下载与 go mod verify，随后报 `no required module provides package github.com/shitamachi/steam-proto-go/priceregion`。本地只读核对也证实 SDK v0.6.0 无该目录、当前 SDK 提交有。没有用本机 SDK 替换固定依赖，没有删步骤；Atlas、业务 race/Codecov 与 image push 尚未执行成功。另确认原 image workflow 未传 Dockerfile 必需的 steam_proto_go 命名 context，后续需业务仓库明确修正。
+- **产品回归**：本轮 `make verify` 通过（构建、Go race/进程内集成、lint/generate、35 Vitest、14 Chromium）；新增工具最终另跑 race/lint 0 issues 和候选单测。现有全量临时 k3s **23 个叶子场景通过，1072.166 秒**，包括调用、取消/重启/磁盘、Node/工具链、artifact/cache、BuildKit → GitOps → Flux 发布/回滚、真实浏览器和登录授权；与上面的内核探针分别统计。
+- **操作与资源**：没有修改 GitHub 仓库、SDK tag、生产镜像或实际 homelab；没有提交/推送。开发业务探针临时使用本机已登录账号读取私有依赖，不代表产品最小权限 job token 已接入；临时凭据文件已删除，容器/临时集群全部清理，公开测试镜像在收尾清理。在线产品兼容范围不变。
+
+证据：`/tmp/forgelet-kernel-comparison-final.log`、`/tmp/forgelet-kernel-candidate-unit-final.log`、
+`/tmp/forgelet-kernel-product-testcontainers.log`、`/tmp/forgelet-kernel-verify-final.log`；
+真实业务失败为 `/tmp/forgelet-kernel-evidence/{upstream,gitea}-steam-ci.log` 与 `/tmp/forgelet-kernel-business.log`；
+stock host race 为 `/tmp/forgelet-kernel-{upstream,gitea}-native-final.log`。
+早期镜像准备、默认 Git 克隆超时、API 地址及测试 fixture 修正前的失败保留在其他 kernel 日志，不计为最终通过。
+
+## 上批：阶段 10 第一批（代码与自动验证完成，未部署 homelab）
+
+- **解析与表达式**：固定 actionlint v1.7.12 和其 YAML v4.0.0-rc.3，workflow 使用标准语法前端与有界 lowering；系统配置仍用 YAML v3。删除旧手写表达式 parser，以固定 act v0.2.89 的 MIT evaluator 源码作局部适配，保留 LICENSE/NOTICE。移除 act runner/model/Git/Docker 依赖与隐式文件访问，控制面仍为 Go；修正递归字符串转数字、null 比较、比较优先级、JSON 数组索引、format 大小/非法占位符和状态函数语义。增加事件对象、索引、对象过滤与格式化 JSON；仍保留上下文和大小限制。
+- **可复用 workflow**：从一次固定提交快照读取同仓库 `./.github/workflows/*.yml/.yaml`，即使辅助 workflow 未被选为顶层触发入口也可被调用。持久化 call_gate → 子 job → call_result；支持嵌套、循环/深度限制、typed inputs/default/required、普通字符串模板、needs 完成后的参数求值、workflow outputs → needs。实际 job 继续使用独立 Pod 和既有 matrix/全局并发；控制节点不占执行额度、不创建 Pod。gate 保留原始触发 inputs，解析出的调用参数单独保存，避免重跑丢失原始参数。
+- **权限与秘密**：支持 contents read/none 的受限声明，调用不能提权；不自动生成 GITHUB_TOKEN。支持显式 `secrets.NAME` 引用映射及 inherit，未传递时为空作用域，嵌套不能恢复已隐藏的 root secret。required 在 admission/rerun 检查配置名称，值仍按执行身份解密领取并脱敏，不持久化明文。
+- **实际业务样本**：收录 steam-tasks 固定提交 8265ad9772c5c92d3724a0372f17c31a4a8e498d 的三份原始 workflow。标准解析通过，产品检查会给出 setup-go@v5/docker Actions 等真实执行能力阻断。没有删减业务步骤，也没有宣称整个应用 CI/image workflow 已成功运行。
+- **本批边界**：远程 reusable ref、调用 job 的 matrix/concurrency、被调用 workflow 的 concurrency、依赖运行期 inputs 的提前执行设置、dynamic matrix、隐式 token/cache 与更多 Actions 后续实现，当前明确诊断。调用内部静态 matrix 已接入逻辑 job 聚合；新 API `workflow_files` 仅用于管理员提供的源码快照，GitHub 正常接入自动加载辅助文件。
+- **修正真实回归发现的问题**：领取后、获取凭据前收到取消时，凭据接口继续拒绝发放，执行器通过原 UID 的 control 状态确认取消并正确上报 cancelled；不能把未确认的权限错误伪装成取消。补齐确定性单测、真实 HTTP/SQLite/执行器集成与真实 Pod 回归。参数求值用 AST 判断 needs/inputs 依赖（包含括号、整对象和动态索引），不再猜测表达式文本；禁止占位值决定早期 profile/name。没有 job output 时 workflow output 返回空值。
+- **自动测试**：最终 `make verify` 通过（真实构建、race 单测/进程内集成、lint/generate、35 个 Vitest、14 组 Chromium）。workflow 覆盖率 **88.2%**；调度核心 reserveGraph **89.6%**、dependencyContext **100%**、调用状态处理 **88.6%**；storage 全包 **77.6%**，不将其混称为核心覆盖率。
+- **Testcontainers**：全量临时 k3s **23 个叶子场景通过，1117.652 秒**，含两个新增调用场景、既有 needs/matrix/COE/fail-fast、70 秒停机恢复、磁盘保护、真实 Node/Composite/setup 工具链、artifact/cache、BuildKit → GitOps → Flux 发布/回滚、4 组真实工作台浏览器与登录授权回归。全量启动后补充的整对象早期设置诊断，另用最新代码/镜像专项 **2 场景通过，217.507 秒**，包含真实 API 拒绝该输入、嵌套调用、secret 脱敏、outputs、同 UID 重启恢复、rerun 参数保留、取消、失败/跳过与无 Pod 控制节点。
+- **测试准备与重现**：早期冷构建/外网镜像拉取导致的准备失败没有计为通过；曾暴露取消竞态和未完成 builder 占用并发的连带失败，均在最终回归重验。提供可选 FORGELET_TEST_GOPROXY / FORGELET_TEST_DEBIAN_MIRROR；本轮 Go 构建用 https://goproxy.cn，Debian 使用官方 HTTPS 源，未关闭 go.sum、校验数据库、CA 或 Debian 签名。FORGELET_TEST_IMAGES 可导入本机缓存的官方 k3s/Registry/BuildKit/Flux 镜像，FORGELET_TEST_KEEP_IMAGE=1 用于调试重试；普通任务仍不使用 Docker。临时集群总 context 40 分钟、Go test 45 分钟，只有集群启动等待放宽至 10 分钟，功能等待/断言保持原值；失败时记录节点/系统 Pod/事件。临时公共依赖缓存代理已停止并清理。
+
+验证日志：`/tmp/forgelet-stage10-verify.log`、`/tmp/forgelet-stage10-testcontainers.log`、`/tmp/forgelet-stage10-calls-testcontainers.log`；覆盖率为 `/tmp/forgelet-stage10-final-coverage.out`。初次全量失败记录保留在 `/tmp/forgelet-stage10-testcontainers-before-fixes.log`，不将旧失败版本的结果当作最终验证。
+
+- **部署与仓库操作**：本批没有修改实际集群、GitHub 仓库、授权或远端提交。沿用 schema v6；新增调用数据在持久化 Plan JSON 内，不需要迁移。
+
+## 阶段 10 前置调研记录（历史）
+
+以下记录为第一批实现前的调研和本机 PoC；本轮产品变更与验证以本页上节为准。目标为完整 GitHub workflow 可运行，尚未运行真实 steam-tasks CI。
+
+- **源码与选型**：首选 actionlint v1.7.12 的 Go Workflow/表达式 AST；表达式优先薄适配 act v0.2.89 pkg/exprparser，执行生命周期借鉴 act host；官方 @actions/workflow-parser/@actions/expressions 0.3.61 作为语义与测试对照。完整 act runner 不接管 SQLite/全局调度，官方 runner 不部署。候选均为 MIT；固定版本与上游限制见 architecture。
+- **实际 PoC**：actionlint、act model、官方 parser 都接受 steam-tasks 三份原始 YAML；官方读取同仓库被调用 workflow 成功。act 与官方的 7 个共享表达式例子一致，另验证 act 对事件对象过滤的求值。act 的表达式包与 actionlint v1.7.12 组合通过这些试验；另运行 act pkg/exprparser 上游测试通过（1.418 秒）。不把小样例当作完整兼容证明。
+- **执行试验**：act host 在 Docker 地址不存在的情况下跑完独立 fixture 的 workflow_call → Composite → 真实 Node 24/main/post → workflow output → needs 下游；另一个用例失败后跳过普通下游、执行 always 清理。首次 fixture 未 checkout 导致本地 Action 不存在，补齐正常 checkout 后通过；不是修改 steam-tasks 来绕过不支持能力。
+- **边界与进度**：生产仍有 permissions/workflow_call/setup-go 等已知阻断；cache/凭据、构建 secret/命名上下文、工具链和 Docker 相关 Actions 运行环境仍需实作。未运行本批 make verify/Testcontainers，未修改 go.mod/产品代码、未部署、未提交或推送；阶段 10 实施顺序已写入 plan，不设审批或基线门禁。
+
+临时试验位于 /tmp/forgelet-workflow-research.TgaxYz，包含各候选的固定依赖、程序与 result.txt，以及 host-runtime.log/host-failure.log。完整设计和来源见 [architecture.md](architecture.md) 阶段 10。
 
 ## 本轮：评估并修正外部 Review（阶段 9）
 
@@ -332,7 +546,7 @@ Action 输入作用域、整体 inputs/matrix 表达式及 pre-if 状态、PR �
 ## 仍未完成
 
 - 磁盘保护只控制新任务调度，运行中写入及去重身份仍会占用空间；其他文件系统不在 data_dir 水位检测范围内。
-- 完整 Marketplace Actions、Docker Actions、reusable workflows、OIDC、fork PR、多租户和 HA 均不在本阶段范围内。
+- 完整 Marketplace Actions、远程 reusable、动态 matrix、artifact v4、OIDC、fork PR、多租户和 HA 尚未承诺；正式 act profile 已支持 Docker Actions，同仓库 reusable 已实现，具体边界见 compatibility。
 - 尚未测量常驻资源；requests/limits 是起始配置，本轮不安排资源基线门禁。
 
 ## 下一阶段

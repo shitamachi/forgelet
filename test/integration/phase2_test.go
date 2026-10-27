@@ -288,9 +288,9 @@ jobs:
 				waitFor(t, ctx, "failed toolchain test cancels active run", func() bool { return get(t, item.ID).State.Terminal() })
 			}
 		}()
-		// These Actions download real toolchains. Allow the workflow's six-minute
+		// These Actions download real toolchains. Allow the workflow's twelve-minute
 		// deadline plus scheduling time, independently of local state transitions.
-		waitForTimeout(t, ctx, "real toolchains finish", 7*time.Minute, func() bool {
+		waitForTimeout(t, ctx, "real toolchains finish", 13*time.Minute, func() bool {
 			item = get(t, item.ID)
 			return item.State.Terminal()
 		})

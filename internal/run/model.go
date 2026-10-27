@@ -76,6 +76,7 @@ type Checkout struct {
 }
 
 type Action struct {
+	Ref        string            `json:"ref,omitempty"`
 	Uses       string            `json:"uses"`
 	Repository string            `json:"repository,omitempty"`
 	SHA        string            `json:"sha,omitempty"`
@@ -103,7 +104,27 @@ type Dependency struct {
 	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
+type CallInput struct {
+	Template bool   `json:"template,omitempty"`
+	Type     string `json:"type"`
+	Value    any    `json:"value"`
+}
 type Plan struct {
+	PackageTokenSecret string               `json:"package_token_secret,omitempty"`
+	GitHubAPIURL       string               `json:"github_api_url,omitempty"`
+	ActionPins         map[string]string    `json:"action_pins,omitempty"`
+	Kernel             string               `json:"kernel,omitempty"`
+	CallValues         map[string]any       `json:"call_values,omitempty"`
+	Control            string               `json:"control,omitempty"`
+	ParentGate         string               `json:"parent_gate,omitempty"`
+	CallInputs         map[string]CallInput `json:"call_inputs,omitempty"`
+	NeedsAliases       map[string]string    `json:"needs_aliases,omitempty"`
+	SecretBindings     map[string]string    `json:"secret_bindings,omitempty"`
+	RestrictSecrets    bool                 `json:"restrict_secrets,omitempty"`
+	RequiredSecrets    []string             `json:"required_secrets,omitempty"`
+	// nil means default capabilities; an empty map explicitly denies them.
+	Permissions              map[string]string     `json:"permissions"`
+	SourceWorkflow           string                `json:"source_workflow,omitempty"`
 	WorkflowName             string                `json:"workflow_name,omitempty"`
 	Group                    string                `json:"group,omitempty"`
 	Matrix                   map[string]any        `json:"matrix,omitempty"`

@@ -25,11 +25,11 @@ forgelet 为我们自己的 k3s homelab 提供低常驻资源的独立 CI/CD。
 - forgelet 自己接收事件、调度、保留日志和历史；不使用 GitHub Runner、ARC 或 Tekton 执行。
 - 目标形态：一个常驻 Go 控制面，SQLite + 单个数据 PVC，按需创建执行 Pod。
 - 当前不需要 CRD、独立 controller 服务、PostgreSQL、消息队列、Loki 或 MinIO。
-- 一个 job attempt 使用一个主 Pod，普通、JS、Composite steps 共享主容器和 workspace。
+- 一个 job attempt 使用一个主 Pod。native steps 共享主容器；显式 act profile 由 supervisor 管理同 Pod 自有引擎中的 job 容器，steps 共享该容器和 workspace。
 - `runs-on` 匹配管理员配置的执行 profile；不承诺 GitHub 托管镜像中的所有工具。
 - Actions 支持必须有明确版本、输入和行为测试；未知字段/能力应给出诊断。
 - JS Actions 使用真实 Node 子进程；Go 内嵌 JS VM 不能代替 Node。
-- 持久化计划只含 secret 引用。执行 Pod 无 Kubernetes API 权限，不挂 Docker socket、hostPath 或 cluster-admin 凭证。
+- 持久化计划只含 secret 引用。执行 Pod 无 Kubernetes API 权限，不挂宿主 Docker socket、hostPath 或 cluster-admin 凭证；act profile 仅使用本 Pod 自有 emptyDir socket。
 - 镜像构建用按需 BuildKit；CD 优先通过托管 GitOps 仓库与 Flux 衔接。
 - 默认单控制面、可配置多任务并发（默认 4）、仅可信仓库；多租户、HA、完整 Actions 兼容不是当前目标。
 
@@ -42,7 +42,7 @@ forgelet 为我们自己的 k3s homelab 提供低常驻资源的独立 CI/CD。
 - 用 `fmt.Errorf("...: %w", err)` 包装错误；无库内 panic、`context.Background()` 或 init 副作用。
 - Context 显式传递；后台工作可取消，时间与外部 I/O 可替换。
 - 快速分阶段交付，随功能运行单测 + 集成测试 + Testcontainers；不单独设基线审核/性能验收门禁。
-- Docker 仅用于 Testcontainers 开发测试，不进入产品执行路径。
+- 默认 native profile 不依赖 Docker；owner 授权的显式 act profile 可为可信仓库按需启动 Pod 自有 privileged Docker，引擎随 job 退出，无空闲常驻服务。不得使用宿主 Docker socket。
 - 新行为有行为测试，修复有回归测试；优先 table-driven。工作流与调度核心覆盖率目标 ≥ 85%。
 - 重启恢复、幂等、安全和取消不能只用 happy-path 或 fake client 验证；需要真实 k3s 测试。
 - `make verify` 执行真实构建、race 单测/进程内集成、lint 和 generate。

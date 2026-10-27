@@ -20,8 +20,59 @@ import (
 
 const SetupGoSHA = "924ae3a1cded613372ab5595356fb5720e22ba16"   // v6.5.0
 const SetupNodeSHA = "249970729cb0ef3589644e2896645e5dc5ba9c38" // v6.5.0
-var refPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_./-]+)?@[a-fA-F0-9]{40}$`)
+// These aliases are immutable, tested releases. Other public Actions require a full SHA.
+var ActVersions = map[string]string{
+	"actions/cache@v4":            "0057852bfaa89a56745cba8c7296529d2fc39830",
+	"docker/login-action@v3":      "c94ce9fb468520275223c153574b00df6fe4bcc9",
+	"docker/metadata-action@v5":   "c299e40c65443455700f0fdfc63efafe5b349051",
+	"docker/build-push-action@v6": "10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
+	"actions/checkout@v4":         "11d5960a326750d5838078e36cf38b85af677262",
+	"actions/setup-go@v5":         "40f1582b2485089dde7abd97c1529aa768e1baff",
+	"codecov/codecov-action@v4":   "b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238",
+}
 
+var shaPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
+
+// RemoteReference parses syntax only. Resolving a mutable ref belongs to source
+// acquisition, never the pure workflow compiler or a running job.
+func RemoteReference(uses string) (*run.Action, error) {
+	source, ref, ok := strings.Cut(uses, "@")
+	parts := strings.SplitN(source, "/", 3)
+	if !ok || len(uses) > 1024 || len(parts) < 2 || !validRef(ref) {
+		return nil, fmt.Errorf("invalid public Action reference %q", uses)
+	}
+	a := &run.Action{Uses: uses, Repository: strings.ToLower(parts[0] + "/" + parts[1]), Ref: ref}
+	if !repositoryPattern.MatchString(a.Repository) {
+		return nil, fmt.Errorf("invalid Action repository")
+	}
+	if len(parts) == 3 {
+		a.Path = parts[2]
+		if a.Path == "" || !safePath(a.Path) {
+			return nil, fmt.Errorf("invalid Action subdirectory")
+		}
+	}
+	if shaPattern.MatchString(ref) {
+		a.SHA = strings.ToLower(ref)
+	}
+	return a, nil
+}
+func validRef(ref string) bool {
+	if ref == "" || len(ref) > 256 || ref == "@" || strings.HasSuffix(ref, ".") || strings.Contains(ref, "..") || strings.Contains(ref, "@{") || strings.ContainsAny(ref, " \\~^:?*[@") {
+		return false
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
+}
 func Reference(uses string) (*run.Action, error) {
 	a := &run.Action{Uses: uses}
 	if BuiltinInputs(uses) != nil {
@@ -34,25 +85,20 @@ func Reference(uses string) (*run.Action, error) {
 		}
 		return a, nil
 	}
-	pinned := uses
+	a, err := RemoteReference(uses)
+	if err != nil {
+		return nil, err
+	}
+	// Retain existing native/legacy plan pins. New act plans resolve the original
+	// Ref independently and persist their own lock, including these old aliases.
+	if sha := ActVersions[uses]; sha != "" {
+		a.SHA = sha
+	}
 	switch uses {
 	case "actions/setup-go@v6.5.0":
-		pinned = "actions/setup-go@" + SetupGoSHA
+		a.SHA = SetupGoSHA
 	case "actions/setup-node@v6.5.0":
-		pinned = "actions/setup-node@" + SetupNodeSHA
-	}
-	if !refPattern.MatchString(pinned) {
-		return nil, fmt.Errorf("unsupported action %q: remote actions require a full commit SHA or a documented pinned version", uses)
-	}
-	repo, sha, _ := strings.Cut(pinned, "@")
-	parts := strings.SplitN(repo, "/", 3)
-	a.Repository = parts[0] + "/" + parts[1]
-	a.SHA = strings.ToLower(sha)
-	if len(parts) == 3 {
-		a.Path = parts[2]
-	}
-	if !safePath(repo) || !safePath(a.Path) {
-		return nil, fmt.Errorf("invalid action repository or path")
+		a.SHA = SetupNodeSHA
 	}
 	return a, nil
 }
@@ -63,7 +109,8 @@ func safePath(p string) bool {
 // Download accepts an injected client for tests; production uses codeload.github.com
 // and no repository credentials. Private remote actions are deliberately unsupported.
 func Download(ctx context.Context, client *http.Client, base string, a run.Action, destination string) error {
-	if a.Repository == "" || len(a.SHA) != 40 {
+	fixed, err := RemoteReference(a.Repository + "@" + a.SHA)
+	if err != nil || fixed.SHA == "" {
 		return fmt.Errorf("action requires immutable source")
 	}
 	if base == "" {

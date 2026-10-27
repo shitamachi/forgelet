@@ -1,6 +1,6 @@
 # forgelet：homelab 设计
 
-更新：2026-10-24。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
+更新：2026-10-26。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
 暂停 spec 模式；设计随代码更新，不设审批或资源基线门禁。
 
 ## 当前结构
@@ -27,8 +27,8 @@ flowchart LR
 - 一个可执行 job 使用一个主 Pod、一个 executor 进程；该 job 的 steps 共享 workspace。
   多个 job 在不同 Pod 并发，不共享环境、输出或工作目录。
 - 原生 Pod 使用 `restartPolicy: Never`，不使用 Kubernetes Job 自动重试。
-  不使用 GitHub Runner、ARC、Tekton、Docker socket 或 DinD。
-- Go >= 1.27，单 module，HTTP/chi、yaml.v3、client-go。executor 不依赖数据库或 Kubernetes client。
+  不使用 GitHub Runner、ARC 或 Tekton。默认 native profile 不使用 Docker；10.5b 显式 act profile 使用 Pod 自有按需 Docker，不挂宿主 socket。
+- Go >= 1.27，单 module，HTTP/chi、actionlint/YAML v4 workflow 前端、YAML v3 系统配置、client-go。executor 不依赖数据库或 Kubernetes client。
 
 SQLite 换来了简单部署，也意味着控制面没有 HA。WAL 不适合共享网络文件系统；k3s local-path
 绑定节点，节点故障需要恢复备份。[SQLite WAL](https://www.sqlite.org/wal.html)、[k3s 存储](https://docs.k3s.io/add-ons/storage)
@@ -36,8 +36,8 @@ SQLite 换来了简单部署，也意味着控制面没有 HA。WAL 不适合共
 ## 一次运行
 
 1. 验证 GitHub webhook HMAC、body 大小、仓库 allowlist 和 delivery ID，先持久化再 ACK。
-2. 从 push commit 或同仓库 PR merge commit 读取 `.github/workflows/*.yml/.yaml`，按 workflow allowlist 筛选。
-3. 检查事件 filters/inputs，快照 vars，校验 needs DAG 并展开静态 matrix；保存计划、组约束及 secret 引用。未知能力给出诊断，可通过 `/api/events` 查询。
+2. 从 push commit 或同仓库 PR merge commit 读取 `.github/workflows/*.yml/.yaml` 完整快照，按 workflow allowlist 筛选触发入口，同时保留辅助调用文件。
+3. 检查事件 filters/inputs，快照 vars，校验 needs DAG，展开同仓库 workflow_call 与静态 matrix；act job 在持久化前将公共 Action ref 与远程 Composite 依赖解析到固定 SHA，再保存 gate/子图/result 计划、组约束及 secret 引用。未知能力给出诊断，可通过 `/api/events` 查询。
 4. SQLite 事务在依赖全部终态后评估 job 条件；检查全局/matrix 额度、并发组与 fail-fast。跳过任务不创建 Pod；领取额度后进入 `starting`。
 5. 创建或核对 Pod，记录 UID。executor 以绑定 Pod 的短时身份领取自己的计划，状态变为 `running`。
 6. 执行真实 shell、checkout builtin、Node 或 Composite Actions；按需领取该任务引用的 secrets。日志按序号上传，结果附最后日志序号，server 核对后接受终态。
@@ -284,3 +284,278 @@ rerun 重新校验仓库启用状态、当前执行 profile 和 BuildKit 能力�
 GET /api/runs 在 SQLite 查询时移除计划的 event/steps/env/vars/inputs/needs_context 及结果 steps/outputs，再解码为列表摘要；GET /api/runs/{id} 和内部 claim 仍返回完整数据。当前继续使用单计划 900 KiB、创建时每 run 合计 16 MiB 的入库限制。调度合入 needs 输出后再次检查单计划上限，超限的 job 在创建 Pod 前失败并给出诊断，不被 COE 忽略；事件/变量改为 run 级共享引用尚未实施。
 
 本批不扩大 GitHub Enterprise clone 支持，不引入可信代理配置。登录限速仍依据直接 RemoteAddr，代理聚合地址会共享每分钟预算；不能直接信任 X-Forwarded-For。blob 目录遇到未知文件继续阻止启动，避免静默吞掉数据目录异常；该目录仅供程序管理，不应放 .DS_Store 等杂项。
+
+
+## 阶段 10：Workflow 引擎选型与拟议接入（2026-10-25）
+
+本节为源码调研与临时 PoC 结论，尚未替换生产解析器或执行器。目标是 `steam-tasks` 的完整 workflow，包括可复用调用、真实 Actions、输出、失败处理和所需运行环境；语法解析成功不计为运行成功。继续保持单常驻 Go 控制面、SQLite 和每 job attempt 一个主 Pod。
+
+| 上游 | 已检查能力与限制 | 拟议使用方式 |
+|---|---|---|
+| [rhysd/actionlint](https://github.com/rhysd/actionlint/blob/v1.7.12/docs/api.md) v1.7.12，MIT | Go Workflow AST、permissions、workflow_call/uses/secrets、表达式 AST 与位置诊断；没有运行时求值/执行；库 API 不承诺 semver | 首选作为解析和表达式语法前端，包在窄适配层后；只使用所需 API，不新增独立 lint/审批门禁 |
+| [nektos/act](https://github.com/nektos/act/tree/v0.2.89/pkg) v0.2.89，MIT | model/exprparser 可独立编译，真实解释器与 reusable/Composite/Node 生命周期、host 执行路径有参考价值；model 不完整保留 permissions/concurrency 等控制面语义；完整 runner 存在 [明确兼容缺口](https://nektosact.com/not_supported.html) | 表达式优先试用 pkg/exprparser 的薄适配，执行生命周期借鉴 host 路径；不把完整 workflow 交给第二套调度器 |
+| [actions/languageservices](https://github.com/actions/languageservices) @actions/workflow-parser / @actions/expressions 0.3.61，MIT | 官方 TypeScript schema/parser/evaluator 与共享 testdata；转换器不是完整运行引擎，当前仅支持 0/1 层引用抓取，不能代替自身持久化规划；README 声明暂不接收贡献，仍处理安全/重大破坏 | 用作语义和测试对照，可复用到前端；不为解析增加常驻 Node 服务 |
+| [actions/runner](https://github.com/actions/runner)，MIT | 官方 worker、file commands 与执行顺序可参考；不是可直接嵌入现有 Go 调度的库 | 查阅行为与测试，不部署 GitHub Runner |
+
+Gitea 官方文档说明其 runner 复用 act fork，说明分层复用的路径可行，但不引入 Gitea 服务或其调度协议。搜索到的旧 `main.workflow` parser 处理历史文件格式，不能拿来替换当前 YAML 解析。
+
+临时模块的 `go list -deps` 显示：actionlint 解析 PoC 为 15 个外部包，act model/exprparser PoC 为 148 个外部包（含 Go Git/SSH 相关依赖），二者均未编入 Docker/Moby 包。这只是依赖检查，不是内存/性能测量；完整 act runner 则依赖容器包，普通 host 执行路径可以不访问 Docker。actionlint v1.7.12 会引入 go.yaml.in/yaml/v4 的 rc 版本，正式引入需固定 module/sum，并保留现有配置解析边界。act 与 actionlint 的组合版本已做小范围验证，尚未成为产品依赖。
+
+拟议处理链为：GitHub 固定提交文件 → actionlint AST → 保留全部执行语义的 forgelet 中间计划 → 引用解析与调用作用域 → 持久化 job 图 → 按需 Pod → 普通/Node/Composite steps。标准字段被识别后由能力层决定如何实现；不把缺少运行能力误报为 YAML 非法，也不静默忽略 permissions、环境或 job 控制字段。
+
+- 可复用 workflow 与普通 Action 是两类节点。调用参数、secrets 显式传递/继承、outputs、调用者上下文和权限上界独立建模；本地调用固定为调用者提交，远程 ref 先解析 SHA。递归和循环有界，父调用结果与实际子 job 状态持久化，重启不重新展开可变分支或重跑完成任务。
+- 表达式统一到成熟 AST/evaluator，按字段可用上下文和求值时机处理；运行期文件函数只访问该 job workspace，不能在控制面扫描本机。dynamic matrix 等等待依赖输出后再展开，保留全局并发、if、COE、fail-fast 与取消规则。
+- 远程 Action tag/branch/SHA 统一解析并锁定；按 action.yml 的 runtime/输入/生命周期执行，逐步移除 setup-go/setup-node 的仓库名特判。缓存、artifact、GITHUB_TOKEN/permissions 属于实际后端能力，不能仅移除校验就宣布兼容；继续保持 secret 引用持久化、受约束短期凭据和脱敏。
+- act host 模式可放在隔离 Pod 内作为步骤执行路径的参考/候选；不允许它接管全局 job 调度，或绕过现有工作负载身份、环境过滤、日志 ACK、结果确认与有界取消。是否局部接入通过具体行为测试决定，不以运行整个 act CLI 代替 forgelet 调度。
+- Docker 相关 Actions 还需要匹配的 Docker/Buildx/远程 BuildKit 能力；Testcontainers、job.container/services 也有运行环境要求。优先验证无 host socket 的按需能力，不把 JS metadata 可执行等同于 Docker 工作流可运行。steam-tasks 的 BuildKit secrets、steam_proto_go 命名上下文、工具链与凭据是完整运行的必要组成，不以删除这些业务步骤作为验收。
+
+已验证：三个候选 parser 均能接受 steam-tasks 原始三份文件，actionlint 保留了调用/继承/permissions，官方转换器通过本地 FileProvider 读取被调用 workflow；act 与官方 evaluator 的 7 个共用小例子结果一致；组合 actionlint v1.7.12 后，act pkg/exprparser 上游测试通过（1.418 秒）。官方 npm 包在 Node 24 中直接导入遇到 JSON module 导入问题，PoC 经 esbuild 打包后通过；未修改上游包。
+
+另用 act host 模式执行自建小 workflow：checkout 本地 fixture → workflow_call/input/secrets inherit → Composite → 真实 Node 24 → post → workflow output → needs 下游成功；失败用例正确跳过普通下游并执行 always 清理。Docker 地址显式指向不存在的 socket。这些是本机研究验证，既不是 steam-tasks CI 成功，也不是 forgelet Pod/重启恢复验证，尚无本批 Testcontainers/homelab 结果。
+
+
+### 阶段 10 第一批实际实现（2026-10-25）
+
+workflow 已切换到与 actionlint v1.7.12 一致的 go.yaml.in/yaml/v4 v4.0.0-rc.3，并用 actionlint 标准 Workflow AST 校验前端。执行计划仍经有界 YAML node lowering，逐字段保留已支持语义并拒绝未实现能力；不是直接把标准 AST 当执行计划。YAML v4 rc 与 actionlint Go API 的升级风险由固定 module/sum 和行为回归约束，其他配置/部署 YAML 继续使用原来的 v3。
+
+表达式删除旧递归下降 parser，使用 actionlint lexer/AST 和固定 act v0.2.89 evaluator 的 MIT 源码局部适配（internal/expression/acteval，含 LICENSE/NOTICE）。不依赖 act module/model/runner，因而不引入其 Git/SSH/Docker 依赖；只新增 actionlint 及其必要依赖，不增加常驻进程。Forgelet adapter 负责上下文白名单、状态函数和 8 KiB/1024 token/深度 64/结果 64 KiB 限制。修正上游字符串数值转换递归求值、null 比较、JSON 索引和 format；lexer 分组补足混合比较的优先级/左结合，仍由上游 AST 解析。hashFiles 没有默认文件系统实现，必须由未来 workspace 能力显式提供。
+
+同仓库调用从 GitHub 固定事件 SHA 的完整文件快照取源；顶层 allowlist/启停只过滤触发入口，不丢弃辅助文件。源码配置和管理 API 使用显式 bundle（最多 100 文件、4 MiB；每份源仍有 1 MiB 限制），纯 workflow 包无外部 I/O。远程调用当前给出能力诊断，尚未实现远程 mutable ref 的固定提交解析。
+
+调用展开为 call_gate、命名空间内的普通 job/matrix 和 call_result，三个部分都写入现有 SQLite Plan JSON。gate 等 needs 后检查 caller if/输入类型并保存独立 CallValues，Inputs 保留原始触发数据；子 job 取得 gate 参数，result 汇总全部子 job 后计算 jobs.*.outputs。全图共用 256 节点限额，调用嵌套最多 8 层且检测循环。逻辑 needs 的别名独立保存，不字符串替换用户表达式；gate 不暴露在用户 needs 上下文。虚拟节点在 SQLite 调度事务内完成、不创建 Pod、不消耗全局执行额度，重启与 rerun 继续使用同一持久化图。调用被跳过时内部 always 也不执行；失败不能被成功 cleanup 覆盖。
+
+秘密只保存 root 名称绑定；没有 secrets 字段时 callee 默认不可访问 root secrets，inherit 继承父作用域，显式映射只能引用 secrets.NAME。required 在创建和重跑检查配置名称；运行时沿 root 名称解密、用 callee 名称注入并注册 mask。contents read/none 不能在调用中提权，none 阻止 checkout；不因此声称支持隐式 GITHUB_TOKEN 或其他 token permissions。调用 job matrix/concurrency、callee concurrency、依赖运行期参数的早期 profile/name 等仍明确拒绝，避免提前使用占位值误运行。
+
+本批不改变数据库 schema、不部署 homelab。steam-tasks 原文件是语法/能力诊断回归样本；其 setup-go@v5、版本文件/缓存、私有依赖 token、Codecov、docker Actions、BuildKit secrets/命名上下文与工具链仍是完整 CI/image 的必要后续工作。
+
+测试镜像支持可选 `FORGELET_TEST_GOPROXY` → Dockerfile `GOPROXY` build arg，应放在 Testcontainers FromDockerfile.BuildArgs（BuildOptionsModifier 的同名字段会被库覆盖）。默认代理与校验策略不变；同时支持 FORGELET_TEST_DEBIAN_MIRROR → DEBIAN_MIRROR，默认 Debian 官方源通过 HTTPS 访问，安装前从固定版本 Go 基础镜像带入系统 CA，安装后由 Debian ca-certificates 包更新。冷缓存网络慢时可覆盖测试构建下载源，不关闭 go.sum、校验数据库或 Debian 签名验证，也不进入产品常驻运行路径。
+
+
+调用参数是否依赖运行期状态统一从表达式 AST 引用判断，覆盖 `needs['job']`、整个 inputs 对象与动态索引；整对象访问不能绕过早期执行设置的 deferred 限制。缺失的 workflow job output 求值为空。领取后若凭据因取消被拒绝，执行器用有界 control 查询确认取消后再上报 cancelled；取消期间仍不授予凭据，未确认的身份/权限错误保持失败。该竞态已由真实 Pod、确定性 HTTP 与 SQLite 集成重验。
+
+临时 k3s 可用 FORGELET_TEST_IMAGES（空格分隔、镜像须已在本机 Docker 缓存）一次导入基础设施镜像，避免默认系统 Pod 在外网拉取时阻塞 PVC。固定 k3s v1.34.4+k3s1 的 local-path/helper 镜像来自[官方 local-storage manifest](https://raw.githubusercontent.com/k3s-io/k3s/v1.34.4%2Bk3s1/manifests/local-storage.yaml)；不替换其实现或跳过安装清单。FORGELET_TEST_KEEP_IMAGE=1 仅用于调试复用构建，容器仍清理；默认仍删除测试构建镜像。本轮调试镜像与临时服务在验证结束后清理。集群准备允许等待 10 分钟，整套 context/Go test 分别限 40/45 分钟，业务断言和任务超时不放宽。
+
+### 阶段 10.5a：job 执行内核实测与选择（2026-10-25）
+
+**优先选择 nektos/act v0.2.89 作为后续单 job worker 的基础，不接入完整 workflow 调度器。**
+这是开发验证后的选型；生产仍使用原执行器，尚未部署候选，也不承诺 stock host 可以直接上线。
+对比工具与固定源码/依赖见 [test/actkernel](../test/actkernel/README.md)。
+
+| 项目 | nektos/act v0.2.89 | gitea/act v0.262.0 |
+|---|---|---|
+| 复用方式 | 导出的 RunContext.Executor，可执行单 job；job logger、ActionCache 可替换 | 同样有窄执行接口，另有 Gitea 的 context/log/volume hooks |
+| GitHub 上下文 | 保留 GitHub API 语义，可通过配置注入 API/context | withGithubEnv 强制写回 instance + `/api/v1`，覆盖已配置的 GITHUB_API_URL；真实 metadata-action 在该路径失败 |
+| 结果适配 | disabled job 返回 skipped，reusable 失败有父 job result | 单 RunContext 的 disabled job 和 reusable 父级可能留下空 result，需平台 adapter 解释，不能当作成功或发布未求值 outputs |
+| 容器依赖 | 当前 Moby api/client 系列，与本项目已有依赖方向较接近 | Docker 24 系列及 Gitea 额外平台行为；嵌入同一产品 module 的维护面较大 |
+| 公共能力 | 真实 Node/Composite/post、同仓库调用、typed inputs/inherit/outputs、缓存冷/热命中、Docker Action | 相同基础用例可运行；GitHub API 地址差异阻断原样 metadata/build-push 链路 |
+| 共同缺口 | stock host PTY AutoStop 的并发读写在 race 检查中失败；完整 workflow 遇子调用失败提前返回，未执行后续 always job | 同左；不是改用另一个 fork 就消失 |
+
+来源：[Gitea 设计](https://docs.gitea.com/1.25/usage/actions/design/)、
+[上游固定源码](https://github.com/nektos/act/tree/v0.2.89)、
+[Gitea 固定源码](https://gitea.com/gitea/act/src/tag/v0.262.0)。
+两个库均为 MIT；均声明 github.com/nektos/act module path，不能在一个 Go module 中同时用不同 replace 比较。
+验证工具在临时目录分别构建，锁定各自 mod/sum；产品 go.mod 不新增执行内核依赖，server 不链接这些包。
+
+拟议生产分工：forgelet 继续持有 actionlint admission、固定快照/Action SHA、权限和 secret 引用、
+SQLite job 图、并发/needs/if、失败传播、取消、重启观测和日志 ACK。
+worker 只处理一个已经解析调用作用域的 job，接收 matrix/needs 结果与该 job 的短期凭据，
+执行上游 Action，并返回步骤结果和 outputs。不会因 PlanJob 包含依赖而重新执行已完成的 job。
+开发 probe 已验证依赖结果注入、选择单 job、skipped 和秘密输出过滤；尚未接到生产 claim/result 协议。
+
+两套库的 ActionCache 接口都允许外部供应源码。PoC 用固定 SHA 的官方 codeload 归档提供
+actions/cache@v4、docker/login-action@v3、metadata-action@v5、build-push-action@v6，
+执行原脚本，不翻译其输入。Gitea 的默认 host 引用还会给该 hook 传相对 URL，adapter 显式处理该差异。
+实际接入应复用 forgelet 有界下载/引用解析；不把临时语料 adapter 的有限来源列表当产品 Marketplace 实现。
+
+按需 Docker 可作为后续可选 profile：同一个 job Pod 的 native sidecar，独享 Docker data、socket、
+workspace/cache emptyDir，主容器终止后 sidecar 退出。普通 job 不启动引擎，空闲时无常驻 Docker 服务。
+PoC 使用 Docker 28.5.1、vfs、privileged/rootful；无宿主 socket、hostPath、Kubernetes token。
+这是执行形态可行性验证，不是 rootless 或生产隔离完成；不改变当前默认安装清单。
+host-mode Docker Action 需要共享文件命令的实际路径；禁止库默认向子容器挂 /var/run/docker.sock，
+只挂该 Pod 自有 cache 目录；Gitea 要额外列入 ValidVolumes。关闭双重 AutoRemove，库显式清理与 Pod 生命周期收尾。
+
+上游 act 的真实 Docker Actions 语料完成 login → metadata → BuildKit secret/命名 context →
+临时 Registry push → pull/run 校验。metadata 使用校验 token 的只读 GitHub HTTP fixture，Registry 是 Pod 内真实服务；
+这不是实际 GitHub App token、GitHub artifact 上传或 steam-tasks 镜像发布成功。
+cache 的冷/热命中为候选内置服务实际协议路径；不把它扩称 cache v2、跨 job/重启配额及生产存储隔离已经接入。
+两套 stock host 都使用可见的 Node 工具；当前试验镜像的 Node 24 能运行这些脚本，
+但不能据此替换本产品已有的 Node 20/24 严格 runtime 选择。
+
+真实业务探针使用 steam-tasks 固定提交的三份原 workflow 校验与干净 archive，运行原 ci → reliability，
+两套库均真实完成 setup-go@v5（go-version-file、Go 1.26.4、cache restore）、私有依赖下载及 go mod verify。
+随后均因 `steam-proto-go v0.6.0` 不包含代码导入的 priceregion 包失败；没有执行到后续 Atlas/race/Codecov。
+SDK 当前提交包含该目录而 v0.6.0 不含，需在业务仓库明确发布/固定对应 SDK，再更新依赖。
+原 image workflow 也未提供 Dockerfile 必需的 steam_proto_go 命名 context。
+本批没有改业务仓库、发布 SDK 或生产镜像；没有以本机工作区 SDK 暗中替代固定依赖。
+
+### 生产形态测试仓库（10.5c）
+
+后续实验改为已有三个专用测试仓库：Go/PostgreSQL 任务 API、固定 tag 的私有 SDK、
+独立 GitOps 配置。先部署健康应用和持久数据库，再运行相同结构的可靠性与镜像 workflows。
+包含 workflow_call/typed inputs/inherit/outputs、真实 Go/race/Atlas/Testcontainers、
+SDK checkout、BuildKit secret/命名 context、真实 GitHub API 与 registry，不再依赖 metadata HTTP fixture。
+实验入口和可重现边界见 [test/productionlike](../test/productionlike/README.md)。
+
+实际 homelab 使用上游 act 的 Docker Exec backend，避免走 stock host PTY；
+仅实验 Pod 按需启动 privileged Docker 28.5.1/overlay2。vfs 曾因超过 12 GiB emptyDir 被驱逐，
+不适合作为这套较大 workflow 的存储驱动。socket、workspace、engine data 均属该 Pod，
+不挂宿主 socket、hostPath 或 Kube 凭据；仍不是生产隔离验收。
+源码和 SDK 使用两个各自仅只读单个测试仓库的 installation token；App 私钥、Forgelet
+operator session 和数据库管理凭据留在外部 operator。Node 20 执行本批 node20 Actions，
+不将该 profile 扩称 Node24 Actions 或 GitHub hosted runner 全工具集。
+
+只有缓存归档持久在独立 local-path PVC，新的 job module/build 目录均为空，必须实际通过缓存服务恢复。
+dispatch event 的 inputs 按字符串传输，再由引擎依据 YAML 类型生成 inputs 上下文；
+请求 PostgreSQL 验收时额外检查对应步骤确实成功，避免条件误跳过仍发布。
+镜像成功并且临时引擎退出后，由 operator 将固定 SHA/digest 交给现有手动 homelab workflow，
+再由产品 GitOps/Flux 发布。这个桥接不代表 act 已接上产品 claim/result、自动 push 调度或重启恢复。
+
+后续生产接入必须修复/替换 stock host 的 PTY 并发路径，继续使用现有可靠执行/取消与日志边界，
+保持真正 Node 版本选择，接入受限 job token 和持久化 cache 服务，再进行原业务 workflow 和重启/取消验证。
+本次按需形态不增加常驻控制服务；没有新增性能审核或 spec 审批门禁。
+
+
+### 阶段 10.5b：正式单 job worker
+
+控制面仍保存 actionlint 编译的 SQLite 图和固定源码快照。profile 决定持久化 `Plan.Kernel`；
+只有显式 `act` profile 才把单个已领取 job 交给独立 `forgelet-act` 子进程。
+不调用 act workflow planner/scheduler；needs、call gate/result、typed inputs、inherit、matrix、并发、
+失败传播和重启调和仍由 forgelet 管理。解析前端与表达式适配也随本批进入产品。
+
+server/native executor 不链接 act runner；MIT act v0.2.89 仅链接可选 worker。
+worker 使用 Docker Exec backend，绕开已观测到 PTY race 的 stock host 路径。
+原 executor 继续监督 claim → 凭据 → 日志 ACK → control → result，使用同一 Pod UID 重启恢复。
+job inputs/strategy 在 adapter 中冻结为持久化值；Action metadata 使用自己的 inputs。
+source actor/job、needs aliases、真实失败 exit code、输出与秘密遮罩经协议返回。
+Node launcher 根据 Action metadata 选择真实 Node20/24；禁止降级为单一 Node。
+
+每个 act attempt 的 Pod 通过 native sidecar 启动 Docker 28.5.1/overlay2，独有 data/socket/workspace emptyDir。
+引擎 privileged/rootful，仅用于管理员信任的仓库/profile，并不是多租户隔离。
+无宿主 socket、hostPath、Kube API token。默认 data 上限 12 GiB、最多可配 64 GiB；
+引擎默认 requests 100m/256Mi，limits 3 CPU/4Gi；普通 job 不启动引擎。
+registry pull Secret 只挂 supervisor；job 容器看不到控制面 workload JWT、App 私钥和 registry pull 配置。
+取消/超时先终止 worker 进程组，再停止本引擎所有容器，确认停止后才上报终态。
+停止确认失败不 ACK result，控制面按实际 Pod 终态恢复额度，避免后台工作继续而并发额度被释放。
+
+缓存使用 job 本地 capability HTTP facade 兼容 Actions cache v1 协议；归档仍保存到现有 blob PVC/API，
+沿用仓库/ref/version、配额、保留和 GC，无额外常驻缓存服务。处理分片、重试、缺口、重复 commit 和清理。
+`repository_tokens` 为管理员配置的 secret 名称→单依赖仓库引用；job 领取后使用源 installation
+临时签发 contents:read token，秘密不进入持久化计划。取消和 UID 身份在外部签发后再次核对。
+持久化明确保留 permissions:null（默认）与 permissions:{}（无权限）的区别，避免省略空 map 后恢复默认签发。
+GitOps/CD 与原生 artifact/builder 继续使用独立 native job，可通过 needs.outputs 接续 act job。
+
+上游依赖 `go-archive` v0.2.0 移除了 act 使用的弃用别名，因此当前固定 v0.1.0；
+核对上游变更仅涉及弃用入口，Moby API/client 未降级。单 module 的产品/Testcontainers 一起验证。
+后续 act 迁移后移除此兼容 pin。
+
+### 阶段 10.5d：公共镜像与日志批量
+
+act profile 的 `image_mirrors` 为管理员维护的有限目录（最多 16 项）：Docker Hub 的显式 tag →
+与 runner 同 registry 的 SHA256 固定源。supervisor 用自己的 pull Secret 拉取，登记原 public tag，
+并核对源/tag 的完整 Docker config ID 相同，然后才启动 worker。失败阻断用户步骤，不回退公网；
+无共享 Docker data，无全局改写 workflow 或 Dockerfile，也不向任务挂载 registry 凭据。
+引擎、runner、镜像目录均按管理员部署配置选择，不接收 workflow 自定义的镜像凭据配置。
+
+这提供本地镜像目录，不等同 Docker Hub 的通用透明代理。普通 pull-if-missing、默认 Testcontainers
+和 Docker driver 构建可复用登记的 tag；`--pull`、强制刷新或其他独立 BuildKit 引擎可能仍访问原源，
+不在此目录覆盖承诺内。更新目录时先按目标架构同步原始 manifest/blob、校验 digest，再更新 profile。
+引擎可使用相同版本的固定 digest 镜像，startup probe 检查实际 Docker 28.5.1；默认仍为原版本 tag。
+
+日志保留原 HTTP/SQLite 协议。同 step 的未发送小写入合并为最多 8 KiB、每 200ms 刷新的块，
+大写入同步发送保留背压，待确认数据仍限制在 1 MiB。每块使用连续 seq，第一次尝试后内容不可再合并，
+即便服务端提交成功但 ACK 丢失也以相同字节重试。处理 Unicode/脱敏尾部时保留完整字符，
+不因 JSON 转换拆坏字符或秘密。取消/超时停止周期上传后，独立有界 context 排空待确认数据，
+最终 result 只携带已确认的 LastLogSeq；上传失败不能报告成功。每个请求仍由 workload 身份授权，
+每块仍在 SQLite 事务内幂等写入，没有新日志服务、协议迁移或消息队列。
+
+### 阶段 10.6b：公共 Action 引用快照
+
+`internal/action.RemoteReference` 只检查 owner/repo[/path]@ref 语法；workflow 编译仍无网络/数据库依赖。
+原生 profile 继续使用原有明确验证的版本和输入；未固定的通用引用要求 act profile。
+控制面在 profile admission 后、保存计划前调用 `action.Resolver`。默认从 GitHub codeload 的精确 tag/branch
+归档头读取 Git 标准 global PAX comment 中的完整 commit ID，立即关闭可变引用流，再从 raw.githubusercontent.com
+按固定 SHA 读取 action.yml / action.yaml。精确 tag 优先，annotated tag 由 Git 归档解引用，缺 commit 标识则失败；
+不使用 prefix matching 或短 SHA 作为固定对象。远程 Composite 的远程依赖同样进入 `Plan.ActionPins`。
+归档 commit 标识依据 [Git archive 格式](https://git-scm.com/docs/git-archive)，不是从目录名猜 SHA。
+这是依赖扫描，不替代 act 的 Action metadata 和执行实现；JS/Composite/pre/post 的行为仍由原 Action/act 提供。
+
+单次解析最多 64 个 repo/ref、64 份 metadata、8 层依赖和 4 MiB metadata，每响应最多 256 KiB；
+整体 90 秒、默认单请求 20 秒，可由调用方 context 取消。重复引用/子目录共享 repo/ref 快照，
+循环、缺失版本、缺 metadata 或不支持的 Node runtime 明确拒绝。路径逐段 URL 编码，防止子目录改变固定 SHA query。
+公共请求不持有安装/OAuth/registry token，不跟随重定向；默认归档头（压缩/展开各最多 1 MiB）与固定 SHA raw 文件路径，
+不消耗 REST core 的匿名 60 次/小时配额。测试已实际发现 REST 配额会影响多仓库使用，未以转发账号 token 规避。
+403/429/5xx、网络或取消作为暂时性源故障，事件保留并按现有退避重试，不永久丢弃事件。
+管理员可用 `action_api_url` 显式选择受控 REST 源 API/测试替身；该路径仍支持有界 annotated tag 对象解引用，
+并受对应上游配额约束。不能由 workflow 提供，拒绝 URL 内凭据/query/fragment。
+没有新增库、服务、持久化镜像仓库或后台刷新器。
+
+SQLite 仍保存原始 uses、解析后的 Action.SHA 和完整依赖锁，只有秘密引用，不增加 schema migration。
+重复 delivery 优先返回已有运行；新运行重新取 ref，重跑复制原计划，控制面重启恢复不重新解析。
+正式 worker 只以计划中的完整 SHA 获取顶层源码，远程 Composite 的可变引用只从锁取值；
+缺锁或不一致时失败，不在线追踪新 tag。旧计划没有锁时保留已有固定别名/SHA 的恢复路径。
+镜像引用和工具下载版本不属于 Git Action ref 锁的承诺范围。
+本批不增加 workspace-local Composite 的远程依赖预扫描；此类未入锁的新 tag 在 worker 明确失败，不能偷偷网络解析。
+
+原始业务验收位于 Testcontainers 的可选场景：用 gh 在外部准备固定提交的干净 Git 快照，
+测试 Pod 只获得这些 Git 对象，原 checkout Action 经 file:// 镜像获取同一 SHA；不带宿主 GitHub 凭据。
+原 workflow、源码与 Dockerfile 不改字节。测试引擎内部将原 registry hostname 指向临时 registry，
+原登录/metadata/build-push 确实执行，manifest 与 Action digest 对照；不操作 homelab DNS 或业务 registry。
+Go/npm 各跑冷/热两次，逐步结果与缓存 hit 必须符合预期。默认磁盘压力场景仍使用 256 MiB tmpfs，
+默认独立 BuildKit 回归使用 129 MiB 不可压缩层验证真实 1 MiB 分块，期间把临时挂载扩至 512 MiB、结束恢复；启用原业务场景后再扩大到有界 2 GiB，容纳实际缓存；这不是生产资源基线门禁。
+
+Action 内的 REST API 也沿用配置的 GitHub provider 地址：新计划保存 `GitHubAPIURL`，
+原生 `github.api_url` / GITHUB_API_URL 与 act 的相应上下文/环境保持一致；重跑不随新配置漂移。
+默认未配置时仍为 api.github.com。拒绝含凭据/query/fragment 的地址，HTTPS 之外只允许 loopback HTTP 测试。
+这和公共 Action 源解析地址是两件事：GitHub API job 凭据只供配置的 provider，
+公开引用解析仍不携带仓库/OAuth token。未由此宣称完整 GHES 或 GraphQL 兼容。
+
+### 阶段 10.6c：独立 BuildKit 与缓存服务
+
+按需 supervisor 继续承接旧 cache v1，并提供 CacheService v2 的三个 JSON RPC，以及
+Azure 风格的 single PUT/block PUT/block list、HEAD 和 range 下载；不引入 Azure SDK、云存储或常驻服务。
+不透明缓存字节仍以有界 tar envelope 写到原 blob/PVC，仓库/ref/version、不可变 key、配额和保留语义不变。
+每 attempt 生成随机能力和带 ac/nbf/exp 的 HMAC JWT，满足 BuildKit 客户端的本地解析；服务端只接受本 attempt
+的精确 token，不将自签 JWT 当 GitHub 账号身份。API 兼容 SDK 的根 /twirp 路径，下载/上传 URL 使用独立随机路径能力。
+监听地址由 downward API 提供 Pod IP，bridge 模式 BuildKit 能访问；不开放 hostNetwork、宿主 socket 或 Kubernetes token。
+服务随 attempt 结束关闭；恢复控制面保留原 Pod、端点与未完成上传，执行 Pod 消失仍按现有规则 interrupted，不重放构建。
+
+每对象最多原 blob 配额 256 MiB（减 envelope），单 block 32 MiB、每上传最多 256 blocks；
+每 attempt 最多 64 个 v2 上传/64 个下载，上传和下载保留 payload 合计最多 512 MiB。
+小对象 single PUT 流式写盘，重复 block、列表和 finalize 需一致；未完整上传不能 finalize。
+完成 block list 后移除原 blocks，重试以已保存的 block/list 摘要校验。single Put Blob 替换未提交分块时也删除旧 blocks，避免磁盘实际占用与 staging 计数脱节。envelope/assembly 与串行下载的临时归档最多各增加一个对象大小，
+磁盘峰值可高于 payload 计数；全部临时文件随 attempt 清理。
+持久对象还受管理员全局 blob 配额约束。BuildKit 逐对象提交，不是整个 workflow 的缓存事务；后续步骤失败不会撤销有效缓存。
+
+profile 的 image_mirrors 中 `moby/buildkit:buildx-stable-1` 固定源会先由 supervisor 用只读 registry 凭据拉取验证，
+再作为顶层 setup-buildx 默认 driver image。act.buildkit_config 可提供默认 BuildKit TOML；原 workflow 显式
+image/driver/config 输入优先，Action 本身仍完成 create/bootstrap/post cleanup。
+这不是独立 BuildKit 自动继承 Docker engine 的全部 image_mirrors；Dockerfile 构建源仍需可达的 upstream 或显式 registry mirror。
+profile 默认配置属于管理员执行环境，不包含写入持久计划的凭据；不将 supervisor registry Secret 挂到内层 builder。
+
+原始 workflow 可声明 packages:write，但只在显式 act profile、push/manual 事件和管理员 package_tokens
+仓库→加密 Secret 名绑定同时存在时准入。计划保存 PackageTokenSecret 引用，领取时读取当前值并再次检查绑定/取消状态。
+源 clone token 与 package token 分开传输，worker 的隐式 checkout 继续使用源只读 token；secrets.GITHUB_TOKEN
+仅在显式 package 能力 job 中绑定包凭据。不自动 mint GitHub 托管 runner token、不扩大 App 安装权限；PR 不领取发布凭据。
+PAT 的实际 registry/repository 范围由管理员配置，YAML 的 packages 声明不能缩减一个过宽 PAT，也不能凭空增加权限；
+当前仅提供显式发布能力，不将 write PAT 宣称为可降权的 packages:read token。
+
+公共 Git 归档只读取 commit 的 PAX header 后会提前关闭大响应；该短读请求使用独立 HTTP 连接，
+避免 HTTP/2 取消流影响下一个归档解析请求。完整 metadata 请求继续使用共享连接池；
+不关闭全局 HTTP/2、不新增代理或 Action 源缓存，取消与原有请求超时仍生效。
+
+业务回归可显式启用 `FORGELET_TEST_PLATFORM_WEB_FIX=1`：只在一次性 Git clone 应用受检源码补丁，
+构造确定性的 fixture commit 供原 checkout 使用；同时记录原提交、执行提交和补丁摘要。
+原始 workflow / Dockerfile 字节不变，owner 仓库、输入快照与 HEAD/index 不改动；默认仍用原始源码。
+这只属于集成测试数据准备，不新增产品执行阶段、隐式源码修补或 GitHub 写入能力。
+
+BuildKit 的缓存客户端实际使用 1 MiB blocks；每对象 256 blocks 才能覆盖现有 256 MiB 对象预算。
+达到 block 数量、对象字节或 attempt 暂存总量上限时分别诊断，不能将三种情况统一当作磁盘额度不足。
+原先的 128 blocks 会让合法的约 128 MiB 层提前失败；修正不增大对象或暂存字节上限。
+
+可选测试工具镜像通过 FORGELET_TEST_TOOL_CACHE_IMAGE 显式提供官方浏览器和完整 Node toolcache，
+避免把重复的公网安装作为业务回归前提。原 setup Actions/安装命令仍执行，pnpm 与 GHA 缓存独立从空开始；
+这不改变 formal executor 镜像或产品默认执行 profile，也不能当作在线工具下载兼容的新验收。
+
+同一 attempt 对已恢复的精确 key/version 重复查询会复用下载 URL 和文件，不重复占暂存额度；
+映射只记录实际命中的不可变对象。fallback 查询仍访问后端，防止新创建的 primary 被旧 fallback 遮蔽。
+v2 RPC 暂存超限返回结构化 resource_exhausted，保留原有字节与对象数量限制。

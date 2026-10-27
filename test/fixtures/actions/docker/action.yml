@@ -1,0 +1,13 @@
+name: Docker command channel fixture
+description: Verify mounted workspace and the real Docker Action output channel
+inputs:
+  value:
+    required: true
+outputs:
+  answer:
+    description: Value emitted through the Docker Action output channel
+runs:
+  using: docker
+  image: Dockerfile
+  args:
+    - ${{ inputs.value }}

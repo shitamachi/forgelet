@@ -1,0 +1,36 @@
+name: Reusable fixture
+on:
+  workflow_call:
+    inputs:
+      label:
+        type: string
+        required: true
+      enabled:
+        type: boolean
+        default: true
+      count:
+        type: number
+        default: 2
+    secrets:
+      TOKEN:
+        required: true
+    outputs:
+      value:
+        value: ${{ jobs.emit.outputs.value }}
+jobs:
+  emit:
+    runs-on: homelab
+    if: inputs.enabled
+    outputs:
+      value: ${{ steps.emit.outputs.value }}
+    steps:
+      - id: emit
+        shell: sh
+        env:
+          LABEL: ${{ inputs.label }}
+          COUNT: ${{ inputs.count }}
+          TOKEN: ${{ secrets.TOKEN }}
+        run: |
+          test "$COUNT" = 2
+          test -n "$TOKEN"
+          printf 'value=%s:%s\n' "$LABEL" "$COUNT" >> "$GITHUB_OUTPUT"

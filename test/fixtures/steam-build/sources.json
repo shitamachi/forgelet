@@ -1,0 +1,26 @@
+{
+  "steam-admin/image.yml": {
+    "repository": "shitamachi/steam-admin",
+    "commit": "2d6d2f5eb0f7236ff68bec49b3db1aa09a38e07d",
+    "path": ".github/workflows/image.yml",
+    "sha256": "fdc2aa8fa1494c451eac9f20e9d9b74b928ccf2b5e9294619bf4456c09141588"
+  },
+  "steam-platform-web/check.yml": {
+    "repository": "shitamachi/steam-platform-web",
+    "commit": "75ed69647af3c5aa4a44c416b5b60d1c491def48",
+    "path": ".github/workflows/check.yml",
+    "sha256": "0ccf43098772113aed178d1a048532b271e664b51f07cfbf0f86f0e4add2297d"
+  },
+  "steam-api/ci.yml": {
+    "repository": "shitamachi/steam-api",
+    "commit": "1992654114520fd13842a212ddebc7ccc8f8a850",
+    "path": ".github/workflows/ci.yml",
+    "sha256": "043a79f3e69926ef24702a9c86ac8d0a346c30abb66251c0b3be3db09670459d"
+  },
+  "steam-login/docker.yml": {
+    "repository": "shitamachi/steam-login",
+    "commit": "0a5ce9753cf4b6f429cf273eea000353a9a19106",
+    "path": ".github/workflows/docker.yml",
+    "sha256": "f91673b8b255d038c7b1a02ae6833bd88e9dc6a44ccd1a47435f0b0d43f08f40"
+  }
+}

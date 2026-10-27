@@ -37,6 +37,7 @@ func runtimeError(err error) error {
 }
 
 type Profile struct {
+	Act            *ActProfile       `yaml:"act,omitempty" json:"act,omitempty"`
 	ControlTimeout time.Duration     `yaml:"control_plane_timeout,omitempty" json:"control_plane_timeout,omitempty"`
 	Build          *BuildProfile     `yaml:"build,omitempty" json:"build,omitempty"`
 	Image          string            `yaml:"image" json:"image"`
@@ -48,6 +49,21 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
+	if p.Act != nil {
+		if p.Build != nil {
+			return errors.New("act and native BuildKit profiles cannot be combined")
+		}
+		if err := p.Act.Validate(); err != nil {
+			return err
+		}
+		runner := p.Image
+		if p.Act.RunnerImage != "" {
+			runner = p.Act.RunnerImage
+		}
+		if err := run.ValidateImageMirrors(runner, p.Act.ImageMirrors); err != nil {
+			return err
+		}
+	}
 	if p.ControlTimeout < 0 || p.ControlTimeout > time.Hour {
 		return errors.New("control_plane_timeout must be between zero and one hour")
 	}
@@ -164,6 +180,12 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 			return "", fmt.Errorf("%w: execution profile does not enable BuildKit", ErrPermanent)
 		}
 		addBuilder(pod, *profile.Build)
+	}
+	if job.Plan.Kernel == "act" {
+		if profile.Act == nil {
+			return "", fmt.Errorf("%w: act job requires an explicit act profile", ErrPermanent)
+		}
+		addAct(pod, *profile.Act, profile.Image)
 	}
 	pod, err = r.Client.CoreV1().Pods(r.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {

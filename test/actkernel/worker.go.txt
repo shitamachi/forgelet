@@ -1,0 +1,442 @@
+package main
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/nektos/act/pkg/common"
+	"github.com/nektos/act/pkg/model"
+	"github.com/nektos/act/pkg/runner"
+	"github.com/sirupsen/logrus"
+)
+
+type request struct {
+	Workdir        string                 `json:"workdir"`
+	Workflow       string                 `json:"workflow"`
+	EventPath      string                 `json:"event_path"`
+	EventName      string                 `json:"event_name"`
+	JobID          string                 `json:"job_id"`
+	Mode           string                 `json:"mode"`
+	Env            map[string]string      `json:"env"`
+	Secrets        map[string]string      `json:"secrets"`
+	Matrix         map[string]interface{} `json:"matrix"`
+	Needs          map[string]dependency  `json:"needs"`
+	CacheDir       string                 `json:"cache_dir"`
+	Cache          bool                   `json:"cache"`
+	Docker         bool                   `json:"docker"`
+	ActionSources  string                 `json:"action_sources"`
+	RunnerImage    string                 `json:"runner_image"`
+	EngineSocket   string                 `json:"engine_socket"`
+	CacheListenIP  string                 `json:"cache_listen_ip"`
+	TimeoutSeconds int                    `json:"timeout_seconds"`
+}
+type dependency struct {
+	Result  string            `json:"result"`
+	Outputs map[string]string `json:"outputs"`
+}
+
+// An ActionCache implementation is a supported library extension in both
+// upstreams. Keep resolution in forgelet and execute identical upstream code.
+// This probe serves only the explicitly pinned public test corpus.
+type archiveCache struct {
+	dir  string
+	pins map[string]string
+}
+
+func (c archiveCache) Fetch(ctx context.Context, key, url, ref, token string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	sha := c.pins[key+"@"+ref]
+	// Gitea's ActionCache hook supplies a relative URL for a default-host uses.
+	// Both probes explicitly configure github.com and serve only this public corpus.
+	if (url != "https://github.com/"+key && url != "/"+key) || sha == "" {
+		return "", fmt.Errorf("action source is not pinned: %s@%s", key, ref)
+	}
+	common.Logger(ctx).Infof("PINNED_ACTION %s@%s %s", key, ref, sha)
+	return sha, nil
+}
+func (c archiveCache) GetTarArchive(ctx context.Context, key, sha, prefix string) (io.ReadCloser, error) {
+	found := false
+	for pin, value := range c.pins {
+		if strings.HasPrefix(pin, key+"@") && value == sha {
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("unknown pinned action archive")
+	}
+	f, err := os.Open(filepath.Join(c.dir, sha+".tar.gz"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(io.LimitReader(gz, 128<<20))
+	var result bytes.Buffer
+	tw := tar.NewWriter(&result)
+	prefix = path.Clean(prefix)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		_, name, ok := strings.Cut(h.Name, "/")
+		if !ok || name == "" {
+			continue
+		}
+		name = strings.TrimSuffix(name, "/")
+		if path.IsAbs(name) || path.Clean(name) != name || strings.HasPrefix(name, "../") {
+			return nil, fmt.Errorf("invalid action archive path")
+		}
+		if prefix != "." {
+			if name == prefix {
+				name = path.Base(name)
+			} else if strings.HasPrefix(name, prefix+"/") {
+				name = strings.TrimPrefix(name, prefix+"/")
+			} else {
+				continue
+			}
+		}
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeDir {
+			return nil, fmt.Errorf("unsupported action archive entry")
+		}
+		h.Name = name
+		if err := tw.WriteHeader(h); err != nil {
+			return nil, err
+		}
+		if _, err := io.Copy(tw, tr); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(result.Bytes())), nil
+}
+
+type response struct {
+	State      string                       `json:"state"`
+	Error      string                       `json:"error,omitempty"`
+	Outputs    map[string]string            `json:"outputs,omitempty"`
+	Steps      map[string]*model.StepResult `json:"steps,omitempty"`
+	Jobs       map[string]string            `json:"jobs,omitempty"`
+	JobOutputs map[string]map[string]string `json:"job_outputs,omitempty"`
+}
+
+type jobLogger struct{ output io.Writer }
+
+// Serialize logs from upstream's command and lifecycle goroutines and redact
+// configured secrets outside the upstream logger as well. Line buffering keeps
+// a secret split across writes from escaping.
+type logBoundary struct {
+	mu      sync.Mutex
+	output  io.Writer
+	pending []byte
+	secrets []string
+}
+
+func (w *logBoundary) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		n := bytes.IndexByte(w.pending, '\n')
+		if n < 0 {
+			break
+		}
+		w.flushLine(w.pending[:n+1])
+		w.pending = w.pending[n+1:]
+	}
+	return len(p), nil
+}
+func (w *logBoundary) flushLine(p []byte) {
+	s := string(p)
+	for _, secret := range w.secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "***")
+		}
+	}
+	_, _ = io.WriteString(w.output, s)
+}
+func (w *logBoundary) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLine(w.pending)
+	w.pending = nil
+}
+func (f jobLogger) WithJobLogger() *logrus.Logger {
+	logger := logrus.New()
+	logger.SetOutput(f.output)
+	logger.SetFormatter(&logrus.JSONFormatter{DisableTimestamp: true})
+	return logger
+}
+
+func execute(ctx context.Context, req request, output io.Writer) (res response) {
+	res.State = "failure"
+	boundary := &logBoundary{output: output}
+	for _, secret := range req.Secrets {
+		boundary.secrets = append(boundary.secrets, secret)
+	}
+	defer boundary.Flush()
+	output = boundary
+	logger := jobLogger{output}.WithJobLogger()
+	ctx = runner.WithJobLoggerFactory(common.WithLogger(ctx, logger), jobLogger{output})
+	if req.Workdir == "" || req.Workflow == "" {
+		res.Error = "workdir and workflow required"
+		return
+	}
+	if req.Mode != "job" && req.Mode != "workflow" {
+		res.Error = "mode must be job or workflow"
+		return
+	}
+	if req.Mode == "job" && req.JobID == "" {
+		res.Error = "job_id required"
+		return
+	}
+	if req.Env == nil {
+		req.Env = map[string]string{}
+	}
+	if req.Secrets == nil {
+		req.Secrets = map[string]string{}
+	}
+	if req.EventName == "" {
+		req.EventName = "push"
+	}
+	if req.CacheDir == "" {
+		req.CacheDir = filepath.Join(req.Workdir, ".probe-cache")
+	}
+	if req.Cache {
+		listenIP := req.CacheListenIP
+		if listenIP == "" {
+			listenIP = "127.0.0.1"
+		}
+		cache, err := startCache(filepath.Join(req.CacheDir, "service"), listenIP, logger)
+		if err != nil {
+			res.Error = fmt.Sprintf("start cache: %v", err)
+			return
+		}
+		defer cache.Close()
+		req.Env["ACTIONS_CACHE_URL"] = cache.ExternalURL() + "/"
+	}
+	cfg := &runner.Config{Actor: "shitamachi", Workdir: req.Workdir, EventPath: req.EventPath, EventName: req.EventName,
+		DefaultBranch: "main", GitHubInstance: "github.com", Platforms: map[string]string{"ubuntu-latest": "-self-hosted", "homelab": "-self-hosted"},
+		Env: req.Env, Secrets: req.Secrets, Token: req.Secrets["GITHUB_TOKEN"], ActionCacheDir: filepath.Join(req.CacheDir, "actions"),
+		LogOutput: true, JSONLogger: true, NoSkipCheckout: false, AutoRemove: false, ContainerDaemonSocket: "-"}
+	// Stock host-mode Docker Actions retain host file-command paths in their
+	// environment. Preserve those paths inside the child container; /cache is a
+	// Pod-owned emptyDir shared only with this job's engine, never a host mount.
+	if req.Docker {
+		cfg.ContainerOptions = "--volume /cache:/cache"
+	}
+	if req.RunnerImage != "" {
+		if !req.Docker || req.EngineSocket != "/run/probe/docker.sock" && req.EngineSocket != "-" {
+			res.Error = "Docker runner requires its Pod-owned engine socket"
+			return
+		}
+		cfg.Platforms = map[string]string{"ubuntu-latest": req.RunnerImage, "homelab": req.RunnerImage}
+		cfg.ContainerDaemonSocket = req.EngineSocket
+		cfg.ContainerArchitecture = "linux/amd64"
+		if req.EngineSocket == "-" {
+			cfg.ContainerOptions = ""
+		}
+	}
+	tune(cfg, req)
+	if req.ActionSources != "" {
+		data, err := os.ReadFile(filepath.Join(req.ActionSources, "pins.json"))
+		var pins map[string]string
+		if err == nil {
+			err = json.Unmarshal(data, &pins)
+		}
+		if err != nil {
+			res.Error = "invalid pinned action sources"
+			return
+		}
+		cfg.ActionCache = archiveCache{dir: req.ActionSources, pins: pins}
+	}
+	var err error
+	if req.Mode == "workflow" {
+		var p model.WorkflowPlanner
+		p, err = planner(filepath.Join(req.Workdir, req.Workflow))
+		if err == nil {
+			var plan *model.Plan
+			plan, err = p.PlanEvent(req.EventName)
+			if err == nil && len(plan.Stages) == 0 {
+				err = fmt.Errorf("event selected no jobs")
+			}
+			if err == nil {
+				var r runner.Runner
+				r, err = runner.New(cfg)
+				if err == nil {
+					err = r.NewPlanExecutor(plan)(ctx)
+				}
+				res.Jobs = map[string]string{}
+				res.JobOutputs = map[string]map[string]string{}
+				for _, s := range plan.Stages {
+					for _, r := range s.Runs {
+						res.Jobs[r.JobID] = r.Job().Result
+						values := map[string]string{}
+						masks := []string{}
+						for _, secret := range req.Secrets {
+							masks = append(masks, secret)
+						}
+						for key, value := range r.Job().Outputs {
+							if !containsMask(value, masks) && !strings.Contains(value, "${{") {
+								values[key] = value
+							}
+						}
+						res.JobOutputs[r.JobID] = values
+					}
+				}
+			}
+		}
+	} else {
+		var wf *model.Workflow
+		var f *os.File
+		f, err = os.Open(filepath.Join(req.Workdir, req.Workflow))
+		if err == nil {
+			wf, err = readWorkflow(f)
+			f.Close()
+		}
+		if err == nil && wf.Jobs[req.JobID] == nil {
+			err = fmt.Errorf("unknown job %q", req.JobID)
+		}
+		if err == nil && wf.Jobs[req.JobID].Uses != "" {
+			err = fmt.Errorf("single job kernel requires a resolved job; caller workflow belongs to forgelet")
+		}
+		if err == nil {
+			for name, dep := range req.Needs {
+				job := wf.Jobs[name]
+				if job == nil {
+					err = fmt.Errorf("unknown dependency %q", name)
+					break
+				}
+				job.Result = dep.Result
+				job.Outputs = dep.Outputs
+			}
+		}
+		if err == nil {
+			wf.File = filepath.Base(req.Workflow)
+			eventJSON := "{}"
+			if req.EventPath != "" {
+				var data []byte
+				data, err = os.ReadFile(req.EventPath)
+				eventJSON = string(data)
+			}
+			if err == nil {
+				rc := &runner.RunContext{Config: cfg, Run: &model.Run{Workflow: wf, JobID: req.JobID}, EventJSON: eventJSON,
+					StepResults: map[string]*model.StepResult{}, Matrix: req.Matrix, Name: req.JobID}
+				rc.ExprEval = rc.NewExpressionEvaluator(ctx)
+				var e common.Executor
+				e, err = rc.Executor()
+				if err == nil {
+					err = e(common.WithJobErrorContainer(runner.WithJobLogger(ctx, req.JobID, req.JobID, cfg, &rc.Masks, req.Matrix)))
+				}
+				res.Outputs = rc.Run.Job().Outputs
+				res.Steps = rc.StepResults
+				if err == nil && rc.Run.Job().Result == "failure" {
+					err = fmt.Errorf("job reported failure")
+				}
+				// Gitea's single RunContext path leaves Result empty for a disabled job
+				// (its runner normally reports this via platform hooks). Never publish its
+				// unevaluated output expressions as successful job results.
+				if err == nil && (rc.Run.Job().Result == "skipped" || rc.Run.Job().Result == "" && len(rc.StepResults) == 0) {
+					res.State = "skipped"
+					res.Outputs = nil
+				}
+				// Match forgelet's output boundary: secrets and runtime add-mask values cannot
+				// escape through result JSON, even when upstream exposes raw step outputs.
+				masks := append([]string{}, rc.Masks...)
+				for _, v := range req.Secrets {
+					masks = append(masks, v)
+				}
+				for k, v := range res.Outputs {
+					if containsMask(v, masks) {
+						delete(res.Outputs, k)
+					}
+				}
+				for _, s := range res.Steps {
+					for k, v := range s.Outputs {
+						if containsMask(v, masks) {
+							delete(s.Outputs, k)
+						}
+					}
+				}
+			}
+		}
+	}
+	if err != nil {
+		res.Error = err.Error()
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		res.State = "cancelled"
+	} else if err == nil && res.State != "skipped" {
+		res.State = "success"
+	}
+	for _, secret := range req.Secrets {
+		if secret != "" {
+			res.Error = strings.ReplaceAll(res.Error, secret, "***")
+		}
+	}
+	return
+}
+
+func containsMask(value string, masks []string) bool {
+	for _, m := range masks {
+		if m != "" && strings.Contains(value, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var req request
+	dec := json.NewDecoder(io.LimitReader(os.Stdin, 4<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		fmt.Fprintln(os.Stderr, "invalid probe request")
+		os.Exit(2)
+	}
+	if req.TimeoutSeconds <= 0 || req.TimeoutSeconds > 3600 {
+		req.TimeoutSeconds = 1200
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(req.TimeoutSeconds)*time.Second)
+	defer cancel()
+	// Upstream may use package-global logging outside the job logger.
+	logrus.SetOutput(os.Stderr)
+	logrus.SetFormatter(&logrus.JSONFormatter{DisableTimestamp: true})
+	result := execute(ctx, req, os.Stderr)
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		os.Exit(2)
+	}
+	if result.State != "success" {
+		os.Exit(1)
+	}
+}

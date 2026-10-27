@@ -151,6 +151,20 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 				continue
 			}
 			eval := dependencyContext(job, byKey)
+			resolved, controlErr := resolveCall(job, byKey, eval)
+			if controlErr != nil {
+				job.State = run.Failed
+				job.Result = &run.Result{State: run.Failed, Error: controlErr.Error()}
+				resolved = true
+			}
+			if resolved {
+				if err := saveJob(ctx, tx, *job); err != nil {
+					return nil, err
+				}
+				byKey = dependencyGroups(jobs)
+				changed = true
+				continue
+			}
 			allowed, err := expression.Evaluate(job.Plan.If, eval)
 			if err != nil {
 				// Compilation normally rejects invalid conditions. A corrupt legacy
@@ -234,9 +248,16 @@ func dependencyContext(job *run.Job, jobs map[string]*run.Job) expression.Contex
 			entry.Outputs = dependency.Result.Outputs
 		}
 		job.Plan.NeedsContext[key] = entry
-		values["needs."+key+".result"] = string(state)
+		local := key
+		if alias, ok := job.Plan.NeedsAliases[key]; ok {
+			local = alias
+		}
+		if key == job.Plan.ParentGate {
+			continue
+		}
+		values["needs."+local+".result"] = string(state)
 		for name, value := range entry.Outputs {
-			values["needs."+key+".outputs."+name] = value
+			values["needs."+local+".outputs."+name] = value
 		}
 		eval.Success = eval.Success && state == run.Succeeded
 	}

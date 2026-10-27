@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/shitamachi/forgelet/internal/action"
 	"github.com/shitamachi/forgelet/internal/blob"
 	"github.com/shitamachi/forgelet/internal/delivery"
 	"github.com/shitamachi/forgelet/internal/kube"
@@ -42,6 +43,7 @@ type authConfig struct {
 	GitHubWebURL           string `yaml:"github_web_url"`
 }
 type config struct {
+	ActionAPIURL         string                     `yaml:"action_api_url"`
 	Auth                 authConfig                 `yaml:"auth"`
 	AdminAccess          string                     `yaml:"admin_access"`
 	Targets              map[string]delivery.Target `yaml:"targets"`
@@ -57,6 +59,8 @@ type config struct {
 	MaxParallel          int                        `yaml:"max_parallel"`
 	Repositories         []string                   `yaml:"repositories"`
 	Workflows            []string                   `yaml:"workflows"`
+	PackageTokens        map[string]string          `yaml:"package_tokens"`
+	RepositoryTokens     server.RepositoryTokens    `yaml:"repository_tokens"`
 	Profiles             map[string]kube.Profile    `yaml:"profiles"`
 	Kubeconfig           string                     `yaml:"kubeconfig"`
 	GitHubAPIURL         string                     `yaml:"github_api_url"`
@@ -317,7 +321,7 @@ func serve(ctx context.Context, path string) error {
 			return err
 		}
 	}
-	app, err := server.New(server.Config{Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, DataDir: cfg.DataDir}, db, runtime, provider)
+	app, err := server.New(server.Config{PackageTokens: cfg.PackageTokens, GitHubAPIURL: cfg.GitHubAPIURL, ActionResolver: &action.Resolver{APIURL: cfg.ActionAPIURL}, RepositoryTokens: cfg.RepositoryTokens, Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, DataDir: cfg.DataDir}, db, runtime, provider)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMaskAcrossEveryChunkBoundary(t *testing.T) {
@@ -49,5 +50,31 @@ func TestLogSinkMaskLimits(t *testing.T) {
 	sink := &logSink{mask: newMasker()}
 	if _, err := sink.Write([]byte("::add-mask::" + strings.Repeat("x", maxLogLine))); err == nil {
 		t.Fatal("accepted oversized add-mask command")
+	}
+}
+
+func TestMaskKeepsUnicodeAcrossByteAndSecretBoundaries(t *testing.T) {
+	for _, secret := range []string{"private-key", "私钥🔑"} {
+		m := newMasker()
+		if err := m.add(secret); err != nil {
+			t.Fatal(err)
+		}
+		input := []byte("开始 🚀 " + secret + " 完成\n")
+		var all bytes.Buffer
+		for _, b := range input {
+			chunk := m.consume([]byte{b}, false)
+			if !utf8.Valid(chunk) {
+				t.Fatalf("invalid chunk: %x", chunk)
+			}
+			all.Write(chunk)
+		}
+		last := m.consume(nil, true)
+		if !utf8.Valid(last) {
+			t.Fatal("invalid final chunk")
+		}
+		all.Write(last)
+		if all.String() != "开始 🚀 *** 完成\n" {
+			t.Fatalf("masked Unicode=%q", all.String())
+		}
 	}
 }

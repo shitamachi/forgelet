@@ -12,12 +12,12 @@ import (
 	"testing"
 )
 
-func TestReferencesAreImmutable(t *testing.T) {
+func TestReferenceSyntaxAndLegacyPins(t *testing.T) {
 	a, err := Reference("actions/setup-go@v6.5.0")
 	if err != nil || a.SHA != SetupGoSHA {
 		t.Fatal(a, err)
 	}
-	for _, input := range []string{"owner/repo@main", "owner/repo@v1", "owner/../repo@" + SetupGoSHA, "./../escape", "docker://alpine", "./a/../../escape"} {
+	for _, input := range []string{"owner/repo@../main", "owner/repo@bad ref", "owner/repo@", "owner/../repo@" + SetupGoSHA, "./../escape", "docker://alpine", "./a/../../escape"} {
 		if _, err := Reference(input); err == nil {
 			t.Error("accepted", input)
 		}
@@ -26,6 +26,11 @@ func TestReferencesAreImmutable(t *testing.T) {
 	if err != nil || a.Path != "path" {
 		t.Fatal(a, err)
 	}
+	a, err = Reference("owner/repo/subdir@release/v1")
+	if err != nil || a.SHA != "" || a.Ref != "release/v1" || a.Path != "subdir" {
+		t.Fatal(a, err)
+	}
+
 }
 func TestDownloadArchiveBoundaries(t *testing.T) {
 	for _, kind := range []string{"valid", "pax", "root directory", "escape", "symlink", "absolute", "duplicate", "oversized"} {

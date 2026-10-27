@@ -110,15 +110,16 @@ func (s *Server) validateManagement(m Management, requireRuntime bool) error {
 			if err := yaml.Unmarshal([]byte(w.Source), &root); err != nil || len(root.Jobs) == 0 {
 				return errors.New("workflow requires valid YAML and jobs")
 			}
-			plans, err := workflow.Validate([]byte(w.Source), run.Event{Repository: w.Repository, WorkflowPath: w.Path, Name: "push", Ref: "refs/heads/main", SHA: strings.Repeat("a", 40)})
+			plans, err := workflow.ValidateFiles([]byte(w.Source), run.Event{Repository: w.Repository, WorkflowPath: w.Path, Name: "push", Ref: "refs/heads/main", SHA: strings.Repeat("a", 40)}, managementSources(m.Workflows, w.Repository))
 			if err != nil {
 				return fmt.Errorf("workflow %s: %w", w.Path, err)
 			}
-			for _, plan := range plans {
-				if _, ok := s.cfg.Profiles[plan.Profile]; requireRuntime && !ok {
-					return fmt.Errorf("unknown execution profile %s", plan.Profile)
+			if requireRuntime {
+				if err := s.validateProfiles(plans); err != nil {
+					return err
 				}
 			}
+
 		}
 	}
 	names := map[string]bool{}
@@ -257,4 +258,24 @@ func (s *Server) eventWorkflows(ctx context.Context, e run.Event) (map[string][]
 		return s.workflowFiles(e.Repository, nil), nil
 	}
 	return s.provider.Workflows(ctx, e)
+}
+
+func managementSources(workflows []WorkflowConfig, repository string) map[string][]byte {
+	files := map[string][]byte{}
+	for _, w := range workflows {
+		if w.Repository == repository && w.Source != "" {
+			files[w.Path] = []byte(w.Source)
+		}
+	}
+	return files
+}
+func (s *Server) sourceBundle(repository string, git map[string][]byte) map[string][]byte {
+	files := map[string][]byte{}
+	for path, data := range git {
+		files[path] = data
+	}
+	for path, data := range managementSources(s.management().Workflows, repository) {
+		files[path] = data
+	}
+	return files
 }

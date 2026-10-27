@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
@@ -361,5 +363,251 @@ func TestRunRemoteControlFailureReportsAcceptedTerminalState(t *testing.T) {
 	defer mu.Unlock()
 	if !saved || result.State != run.Failed || result.Error != "control-plane cancellation status unavailable" {
 		t.Fatalf("saved=%v result=%+v", saved, result)
+	}
+}
+
+func TestCredentialRejectionConfirmsCancellationWithoutStartingCode(t *testing.T) {
+	for _, tc := range []struct {
+		name                            string
+		credentialStatus, controlStatus int
+		cancel                          bool
+		want                            run.State
+	}{
+		{"cancel between claim and credentials", 409, 200, true, run.Cancelled},
+		{"terminating original pod", 401, 200, true, run.Cancelled},
+		{"genuine credential failure", 403, 200, false, run.Failed},
+		{"unconfirmed cancellation remains failure", 401, 401, false, run.Failed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var result run.Result
+			executed := false
+			options := remoteTestOptions(t, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/claim"):
+					plan := remoteTestPlan()
+					plan.SecretNames = []string{"TOKEN"}
+					_ = json.NewEncoder(w).Encode(plan)
+				case strings.HasSuffix(r.URL.Path, "/credentials"):
+					http.Error(w, "denied", tc.credentialStatus)
+				case strings.HasSuffix(r.URL.Path, "/control"):
+					if tc.controlStatus != 200 {
+						http.Error(w, "invalid identity", tc.controlStatus)
+					} else {
+						_ = json.NewEncoder(w).Encode(map[string]bool{"cancel_requested": tc.cancel})
+					}
+				case strings.HasSuffix(r.URL.Path, "/result"):
+					if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+						t.Error(err)
+					}
+					_, _ = w.Write([]byte(`{"saved":true}`))
+				case strings.HasSuffix(r.URL.Path, "/logs"):
+					executed = true
+					http.Error(w, "code must not start", 500)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			if err := RunRemote(t.Context(), options); err == nil {
+				t.Fatal("denied credentials returned success")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if executed || result.State != tc.want || tc.want == run.Cancelled && result.Error != "" {
+				t.Fatal(executed, result)
+			}
+		})
+	}
+}
+
+func TestRemoteBatchesSmallMaskedUnicodeWrites(t *testing.T) {
+	var mu sync.Mutex
+	var logs []run.Log
+	var result run.Result
+	options := remoteTestOptions(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			plan := remoteTestPlan()
+			plan.Steps[0].Run = "printf '::add-mask::private-key\\n'; i=0; while [ \"$i\" -lt 3000 ]; do printf '第%s行 🚀 private-key\\n' \"$i\"; i=$((i+1)); done"
+			_ = json.NewEncoder(w).Encode(plan)
+		case strings.HasSuffix(r.URL.Path, "/control"):
+			_, _ = w.Write([]byte(`{"cancel_requested":false}`))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			var entry run.Log
+			_ = json.NewDecoder(r.Body).Decode(&entry)
+			logs = append(logs, entry)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"seq": entry.Seq})
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			_, _ = w.Write([]byte(`{"saved":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	if err := RunRemote(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var got, want strings.Builder
+	for i, e := range logs {
+		if e.Seq != int64(i+1) || e.StepID != "build" || len(e.Data) > 8<<10 || !utf8.ValidString(e.Data) {
+			t.Fatalf("invalid chunk %d", i)
+		}
+		got.WriteString(e.Data)
+	}
+	for i := range 3000 {
+		fmt.Fprintf(&want, "第%d行 🚀 ***\n", i)
+	}
+	if got.String() != want.String() || len(logs) > 32 || result.LastLogSeq != int64(len(logs)) {
+		t.Fatalf("batch lost/changed logs: chunks=%d bytes=%d expected=%d seq=%d", len(logs), got.Len(), want.Len(), result.LastLogSeq)
+	}
+}
+
+func TestRemoteNeverExtendsAnAttemptedSequenceAfterLostACK(t *testing.T) {
+	var mu sync.Mutex
+	var attempts []run.Log
+	var result run.Result
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	message := strings.Repeat("hello-", 30) + "tail\n"
+	options := remoteTestOptions(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			p := remoteTestPlan()
+			p.SecretNames = []string{"TOKEN"}
+			p.Steps[0].Run = "printf '%s' '" + message + "'; sleep 30"
+			_ = json.NewEncoder(w).Encode(p)
+		case strings.HasSuffix(r.URL.Path, "/credentials"):
+			_, _ = w.Write([]byte(`{"secrets":{"TOKEN":"long-static-secret-0123456789"}}`))
+		case strings.HasSuffix(r.URL.Path, "/control"):
+			_, _ = w.Write([]byte(`{"cancel_requested":false}`))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			var e run.Log
+			_ = json.NewDecoder(r.Body).Decode(&e)
+			attempts = append(attempts, e)
+			if len(attempts) == 1 {
+				cancel()
+				http.Error(w, "ACK lost", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int64{"seq": e.Seq})
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			_, _ = w.Write([]byte(`{"saved":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	if RunRemote(ctx, options) == nil {
+		t.Fatal("cancelled execution succeeded")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 3 || attempts[0] != attempts[1] || attempts[2].Seq != 2 || attempts[1].Data+attempts[2].Data != message || result.LastLogSeq != 2 || result.State != run.Cancelled {
+		t.Fatalf("retry mutated or lost output: %+v result=%+v", attempts, result)
+	}
+}
+
+func TestPeriodicLogFailureStopsCodeEvenWhenFinalFlushRecovers(t *testing.T) {
+	var mu sync.Mutex
+	var result run.Result
+	calls := 0
+	options := remoteTestOptions(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			p := remoteTestPlan()
+			p.Steps[0].Run = "echo alive; sleep 30; touch should-not-exist"
+			_ = json.NewEncoder(w).Encode(p)
+		case strings.HasSuffix(r.URL.Path, "/control"):
+			_, _ = w.Write([]byte(`{"cancel_requested":false}`))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			var entry run.Log
+			_ = json.NewDecoder(r.Body).Decode(&entry)
+			calls++
+			if calls == 1 {
+				http.Error(w, "private-body", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int64{"seq": entry.Seq})
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			_, _ = w.Write([]byte(`{"saved":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	if err := RunRemote(t.Context(), options); err == nil || strings.Contains(err.Error(), "private-body") {
+		t.Fatal("log upload failure not propagated safely", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if result.State != run.Failed || result.LastLogSeq != 1 || calls != 2 {
+		t.Fatalf("unsafe result %+v calls=%d", result, calls)
+	}
+	if _, err := os.Stat(filepath.Join(options.Workspace, "should-not-exist")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("execution outlived log failure")
+	}
+}
+
+func TestJobTimeoutInterruptsPeriodicUploadBeforeBoundedFinalFlush(t *testing.T) {
+	var mu sync.Mutex
+	aborted := false
+	logCalls := 0
+	var result run.Result
+	options := remoteTestOptions(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			p := remoteTestPlan()
+			p.TimeoutSeconds = 1
+			p.SecretNames = []string{"TOKEN"}
+			p.Steps[0].Run = "printf 'enough text to leave a bounded secret tail at timeout\\n'; sleep 30"
+			_ = json.NewEncoder(w).Encode(p)
+		case strings.HasSuffix(r.URL.Path, "/credentials"):
+			_, _ = w.Write([]byte(`{"secrets":{"TOKEN":"a-long-static-secret-0123456789"}}`))
+		case strings.HasSuffix(r.URL.Path, "/control"):
+			_, _ = w.Write([]byte(`{"cancel_requested":false}`))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			var entry run.Log
+			_ = json.NewDecoder(r.Body).Decode(&entry)
+			mu.Lock()
+			logCalls++
+			first := logCalls == 1
+			mu.Unlock()
+			if first {
+				<-r.Context().Done()
+				mu.Lock()
+				aborted = true
+				mu.Unlock()
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]int64{"seq": entry.Seq})
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			mu.Lock()
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"saved":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	options.RetryTimeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	if RunRemote(ctx, options) == nil {
+		t.Fatal("timed-out job succeeded")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if result.State != run.TimedOut || result.LastLogSeq != 2 || !aborted {
+		t.Fatalf("periodic upload blocked local timeout or lost its secret tail: %+v aborted=%v", result, aborted)
 	}
 }

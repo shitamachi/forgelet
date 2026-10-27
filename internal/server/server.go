@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/shitamachi/forgelet/internal/action"
 	"github.com/shitamachi/forgelet/internal/blob"
 	"github.com/shitamachi/forgelet/internal/delivery"
 	"github.com/shitamachi/forgelet/internal/kube"
@@ -88,22 +90,26 @@ type Provider interface {
 }
 
 type Config struct {
-	Auth          AuthConfig
-	AdminAccess   string
-	Targets       map[string]delivery.Target
-	Delivery      *delivery.Coordinator
-	Blobs         *blob.Store
-	SecretKey     []byte
-	Retention     Retention
-	DiskSpace     DiskSpace
-	AdminToken    string
-	WebhookSecret string
-	PublicURL     string
-	MaxParallel   int
-	Repositories  []string
-	Workflows     []string
-	Profiles      map[string]kube.Profile
-	DataDir       string
+	PackageTokens    map[string]string
+	GitHubAPIURL     string
+	ActionResolver   *action.Resolver
+	Auth             AuthConfig
+	AdminAccess      string
+	Targets          map[string]delivery.Target
+	Delivery         *delivery.Coordinator
+	Blobs            *blob.Store
+	SecretKey        []byte
+	Retention        Retention
+	DiskSpace        DiskSpace
+	AdminToken       string
+	WebhookSecret    string
+	PublicURL        string
+	MaxParallel      int
+	Repositories     []string
+	Workflows        []string
+	Profiles         map[string]kube.Profile
+	RepositoryTokens RepositoryTokens
+	DataDir          string
 }
 
 type Server struct {
@@ -120,6 +126,28 @@ type Server struct {
 }
 
 func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, error) {
+	if err := validateGitHubAPIURL(cfg.GitHubAPIURL); err != nil {
+		return nil, err
+	}
+	if cfg.ActionResolver != nil {
+		copied := *cfg.ActionResolver
+		cfg.ActionResolver = &copied
+	}
+	if err := validateRepositoryTokens(cfg.RepositoryTokens); err != nil {
+		return nil, err
+	}
+	if err := validatePackageTokens(cfg.PackageTokens); err != nil {
+		return nil, err
+	}
+	cfg.PackageTokens = maps.Clone(cfg.PackageTokens)
+	bindings := RepositoryTokens{}
+	for source, values := range cfg.RepositoryTokens {
+		bindings[source] = map[string]string{}
+		for name, target := range values {
+			bindings[source][name] = target
+		}
+	}
+	cfg.RepositoryTokens = bindings
 	if err := validateDeliveryConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -184,6 +212,16 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 func cloneProfiles(in map[string]kube.Profile) map[string]kube.Profile {
 	out := make(map[string]kube.Profile, len(in))
 	for k, v := range in {
+		if v.Act != nil {
+			copy := *v.Act
+			copy.ImageMirrors = maps.Clone(v.Act.ImageMirrors)
+			v.Act = &copy
+		}
+		if v.Build != nil {
+			copy := *v.Build
+			copy.Images = append([]string(nil), v.Build.Images...)
+			v.Build = &copy
+		}
 		out[k] = v
 	}
 	return out
@@ -399,17 +437,18 @@ func randomID() (string, error) {
 
 func (s *Server) manual(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		EventName      string         `json:"event_name"`
-		Inputs         map[string]any `json:"inputs"`
-		Files          []string       `json:"changed_files"`
-		Repository     string         `json:"repository"`
-		SHA            string         `json:"sha"`
-		Ref            string         `json:"ref"`
-		Workflow       string         `json:"workflow"`
-		WorkflowPath   string         `json:"workflow_path"`
-		InstallationID int64          `json:"installation_id"`
+		WorkflowFiles  map[string]string `json:"workflow_files"`
+		EventName      string            `json:"event_name"`
+		Inputs         map[string]any    `json:"inputs"`
+		Files          []string          `json:"changed_files"`
+		Repository     string            `json:"repository"`
+		SHA            string            `json:"sha"`
+		Ref            string            `json:"ref"`
+		Workflow       string            `json:"workflow"`
+		WorkflowPath   string            `json:"workflow_path"`
+		InstallationID int64             `json:"installation_id"`
 	}
-	if err := decode(w, r, &input, 1<<20); err != nil {
+	if err := decode(w, r, &input, 6<<20); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -433,7 +472,16 @@ func (s *Server) manual(w http.ResponseWriter, r *http.Request) {
 		input.EventName = "workflow_dispatch"
 	}
 	event := run.Event{Name: input.EventName, Inputs: input.Inputs, Files: input.Files, FilesKnown: input.Files != nil, DeliveryID: "manual-" + id, Repository: input.Repository, SHA: input.SHA, Ref: input.Ref, InstallationID: input.InstallationID, Payload: json.RawMessage(`{}`)}
-	item, err := s.createRun(r.Context(), event, input.WorkflowPath, []byte(input.Workflow))
+	var item run.Run
+	if input.WorkflowFiles != nil {
+		files := map[string][]byte{}
+		for path, source := range input.WorkflowFiles {
+			files[path] = []byte(source)
+		}
+		item, err = s.createRunFiles(r.Context(), event, input.WorkflowPath, []byte(input.Workflow), files)
+	} else {
+		item, err = s.createRun(r.Context(), event, input.WorkflowPath, []byte(input.Workflow))
+	}
 	if err != nil {
 		if errors.Is(err, ErrWorkflow) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -470,8 +518,25 @@ func validatePlanSize(plans []run.Plan) error {
 }
 
 func (s *Server) createRun(ctx context.Context, e run.Event, path string, source []byte) (run.Run, error) {
+	files := s.sourceBundle(e.Repository, nil)
+	if workflow.HasCalls(source) && s.provider != nil {
+		var err error
+		files, err = s.eventWorkflows(ctx, e)
+		if err != nil {
+			return run.Run{}, err
+		}
+		files = s.sourceBundle(e.Repository, files)
+	}
+	return s.createRunFiles(ctx, e, path, source, files)
+}
+func (s *Server) createRunFiles(ctx context.Context, e run.Event, path string, source []byte, files map[string][]byte) (run.Run, error) {
 	e.WorkflowPath = path
 	id := stableID(e.DeliveryID, path)
+	if saved, err := s.store.GetRun(ctx, id); err == nil {
+		return saved, nil
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return run.Run{}, err
+	}
 	vars, err := s.store.Settings(ctx, e.Repository, "vars")
 	if err != nil {
 		return run.Run{}, err
@@ -483,7 +548,7 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	if len(e.Vars) == 0 {
 		e.Vars = nil
 	}
-	plans, err := workflow.Compile(source, e, id)
+	plans, err := workflow.CompileFiles(source, e, id, files)
 	if errors.Is(err, workflow.ErrFilesRequired) {
 		if provider, ok := s.provider.(interface {
 			ChangedFiles(context.Context, run.Event) ([]string, error)
@@ -496,7 +561,7 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 				return run.Run{}, fmt.Errorf("load changed files: %w", err)
 			}
 			e.FilesKnown = true
-			plans, err = workflow.Compile(source, e, id)
+			plans, err = workflow.CompileFiles(source, e, id, files)
 		}
 	}
 	if err != nil {
@@ -505,10 +570,22 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	if len(plans) == 0 {
 		return run.Run{}, fmt.Errorf("%w: workflow has no runnable jobs", ErrWorkflow)
 	}
+	for i := range plans {
+		plans[i].GitHubAPIURL = strings.TrimRight(s.cfg.GitHubAPIURL, "/")
+	}
 	if err := validatePlanSize(plans); err != nil {
 		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	if err := s.validateProfiles(plans); err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
+	}
+	if err := s.resolveActions(ctx, plans); err != nil {
+		return run.Run{}, err
+	}
+	if err := validatePlanSize(plans); err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
+	}
+	if err := s.validateRequiredSecrets(ctx, e.Repository, plans); err != nil {
 		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	item := run.Run{ID: id, DeliveryID: e.DeliveryID, Repository: e.Repository, SHA: e.SHA, Ref: e.Ref, WorkflowPath: path, InstallationID: e.InstallationID, State: run.Queued, CreatedAt: time.Now().UTC()}
@@ -523,11 +600,68 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	return saved, err
 }
 
+func (s *Server) resolveActions(ctx context.Context, plans []run.Plan) error {
+	resolver := action.Resolver{}
+	if s.cfg.ActionResolver != nil {
+		resolver = *s.cfg.ActionResolver
+	}
+	if err := resolver.Resolve(ctx, plans); err != nil {
+		if errors.Is(err, action.ErrUnavailable) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", ErrWorkflow, err)
+	}
+	return nil
+}
+
 func (s *Server) validateProfiles(plans []run.Plan) error {
-	for _, p := range plans {
+	for index := range plans {
+		p := &plans[index]
+		if p.Control != "" {
+			continue
+		}
+		if p.Permissions != nil && p.Permissions["contents"] != "read" {
+			for _, step := range p.Steps {
+				if step.Checkout != nil || step.Action != nil && step.Action.Repository == "actions/checkout" {
+					return fmt.Errorf("checkout requires contents: read")
+				}
+			}
+		}
 		profile, ok := s.cfg.Profiles[p.Profile]
 		if !ok {
 			return fmt.Errorf("unknown execution profile %q", p.Profile)
+		}
+		if err := s.packageAdmission(p, profile.Act != nil); err != nil {
+			return err
+		}
+		if profile.Act != nil {
+			p.Kernel = "act"
+			for _, step := range p.Steps {
+				if step.TimeoutSeconds > 0 {
+					return fmt.Errorf("act profiles currently require job timeout; step timeout remains available on native profiles")
+				}
+				if step.Action != nil {
+					uses := step.Action.Uses
+					if strings.HasPrefix(uses, "forgelet/") || strings.Contains(uses, "artifact@") {
+						return fmt.Errorf("profile %q does not support native forgelet/artifact adapters; use a native job", p.Profile)
+					}
+				}
+			}
+		} else {
+			if p.Kernel == "act" {
+				return fmt.Errorf("profile %q no longer enables act", p.Profile)
+			}
+			for _, step := range p.Steps {
+				if step.Action == nil {
+					continue
+				}
+				if action.ActVersions[step.Action.Uses] != "" && step.Action.Repository != "" || step.Action.Repository == "actions/checkout" {
+					return fmt.Errorf("action %q requires an act execution profile", step.Action.Uses)
+				}
+				if err := action.ValidateNative(step.Action); err != nil {
+					return err
+				}
+			}
 		}
 		if p.NeedsBuild() && profile.Build == nil {
 			return fmt.Errorf("profile %q does not enable BuildKit", p.Profile)
@@ -559,12 +693,17 @@ func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 	for _, j := range old.Jobs {
 		p := j.Plan
 		p.NeedsContext = nil
+		p.CallValues = nil
 		p.AncestorFailed = false
 		p.RunID = id
 		p.JobID = stableID(id, j.ID)
 		plans = append(plans, p)
 	}
 	if err := s.validateProfiles(plans); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if err := s.validateRequiredSecrets(r.Context(), old.Repository, plans); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
@@ -628,10 +767,12 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job is not running", http.StatusConflict)
 		return
 	}
-	needed := false
-	for _, step := range job.Plan.Steps {
-		if step.Checkout != nil {
-			needed = true
+	needed := job.Plan.Kernel == "act" && (job.Plan.Permissions == nil || job.Plan.Permissions["contents"] == "read")
+	if job.Plan.Kernel != "act" {
+		for _, step := range job.Plan.Steps {
+			if step.Checkout != nil {
+				needed = true
+			}
 		}
 	}
 	secrets, secretErr := s.runtimeSecrets(r.Context(), job.Plan)
@@ -639,8 +780,26 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "job secrets unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	packageToken, packageErr := s.packageToken(r.Context(), job.Plan)
+	if packageErr != nil {
+		http.Error(w, "package credential unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	current, stateErr := s.store.GetJob(r.Context(), job.ID)
+	if stateErr != nil {
+		serverError(w, stateErr)
+		return
+	}
+	if current.State != run.Running || current.CancelRequested || current.PodUID != who.PodUID {
+		http.Error(w, "job is no longer running", http.StatusConflict)
+		return
+	}
+	response := map[string]any{"secrets": secrets}
+	if packageToken != "" {
+		response["package_token"] = packageToken
+	}
 	if !needed {
-		writeJSON(w, http.StatusOK, map[string]any{"secrets": secrets})
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	item, err := s.store.GetRun(r.Context(), job.RunID)
@@ -660,7 +819,18 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"clone_url": "https://github.com/" + item.Repository + ".git", "clone_token": token, "secrets": secrets})
+	current, stateErr = s.store.GetJob(r.Context(), job.ID)
+	if stateErr != nil {
+		serverError(w, stateErr)
+		return
+	}
+	if current.State != run.Running || current.CancelRequested || current.PodUID != who.PodUID {
+		http.Error(w, "job is no longer running", http.StatusConflict)
+		return
+	}
+	response["clone_url"] = "https://github.com/" + item.Repository + ".git"
+	response["clone_token"] = token
+	writeJSON(w, http.StatusOK, response)
 }
 func (s *Server) appendLog(w http.ResponseWriter, r *http.Request) {
 	job, who, err := s.authenticate(r)
@@ -811,6 +981,9 @@ func serverError(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
 	message := "operation failed"
 	switch {
+	case errors.Is(err, action.ErrUnavailable):
+		code = http.StatusServiceUnavailable
+		message = err.Error()
 	case errors.Is(err, errRunExpired):
 		code = http.StatusGone
 		message = "run history expired"
@@ -871,6 +1044,7 @@ func (s *Server) Tick(ctx context.Context) error {
 					}
 				}
 			}
+			bundle := s.sourceBundle(e.Repository, files)
 			files = s.workflowFiles(e.Repository, files)
 			paths := make([]string, 0, len(files))
 			for path := range files {
@@ -882,7 +1056,7 @@ func (s *Server) Tick(ctx context.Context) error {
 				if s.managed.Load() == nil && len(s.cfg.Workflows) > 0 && !slices.Contains(s.cfg.Workflows, path) {
 					continue
 				}
-				if _, err = s.createRun(ctx, e, path, files[path]); err != nil {
+				if _, err = s.createRunFiles(ctx, e, path, files[path], bundle); err != nil {
 					if errors.Is(err, errRunExpired) || errors.Is(err, workflow.ErrNotTriggered) {
 						continue
 					} else if errors.Is(err, ErrWorkflow) {

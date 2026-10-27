@@ -12,7 +12,6 @@ func TestCompileDependenciesAndConditions(t *testing.T) {
 on: push
 jobs:
   build:
-    needs: []
     runs-on: linux
     if: github.ref == 'refs/heads/main'
     outputs:

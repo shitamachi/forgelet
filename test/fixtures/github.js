@@ -39,7 +39,9 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
   if (url.pathname === '/app') return send({id:7,slug:'forgelet-integration'});
   if (url.pathname === '/app/installations') return send([{id:7,account:{login:'test',type:'User'},repository_selection:'selected',permissions:{contents:'write',checks:'write'},suspended_at:null}]);
   if (url.pathname.endsWith('/access_tokens')) return send({token: 'integration-installation-token', expires_at: new Date(Date.now() + 3600000).toISOString()}, 201);
-  if (req.headers.authorization !== 'Bearer integration-installation-token') return send({message: 'test auth required'}, 401);
+  if (!/^(Bearer|token) integration-installation-token$/i.test(req.headers.authorization || '')) return send({message: 'test auth required'}, 401);
+  const businessRepo=url.pathname.match(/^\/repos\/shitamachi\/(steam-admin-web|steam-admin|steam-platform-web|steam-login|steam-api)$/)?.[1];
+  if(businessRepo)return send({id:1001,name:businessRepo,full_name:'shitamachi/'+businessRepo,private:true,html_url:'https://github.com/shitamachi/'+businessRepo,default_branch:'main',description:'Original business workflow acceptance',license:null,owner:{login:'shitamachi'}});
   if (url.pathname === '/installation/repositories') return send({total_count:oauthGranted?4:3,repositories:[{id:11,full_name:'test/project',default_branch:'main'},{id:12,full_name:'test/console',default_branch:'main'},{id:13,full_name:'test/onboarding',default_branch:'main'},...(oauthGranted?[{id:14,full_name:'test/oauth',default_branch:'main'}]:[])]});
   if (url.pathname.endsWith('/commits')) return send([{sha:'b'.repeat(40)}]);
   const onboarding = 'name: Onboarding integration\non: push\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - run: echo onboarding-real-k3s\n';
@@ -74,4 +76,4 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
     return;
   }
   return send({message:'unknown test endpoint'},404);
-}).listen(9443, '127.0.0.1');
+}).listen(9443, '0.0.0.0');

@@ -15,7 +15,8 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/rhysd/actionlint"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/shitamachi/forgelet/internal/action"
 	"github.com/shitamachi/forgelet/internal/expression"
@@ -30,43 +31,36 @@ var envIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // Compile returns job plans in job-key order with validated acyclic dependencies. Runtime interpolation is
 // validated here and retained for the executor, after file commands have applied.
 func Compile(source []byte, event run.Event, runID string) ([]run.Plan, error) {
-	return compile(source, event, runID, false)
+	return CompileFiles(source, event, runID, nil)
 }
 
 // Validate checks job semantics even when the supplied event does not match filters.
 // Execution still uses Compile and must satisfy all original triggers.
 func Validate(source []byte, event run.Event) ([]run.Plan, error) {
-	return compile(source, event, "validate", true)
+	return ValidateFiles(source, event, nil)
 }
-func compile(source []byte, event run.Event, runID string, validating bool) ([]run.Plan, error) {
-	if len(source) > maxSourceBytes {
-		return nil, fmt.Errorf("workflow exceeds %d bytes", maxSourceBytes)
-	}
+func (c *bundleCompiler) compile(source []byte, event run.Event, runID string, validating bool, scope callScope) ([]run.Plan, error) {
 	if runID == "" {
 		return nil, fmt.Errorf("workflow run ID is required")
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(source))
-	var doc yaml.Node
-	if err := dec.Decode(&doc); err != nil {
-		return nil, fmt.Errorf("decode workflow: %w", err)
-	}
-	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err != nil {
-			return nil, fmt.Errorf("decode workflow: %w", err)
-		}
-		return nil, fmt.Errorf("workflow must contain exactly one YAML document")
-	}
-	count := 0
-	if err := validateTree(&doc, 0, &count); err != nil {
-		return nil, err
-	}
-	if len(doc.Content) != 1 {
-		return nil, diagnostic(&doc, "workflow must be a mapping")
-	}
-	root, err := mapping(doc.Content[0], "name", "on", "env", "jobs", "concurrency")
+	doc, err := workflowDocument(source)
 	if err != nil {
 		return nil, err
+	}
+	_, parseErrors := actionlint.Parse(source)
+	root, err := mapping(doc.Content[0], "name", "on", "env", "jobs", "concurrency", "permissions", "defaults", "run-name")
+	if err != nil {
+		return nil, err
+	}
+	permissions, err := compilePermissions(root["permissions"], scope.permissions)
+	if err == nil {
+		err = permissionCeiling(permissions, scope.permissions)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if root["run-name"] != nil {
+		return nil, diagnostic(root["run-name"], "execution capability run-name is not implemented")
 	}
 	if validating {
 		if err := validateDispatchDefinition(root["on"]); err != nil {
@@ -83,6 +77,12 @@ func compile(source []byte, event run.Event, runID string, validating bool) ([]r
 	workflowName, err := optionalString(root["name"], "")
 	if err != nil {
 		return nil, err
+	}
+	if scope.gate != "" && root["concurrency"] != nil {
+		return nil, diagnostic(root["concurrency"], "called workflow concurrency is not implemented")
+	}
+	if scope.gate != "" {
+		workflowName = scope.workflowName
 	}
 	if workflowName == "" {
 		workflowName = event.WorkflowPath
@@ -115,6 +115,29 @@ func compile(source []byte, event run.Event, runID string, validating bool) ([]r
 		if err != nil {
 			return nil, err
 		}
+		if fields["uses"] != nil {
+			called, callErr := c.compileCall(jobs[key], key, workflowName, dependencies[key], event, runID, validating, scope, permissions)
+			if callErr != nil {
+				return nil, fmt.Errorf("job %s: %w", key, callErr)
+			}
+			plans = append(plans, called...)
+			continue
+		}
+		for _, earlyField := range []string{"runs-on", "name", "continue-on-error", "concurrency"} {
+			if node := fields[earlyField]; node != nil {
+				data, _ := yaml.Marshal(node)
+				var deferred string
+				_ = expression.ValidateTemplate(string(data), func(ref string) bool {
+					if (ref == "inputs" || strings.HasPrefix(ref, "inputs.")) && runtimeCallReference(ref, scope.deferred) {
+						deferred = ref
+					}
+					return true
+				})
+				if deferred != "" {
+					return nil, diagnostic(node, "%s depends on runtime input %s; deferred execution settings are not implemented", earlyField, deferred)
+				}
+			}
+		}
 		strategy, err := compileStrategy(fields["strategy"])
 		if err != nil {
 			return nil, fmt.Errorf("job %s: %w", key, err)
@@ -140,19 +163,45 @@ func compile(source []byte, event run.Event, runID string, validating bool) ([]r
 			if err != nil {
 				return nil, err
 			}
+			plan.Permissions, err = compilePermissions(fields["permissions"], permissions)
+			if err == nil {
+				err = permissionCeiling(plan.Permissions, scope.permissions)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if err = applyDefaults(&plan, fields["steps"], root["defaults"], fields["defaults"]); err != nil {
+				return nil, err
+			}
+			scope.apply(&plan)
 			plan.SecretNames = secretReferences(plan)
 			plans = append(plans, plan)
-			if len(plans) > 256 {
+			c.count++
+			if c.count > 256 {
 				return nil, diagnostic(root["jobs"], "expanded workflow exceeds 256 jobs")
 			}
 		}
 
 	}
+	if scope.gate == "" {
+		group, cancel, e := concurrency(root["concurrency"], staticWorkflowContext(event, workflowName, runID), referenceScope{})
+		if e != nil {
+			return nil, e
+		}
+		for i := range plans {
+			plans[i].WorkflowConcurrency = group
+			plans[i].WorkflowCancelInProgress = cancel
+		}
+	}
+	if len(parseErrors) > 0 {
+		e := parseErrors[0]
+		return nil, fmt.Errorf("line %d, column %d: workflow syntax: %s", e.Line, e.Column, e.Message)
+	}
 	return plans, nil
 }
 
 func compileJob(node *yaml.Node, key, workflowName string, workflowEnv map[string]string, needs []string, event run.Event, runID string, matrix map[string]any) (run.Plan, error) {
-	fields, err := mapping(node, "name", "runs-on", "env", "steps", "timeout-minutes", "needs", "if", "outputs", "strategy", "continue-on-error", "concurrency")
+	fields, err := mapping(node, "name", "runs-on", "env", "steps", "timeout-minutes", "needs", "if", "outputs", "strategy", "continue-on-error", "concurrency", "permissions", "defaults")
 	if err != nil {
 		return run.Plan{}, err
 	}
@@ -304,7 +353,7 @@ func compileStep(node *yaml.Node, index int, scope referenceScope) (run.Step, bo
 		if err != nil {
 			return run.Step{}, false, err
 		}
-		if uses != "actions/checkout@v4" {
+		if uses != "actions/checkout@v4" || advancedCheckout(fields["with"]) {
 			ref, err := action.Reference(uses)
 			if err != nil {
 				return run.Step{}, false, diagnostic(fields["uses"], "%s", err)
@@ -338,44 +387,7 @@ func compileStep(node *yaml.Node, index int, scope referenceScope) (run.Step, bo
 					return run.Step{}, false, diagnostic(fields["with"], "%s", err)
 				}
 			}
-			if ref.Repository == "actions/setup-go" {
-				if ref.SHA != action.SetupGoSHA {
-					return run.Step{}, false, diagnostic(fields["uses"], "setup-go version has not been validated")
-				}
-				if ref.Inputs["cache"] != "false" {
-					return run.Step{}, false, diagnostic(fields["with"], "setup-go requires cache: false")
-				}
-				for key := range ref.Inputs {
-					if key != "go-version" && key != "cache" && key != "token" {
-						return run.Step{}, false, diagnostic(fields["with"], "unsupported setup-go input %q", key)
-					}
-				}
-				if ref.Inputs["go-version"] == "" || ref.Inputs["token"] != "" {
-					return run.Step{}, false, diagnostic(fields["with"], "setup-go requires go-version and an empty token")
-				}
-				if _, ok := ref.Inputs["token"]; !ok {
-					ref.Inputs["token"] = ""
-				}
-			}
-			if ref.Repository == "actions/setup-node" {
-				if ref.SHA != action.SetupNodeSHA {
-					return run.Step{}, false, diagnostic(fields["uses"], "setup-node version has not been validated")
-				}
-				if ref.Inputs["package-manager-cache"] != "false" || ref.Inputs["cache"] != "" {
-					return run.Step{}, false, diagnostic(fields["with"], "setup-node requires package-manager-cache: false and no cache")
-				}
-				for key := range ref.Inputs {
-					if key != "node-version" && key != "package-manager-cache" && key != "cache" && key != "token" {
-						return run.Step{}, false, diagnostic(fields["with"], "unsupported setup-node input %q", key)
-					}
-				}
-				if ref.Inputs["node-version"] == "" || ref.Inputs["token"] != "" {
-					return run.Step{}, false, diagnostic(fields["with"], "setup-node requires node-version and an empty token")
-				}
-				if _, ok := ref.Inputs["token"]; !ok {
-					ref.Inputs["token"] = ""
-				}
-			}
+
 			step.Action = ref
 			return step, fields["id"] != nil, nil
 		}
@@ -450,7 +462,7 @@ func environment(node *yaml.Node, scope referenceScope) (map[string]string, erro
 	result := make(map[string]string, len(fields))
 	for _, key := range sortedKeys(fields) {
 		value := fields[key]
-		if !envIdentifier.MatchString(key) || strings.HasPrefix(key, "GITHUB_") || strings.HasPrefix(key, "RUNNER_") || strings.HasPrefix(key, "FORGELET_") || key == "NODE_OPTIONS" {
+		if !envIdentifier.MatchString(key) || strings.HasPrefix(key, "GITHUB_") && !run.TokenEnvironment(key, value.Value) || strings.HasPrefix(key, "RUNNER_") || strings.HasPrefix(key, "FORGELET_") || key == "NODE_OPTIONS" {
 			return nil, diagnostic(value, "invalid or reserved environment variable %q", key)
 		}
 		text, err := scalar(value)
@@ -657,4 +669,49 @@ func validateDispatchDefinition(on *yaml.Node) error {
 		return err
 	}
 	return nil
+}
+
+func workflowDocument(source []byte) (*yaml.Node, error) {
+	if len(source) > maxSourceBytes {
+		return nil, fmt.Errorf("workflow exceeds %d bytes", maxSourceBytes)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(source))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("decode workflow: %w", err)
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, fmt.Errorf("decode workflow: %w", err)
+		}
+		return nil, fmt.Errorf("workflow must contain exactly one YAML document")
+	}
+	count := 0
+	if err := validateTree(&doc, 0, &count); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) != 1 {
+		return nil, diagnostic(&doc, "workflow must be a mapping")
+	}
+
+	return &doc, nil
+}
+
+// The original fixed checkout remains available to native profiles. Full checkout
+// inputs are retained for the generic Actions backend and diagnosed at admission.
+func advancedCheckout(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	fields, err := mapping(node)
+	if err != nil {
+		return true
+	}
+	for name := range fields {
+		if name != "path" && name != "fetch-depth" {
+			return true
+		}
+	}
+	return false
 }

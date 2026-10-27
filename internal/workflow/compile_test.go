@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shitamachi/forgelet/internal/action"
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
@@ -93,7 +94,7 @@ func TestCompileRejectsUnsupportedAndInvalidWorkflows(t *testing.T) {
 	tests := []struct {
 		name, document, want string
 	}{
-		{"unknown top-level", "on: push\npermissions: write-all\njobs: {}", `unsupported field "permissions"`},
+		{"unknown top-level", "on: push\npermissions: write-all\njobs: {}", `execution capability permissions`},
 		{"job continue on error", job("    continue-on-error: yes\n", "      - run: echo ok\n"), "expected boolean"},
 		{"matrix", job("    strategy: {matrix: {go: []}}\n", "      - run: true\n"), "nonempty scalar array"},
 		{"duplicate", "on: push\non: push\njobs: {}", "duplicate field"},
@@ -131,9 +132,8 @@ func TestCompileRejectsUnsupportedAndInvalidWorkflows(t *testing.T) {
 		{"step ID collision", job("", "      - id: test\n        run: echo one\n      - id: test\n        run: echo two\n"), "duplicate step ID"},
 		{"step ID reserved", job("", "      - id: __step_1\n        run: echo ok\n"), "reserved step ID"},
 		{"step ID invalid", job("", "      - id: 'bad id'\n        run: echo ok\n"), "invalid or reserved"},
-		{"unknown action", job("", "      - uses: actions/setup-go@v5\n"), "unsupported action"},
-		{"checkout other version", job("", "      - uses: actions/checkout@v6\n"), "unsupported action"},
-		{"checkout unknown input", job("", "      - uses: actions/checkout@v4\n        with: {token: secret}\n"), `unsupported field "token"`},
+		{"missing action ref", job("", "      - uses: actions/setup-go\n"), "invalid public Action reference"},
+		{"invalid action ref", job("", "      - uses: actions/checkout@../main\n"), "invalid public Action reference"},
 		{"checkout path escape", job("", "      - uses: actions/checkout@v4\n        with: {path: ../escape}\n"), "inside the workspace"},
 		{"checkout dynamic path", job("", "      - uses: actions/checkout@v4\n        with: {path: '${{ env.PATH }}'}\n"), "static path"},
 		{"checkout bad depth", job("", "      - uses: actions/checkout@v4\n        with: {fetch-depth: -1}\n"), "nonnegative integer"},
@@ -143,7 +143,7 @@ func TestCompileRejectsUnsupportedAndInvalidWorkflows(t *testing.T) {
 		{"timeout excessive", job("", "      - run: echo ok\n        timeout-minutes: 1441\n"), "integer from 1"},
 		{"timeout invalid", job("    timeout-minutes: 1.5\n", "      - run: echo ok\n"), "integer from 1"},
 		{"unknown context", job("", "      - run: echo '${{ unknown.TOKEN }}'\n"), "unsupported expression"},
-		{"functions", job("", "      - run: echo '${{ toJSON(github) }}'\n"), "unsupported expression"},
+
 		{"unclosed expression", job("", "      - run: echo '${{ env.A'\n"), "unterminated expression"},
 		{"future output", job("", "      - run: echo '${{ steps.later.outputs.a }}'\n      - id: later\n        run: echo ok\n"), "unsupported expression"},
 		{"anchor", "on: push\njobs: &jobs {}", "anchors and aliases"},
@@ -202,6 +202,10 @@ func TestValidatedSetupActionInputs(t *testing.T) {
 	} {
 		t.Run(tc.uses+tc.inputs, func(t *testing.T) {
 			plans, err := Compile([]byte(job("", "      - uses: "+tc.uses+"\n        with: "+tc.inputs+"\n")), testEvent, "setup")
+			if err != nil {
+				t.Fatalf("standard workflow was rejected before profile admission: %v", err)
+			}
+			err = action.ValidateNative(plans[0].Steps[0].Action)
 			if tc.want {
 				if err != nil || plans[0].Steps[0].Action.Inputs["token"] != "" {
 					t.Fatal(plans, err)

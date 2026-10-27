@@ -44,18 +44,55 @@ func applyInCluster(t *testing.T, ctx context.Context, cluster testcontainers.Co
 	must(t, cluster.CopyToContainer(ctx, data, "/tmp/forgelet-test-apply.yaml", 0600))
 	clusterCommand(t, ctx, cluster, "kubectl", "apply", "--server-side", "--field-manager=forgelet-test", "-f", "/tmp/forgelet-test-apply.yaml")
 }
+
+// Retry only manifest transport and transient HTTP failures; never turn an
+// unavailable or truncated Flux install into a successful delivery test.
+func downloadFluxManifest(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	var last error
+	for attempt := range 3 {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			last = err
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, (4<<20)+1))
+		_ = response.Body.Close()
+		if err != nil {
+			last = err
+			continue
+		}
+		if len(data) > 4<<20 {
+			return nil, fmt.Errorf("Flux manifest exceeds 4 MiB")
+		}
+		if response.StatusCode == http.StatusOK {
+			return data, nil
+		}
+		last = fmt.Errorf("download Flux: HTTP %d", response.StatusCode)
+		if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
+			return nil, last
+		}
+	}
+	return nil, fmt.Errorf("download Flux after retries: %w", last)
+}
+
 func installFlux(t *testing.T, ctx context.Context, cluster testcontainers.Container) {
 	t.Helper()
-	request, err := http.NewRequestWithContext(ctx, "GET", "https://github.com/fluxcd/flux2/releases/download/v2.6.4/install.yaml", nil)
+	data, err := downloadFluxManifest(ctx, &http.Client{Timeout: time.Minute}, "https://github.com/fluxcd/flux2/releases/download/v2.6.4/install.yaml")
 	must(t, err)
-	client := &http.Client{Timeout: time.Minute}
-	response, err := client.Do(request)
-	must(t, err)
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != 200 {
-		t.Fatalf("download Flux: %d", response.StatusCode)
-	}
-	decoder := yaml.NewYAMLOrJSONDecoder(io.LimitReader(response.Body, 4<<20), 4096)
+	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
 	var manifest bytes.Buffer
 	for {
 		var object map[string]any

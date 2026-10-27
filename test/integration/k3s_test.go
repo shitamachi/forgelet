@@ -32,6 +32,7 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,19 +49,32 @@ const token = "test-only-admin-token-not-for-production"
 
 // TestK3sConcurrentExecution starts a disposable cluster; it never reads the user's kubeconfig.
 func TestK3sConcurrentExecution(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Minute)
+	timeout := 55 * time.Minute
+	if os.Getenv("FORGELET_TEST_BUILD_BUSINESS_DIR") != "" {
+		timeout = 90 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	root, err := filepath.Abs("../..")
 	must(t, err)
 
 	tag := fmt.Sprintf("test-%d", time.Now().UnixNano())
 	image := "forgelet-integration:" + tag
-	imageContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: testcontainers.ContainerRequest{FromDockerfile: testcontainers.FromDockerfile{Context: root, Repo: "forgelet-integration", Tag: tag, BuildOptionsModifier: func(options *dockerclient.ImageBuildOptions) { options.Target = "integration" }}}, Started: false})
+	buildArgs := map[string]*string{}
+	if proxy := os.Getenv("FORGELET_TEST_GOPROXY"); proxy != "" {
+		buildArgs["GOPROXY"] = &proxy
+	}
+	if mirror := os.Getenv("FORGELET_TEST_DEBIAN_MIRROR"); mirror != "" {
+		buildArgs["DEBIAN_MIRROR"] = &mirror
+	}
+	imageContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: testcontainers.ContainerRequest{FromDockerfile: testcontainers.FromDockerfile{Context: root, Repo: "forgelet-integration", Tag: tag, BuildArgs: buildArgs, KeepImage: os.Getenv("FORGELET_TEST_KEEP_IMAGE") == "1", BuildLogWriter: os.Stdout, BuildOptionsModifier: func(options *dockerclient.ImageBuildOptions) {
+		options.Target = "integration-act"
+	}}}, Started: false})
 	if imageContainer != nil {
 		testcontainers.CleanupContainer(t, imageContainer)
 	}
 	must(t, err)
-	cluster, err := k3s.Run(ctx, "rancher/k3s:v1.34.4-k3s1", testcontainers.WithExposedPorts("30080/tcp"), testcontainers.WithCmdArgs("--disable=metrics-server"),
+	cluster, err := k3s.Run(ctx, "rancher/k3s:v1.34.4-k3s1", testcontainers.WithExposedPorts("30080/tcp", "30500/tcp"), testcontainers.WithCmdArgs("--disable=metrics-server"),
 		// Bound only local-path PVC storage in this disposable container. Pressure
 		// tests write real blocks without filling the Docker host or node root disk.
 		testcontainers.WithHostConfigModifier(func(hc *dockercontainer.HostConfig) {
@@ -72,13 +86,37 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		testcontainers.CleanupContainer(t, cluster)
 	}
 	must(t, err)
-	must(t, cluster.LoadImages(ctx, image))
+	images := append([]string{image}, strings.Fields(os.Getenv("FORGELET_TEST_IMAGES"))...)
+	must(t, cluster.LoadImages(ctx, images...))
 	kubeconfig, err := cluster.GetKubeConfig(ctx)
 	must(t, err)
 	restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
 	must(t, err)
 	client, err := kubernetes.NewForConfig(restConfig)
 	must(t, err)
+	// Kubelet may have started a slow external pull before LoadImages finished.
+	// Recreate only unready system Pods whose exact images were preloaded.
+	preloaded := map[string]bool{}
+	for _, name := range images {
+		preloaded[name] = true
+	}
+	pods, err := client.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+	must(t, err)
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != corev1.PodPending || pod.DeletionTimestamp != nil {
+			continue
+		}
+		loaded := len(pod.Spec.Containers) > 0
+		for _, container := range pod.Spec.Containers {
+			loaded = loaded && preloaded[container.Image]
+		}
+		if loaded {
+			err := client.CoreV1().Pods("kube-system").Delete(ctx, pod.Name, metav1.DeleteOptions{})
+			if !apierrors.IsNotFound(err) {
+				must(t, err)
+			}
+		}
+	}
 	cert, key := testCertificate(t)
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(cert) {
@@ -94,6 +132,24 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		if t.Failed() {
 			diagnosticCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
+			nodes, _ := client.CoreV1().Nodes().List(diagnosticCtx, metav1.ListOptions{})
+			if nodes != nil {
+				for _, node := range nodes.Items {
+					t.Logf("node %s conditions=%v taints=%v", node.Name, node.Status.Conditions, node.Spec.Taints)
+				}
+			}
+			systemPods, _ := client.CoreV1().Pods("kube-system").List(diagnosticCtx, metav1.ListOptions{})
+			if systemPods != nil {
+				for _, pod := range systemPods.Items {
+					t.Logf("system pod %s phase=%s containers=%v", pod.Name, pod.Status.Phase, pod.Status.ContainerStatuses)
+				}
+			}
+			events, _ := client.CoreV1().Events("").List(diagnosticCtx, metav1.ListOptions{Limit: 100})
+			if events != nil {
+				for _, event := range events.Items {
+					t.Logf("event %s/%s %s: %s", event.Namespace, event.InvolvedObject.Name, event.Reason, event.Message)
+				}
+			}
 			pods, _ := client.CoreV1().Pods("forgelet").List(diagnosticCtx, metav1.ListOptions{})
 			if pods != nil {
 				for _, p := range pods.Items {
@@ -104,7 +160,7 @@ func TestK3sConcurrentExecution(t *testing.T) {
 			}
 		}
 	})
-	waitFor(t, ctx, "server readiness", func() bool {
+	waitForTimeout(t, ctx, "server readiness", 10*time.Minute, func() bool {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
 		must(t, err)
 		resp, err := httpClient.Do(req)
@@ -127,6 +183,7 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		must(t, json.Unmarshal(request(t, "GET", "/api/runs/"+id, nil, 200), &item))
 		return item
 	}
+	testWorkflowCalls(t, ctx, cluster, client, httpClient, endpoint, root, request, get)
 	t.Run("resolved needs plan stays below the claim limit", func(t *testing.T) {
 		producer := func(key string) string {
 			return fmt.Sprintf(`  %s:
@@ -463,6 +520,11 @@ jobs:
 	})
 	testDiskPressure(t, ctx, cluster, client, httpClient, endpoint, request, create, get)
 	testPhaseThree(t, ctx, cluster, client, httpClient, endpoint, root, request, create, get)
+	testBatchedLogRestart(t, ctx, cluster, client, httpClient, endpoint, create, get, request)
+	testActJobs(t, ctx, cluster, client, httpClient, endpoint, image, request, create, get)
+	testBuildxCache(t, ctx, cluster, client, httpClient, endpoint, image, request, create, get)
+	testBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)
+	testBuildBusinessWorkflows(t, ctx, cluster, client, httpClient, endpoint, image, root, request, get)
 	testPhaseTwo(t, ctx, client, httpClient, endpoint, root, request, create, get)
 	testWebConsole(t, ctx, client, httpClient, endpoint, root)
 	testAuthentication(t, ctx, cluster, client, httpClient, endpoint, root)

@@ -1,7 +1,11 @@
 # GitHub Actions 兼容范围
 
-更新：2026-10-23。阶段 3 后实现以下子集，测试结果见 [status.md](status.md)。
+更新：2026-10-25。包含阶段 10 第一批，以下为实际实现的子集，测试结果见 [status.md](status.md)。
 forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为，不提供完整 GitHub Actions 云服务。
+
+专用生产形态测试仓库的 act/Docker 实验单独记录在 [test/productionlike](../test/productionlike/README.md)。
+它执行官方 Actions 并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry，镜像通过现有手动
+CD 入口交给 Flux；尚未接管产品 executor，因此不能用该实验扩大本页的线上兼容承诺。
 
 ## Workflow 与触发
 
@@ -11,7 +15,9 @@ forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为�
 | push | 分支/tag；branches、branches-ignore、tags、tags-ignore、paths、paths-ignore |
 | pull_request | 仅同仓库可信 PR，使用 payload 中完整 merge commit SHA；默认 opened/synchronize/reopened，可显式添加 ready_for_review |
 | workflow_dispatch | forgelet 管理 API 提交源码与 inputs；string、boolean、number、choice、default、required；不是 GitHub 的 Run workflow 按钮 |
-| job | name、runs-on、needs、if、outputs、env、steps、timeout-minutes、strategy、continue-on-error、concurrency |
+| job | name、runs-on、needs、if、outputs、env、steps、timeout-minutes、strategy、continue-on-error、concurrency；同仓库 reusable uses/with/secrets 见下 |
+| 标准前端 | actionlint v1.7.12 + YAML v4.0.0-rc.3；标准语法通过后仍检查具体执行能力；root/job defaults.run 支持 sh/bash 和 workspace 内 working-directory；run-name 明确未实现 |
+| permissions | contents: read/none，调用不能提权；none 禁止 checkout。act 的显式 packages:write 另需管理员 Secret 引用绑定，见下文；其他权限诊断 |
 | shell step | id/name/if/continue-on-error/run/env/shell/working-directory/timeout-minutes；真实 bash（默认）或 sh |
 | 共享状态 | 同 job 内 shell、JS、Composite 共享 workspace、GITHUB_ENV、GITHUB_PATH；输出使用 GITHUB_OUTPUT；shell export 不跨 step |
 | 配额 | 最多 64 个逻辑 job、展开后合计 256 个 job，每 job 最多 256 steps；默认 job 超时 20 分钟，可设整数 1–1440 分钟 |
@@ -46,7 +52,7 @@ Fork PR 忽略且不持久化执行事件；没有 merge SHA 的同仓库 PR 明
 - 单 step 超时仍可执行后续 failure/always 清理，但 job 保持 timed_out。整个 job 超时或显式取消停止新代码，
   不再启动该 job 的清理 step 或 Action post；取消整个 run 也取消排队 job。这与 GitHub 的取消流程有差异。
 - job outputs 在 steps 结束后求值，支持显式 steps 和直接 needs；不支持 env。每组最多 100 项/64 KiB，
-  全部 step outputs 合计限 64 KiB；含注册 mask 的值不发布到历史或下游。
+  全部 step outputs 合计限 64 KiB；含注册 mask 的值不发布到历史或下游。可复用 workflow 引用未发布的 job output 时为空值。
 
 单 Plan 序列化限制为 900 KiB，创建时所有 Plan 合计最多 16 MiB；调度合入 needs 输出后再次检查单 Plan 限制，超限在创建 Pod 前失败并保留诊断，COE 不会忽略。
 
@@ -68,7 +74,7 @@ failure 包含传递祖先失败，timed_out/interrupted 在条件上下文映�
 | 执行时 | workflow/job env、step if/env/run/with/工作目录、step continue-on-error；按位置增加 matrix/strategy/env/先前 steps/直接 needs |
 | Action 内 | inputs 是当前 Action 的输入；Composite steps 有独立 steps 上下文，可用 github.action_path；STATE 仅提供给对应 JS 生命周期 |
 
-可用 github 属性：sha、ref、ref_name、repository、repository_owner、event_name、actor、head_ref、base_ref、
+可用 github 属性：sha、ref、ref_name、ref_type、repository、repository_owner、event_name、actor、head_ref、base_ref、
 workflow、job、run_id、server_url、api_url。run_id 是 forgelet ID；地址为 github.com/api.github.com。
 可用 `matrix.KEY`、`inputs.KEY`、`vars.NAME`、`env.NAME`、`needs.ID.result/outputs.NAME`、
 `steps.ID.outputs.NAME/outcome/conclusion`、`strategy.job-index/job-total/max-parallel/fail-fast`、
@@ -77,10 +83,27 @@ workflow、job、run_id、server_url、api_url。run_id 是 forgelet ID；地址
 同层 env 不互相引用；step 自己的 env 在 if 前合并，覆盖不泄漏到下一步；GITHUB_ENV 才会传递。
 secret 只允许执行字段引用，不进入调度条件；通过 workflow env 或 with 传给自定义 Action。
 表达式上限 8 KiB、1024 token、深度 64；函数结果/输出有大小限制，单次插值最多 1 MiB。
-不支持数组/对象索引、对象过滤、任意 github.event、hashFiles、动态 matrix、完整 GitHub 上下文。
+支持字符串属性索引、整数数组索引、对象过滤和原始 github.event payload；needs/steps 仍只含已允许的直接依赖/先前步骤。toJSON 使用格式化 JSON。控制面/原生表达式适配器的 hashFiles 当前明确缺少 workspace 能力，不会扫描控制面文件系统；act steps 使用上游 workspace 求值器，不能据此推导控制面规划也支持 hashFiles。动态 matrix、对象/数组之间的直接比较和完整 GitHub 云上下文尚未实现。
 未知语法/引用在相应编译阶段诊断，包含不会执行的短路分支；未知 Action 输入在加载 metadata 后诊断。
 
+## 可复用 Workflow（阶段 10 第一批）
+
+- 支持 job `uses: ./.github/workflows/file.yml` / `.yaml`，从调用者同一次固定 SHA 文件快照解析；未启用为顶层入口的辅助文件也能被调用。远程 ref 当前明确诊断。
+- callee 必须声明 workflow_call；支持 string/boolean/number inputs、default、required、字符串模板和 needs 完成后的整个表达式求值，不把字符串 `"false"` 转为 boolean；needs/inputs 依赖由 AST 判断，括号访问、整对象与动态索引同样受分阶段求值约束。普通触发事件、caller github 上下文保持不变；caller env 不自动传入 callee。
+- secrets 未传递时为空作用域；支持 inherit 和显式 `TOKEN: ${{ secrets.SOURCE }}`，嵌套继承不能越过父作用域。只保存引用；required 在 admission/rerun 检查配置名称，值按执行时读取。不能用明文/任意表达式作为持久化 secret 参数。
+- workflow_call.outputs.value 使用 `jobs.ID.outputs.NAME`，等子图终态后发布到 caller 的 `needs.CALL.outputs.NAME`。失败/跳过/取消持久化传播，cleanup 成功不覆盖失败；跳过调用不启动内部 always。
+- gate/result 是无 Pod 的持久化控制节点，API 以 plan.control 区分；实际 child job 独立执行，沿用静态 matrix、全局并发和输出聚合规则。整个展开图最多 256 节点，嵌套最多 8 层，检测循环。
+- 调用 job 的 matrix/concurrency、callee workflow concurrency、依赖运行期输入的 runs-on/name/早期 concurrency 等尚未实现，明确拒绝；运行期 env/run/if/with 中的输入按 gate 结果执行。动态 matrix 仍在后续。
+- GitHub 入口自动加载 bundle；管理员源码 API 可提供 workflow_files 路径→源码 map（100 文件/4 MiB，逐文件 1 MiB），不是从 executor 工作目录动态读取。持久化计划固定，重启不重新读取可变 ref；rerun 保留原始触发参数。
+
 ## 真实 Actions
+
+阶段 10.5a 的独立工具对比发现 Gitea GitHub API 地址差异、共同 stock host race 与完整 workflow always 缺口。
+10.5b 已正式接入上游 act 的单 job Docker Exec worker，10.5d 已部署；正式能力见下文 act profile，
+本节表格保留 native profile 的固定适配范围，不能将 native 限制应用到 act profile。
+steam-tasks 原 ci → reliability 在两套候选均因 SDK v0.6.0 缺少 priceregion 包失败，未完成业务 CI；
+2026-10-26 只读核对当前默认分支仍为相同提交，不能把旧失败推断为已修复。
+完整记录见 [architecture.md](architecture.md) 与 [status.md](status.md)。
 
 | Action | 固定版本与已验证输入/行为 |
 |---|---|
@@ -105,7 +128,7 @@ Node 仅在按需 executor 镜像中，常驻 server 仍是 Go + Alpine。`runs-
 - 下载同一 repo/SHA 在一个 job 内复用；压缩包最多 32 MiB、展开最多 128 MiB/10,000 项。
   拒绝路径逃逸、符号/硬链接及特殊文件，脚本限制在 Action 目录；metadata 最多 256 KiB。
 - GITHUB_STEP_SUMMARY 文件可写，但尚不发布摘要；problem matcher、annotation 等只保留日志，不提供 GitHub UI 等价展示。
-- runner.tool_cache 和下载内容在 job 内临时保存，不是跨 job cache。私有远程 Actions、Docker Actions、reusable workflows 不支持。
+- runner.tool_cache 和下载内容在 job 内临时保存，不是跨 job cache。私有远程 Actions、Docker Actions、远程 reusable workflows 不支持；同仓库 reusable 支持范围见下。
 - checkout 不支持其他版本、ref/repository/token/submodules/lfs/sparse-checkout 等输入，也不重复 checkout 同目录。
   默认和 `path` 子目录均已验证固定 SHA；执行器创建自己所有的 workspace，避免 emptyDir 挂载根的 Git 所有权错误。
   工作流使用 `GITHUB_WORKSPACE` 引用根目录，不应硬编码 `/workspace`。
@@ -137,7 +160,7 @@ lookup-only 不下载且不保存；cache/save 空路径匹配失败。两个 se
 不支持任意 JS Action 调 GitHub cache SDK。服务端配额默认 256 MiB/对象、2 GiB 总量、4096 对象，管理员可缩小。
 
 build 只支持 job **顶层 steps** 显式引用，不自动扫描 Composite 来启用 builder；profile 必须启用 build 并列出精确 image repository。
-当前使用 BuildKit v0.20.2 rootless 原生 sidecar，只构建所在节点架构，不支持多平台、Docker Actions、build-push-action、SSH/secret mounts 或持久化层缓存。
+native builder 使用 BuildKit v0.20.2 rootless 原生 sidecar，只构建所在节点架构，不支持多平台、Docker Actions、build-push-action、SSH/secret mounts 或持久化层缓存；这些限制不描述 act job 自有 Docker/BuildKit 的能力。
 image 不能带 tag/digest；推送临时 `forgelet-<jobID>` tag，后续部署必须消费 exporter 返回的 sha256 digest。
 Registry 凭证由管理员 Secret 挂载，不进入持久化计划；预注册 auth/password/token 日志脱敏，但可信 step 同容器可读取该 Secret。
 build-args 会进入构建参数，不能用来传秘密。builder 所需的 user namespace/安全配置见设计与部署文档。
@@ -159,7 +182,7 @@ Secrets 使用 AES-256-GCM，随机 nonce，认证数据绑定仓库和名称；
 每仓库最多 100 个 secrets 和 100 个 vars；secret 最多 4 KiB、var 最多 16 KiB，名称区分大小写，最多 64 字符。
 名称不允许 GITHUB_/FORGELET_ 前缀。Secret 列表只返回名称；vars 明文保存并在创建 run 时快照。
 重跑保留 vars 快照，secrets 在执行时读取最新值；缺失引用为空字符串。主密钥备份/恢复见部署文档，尚无在线轮换流程。
-不提供隐式 GITHUB_TOKEN、permissions 或 OIDC；clone token 只用于 checkout。
+不提供隐式 GITHUB_TOKEN 或 OIDC；permissions 仅实现上述 contents 子集，clone token 只用于 checkout。
 
 ## 可运行样例与后续
 
@@ -195,3 +218,103 @@ CI 到 CD 示例见 [cicd.yml](../test/fixtures/cicd.yml)；替换仓库、image
 schedule、services、job.container 后续按需求安排；真实 homelab 接入状态见 status。
 接管前关闭对应 GitHub 原生 workflow 或设置 forgelet allowlist，避免双跑；forgelet 不自动修改 GitHub 设置。
 本仓库 `.github/workflows/ci.yml` 仍由 GitHub 原生 Actions 执行，不作为 forgelet 自举兼容声明。
+
+
+## 正式 act profile（10.5b）
+
+以下能力仅在管理员显式配置 act profile 后生效；前文 native 限制仍适用于普通 profile。
+同一 workflow 可将 CI/build 放在 act profile，CD 放在 native `homelab` profile。
+
+- 固定 nektos/act v0.2.89，只执行单个已规划 job。工作流调用、typed inputs/inherit/outputs 和 needs 仍由产品调度。
+- 真实 JS Node20/24、Composite、post、Docker Actions，以及 job 自有 Docker/BuildKit/Testcontainers。
+  不使用有已知 PTY race 的 host backend；workspace-local Action 的 `pre` 当前明确失败诊断（上游不执行该 pre），可使用 native profile。
+- 10.6b 新 act 运行支持公共 `owner/repo[/path]@tag/branch/完整 SHA`，创建运行时解析并保存固定 commit，
+  包含远程 Composite 的远程依赖锁；精确 tag 优先于同名 branch，annotated tag 有界解引用。
+  保留原 uses 供诊断，重跑与恢复使用原 SHA；缺失版本/metadata/依赖锁或 Node runtime 不支持时明确失败。
+  原生 profile 和无锁旧计划继续使用 `internal/action/source.go` 的固定版本，不把通用引用当原生执行兼容。
+- setup-go 的下载、toolcache、真实 Node、Go 与 cache 行为来自原 Action；不再在 YAML parser 中禁用标准输入。
+  管理员负责配置 runner 工具；不承诺等同 GitHub ubuntu-latest 镜像。
+  内层 root job 共享 supervisor 创建的 workspace；镜像仅信任固定 `/workspace/repository` Git 路径，
+  保留正常 Go VCS stamping，不使用通配 safe.directory 或 `-buildvcs=false` 绕过校验。
+- cache v1/v2 facade 对接现有 PVC blob 服务，包括 setup-go 冷/热缓存与独立 BuildKit type=gha（10.6c）。缓存不是共享 Docker data，job 结束后引擎清理。
+- contents:read 时注入源仓库只读短期 GITHUB_TOKEN；管理员可显式配置依赖仓库 token secret 引用。
+  不自动扩大 GitHub 权限，静态 registry secret 仍使用加密设置服务。
+  `permissions: {}` 与默认权限在持久化后仍保持区别，空权限不会自动获得源仓库 token。
+- 原生 `forgelet/*`、upload/download-artifact 适配器留在 native job；act profile admission 给出诊断。
+  尚未实现 GitHub artifact v4 远端协议。job timeout、取消、日志脱敏/ACK/游标和重启恢复保留；
+  act 的逐 step timeout 尚未可靠接入，因此 admission 明确拒绝，不能静默忽略。
+- 远程 reusable、动态 matrix 等仍按上文边界诊断；原先生产形态专用仓库之外，本批已验证首批两个业务仓库的固定提交；不能据此称所有业务 workflow 全面兼容。
+
+10.6b 已在临时 k3s 验证 steam-platform-server 的原 check.yml（Go/race）和 steam-admin-web 的原 ci.yml / image.yml。
+Go/npm 冷热缓存、28 个原始主步骤和实际镜像发布 digest 核对通过；固定提交、运行 ID 与隔离范围见 [status.md](status.md)。
+以上是 10.6b 的 3 份原始 workflow 执行记录；10.6c 的独立 BuildKit 验证另见下节和 status，未由此新增 artifact v4 或业务 Flux CD。
+
+## 独立 BuildKit 与缓存（10.6c）
+
+- job-local facade 新增 CacheService v2 的 create/get-download/finalize、Azure 风格 block/single PUT 与 range/HEAD，兼容旧 v1。默认开启 ACTIONS_CACHE_SERVICE_V2，持久作用域仍是当前仓库/ref/version，不回退其他分支。
+- 独立 docker-container BuildKit 使用可达的 Pod IP 端点；缓存能力为每 attempt 独立 JWT/随机路径，job 结束失效，不等于 GitHub OAuth/App token。512 MiB 保留 payload、256 MiB/对象、最多 256 blocks/对象及上传数量有界，错误不伪装命中。
+- 顶层 setup-buildx 的默认 image 可由现有固定镜像目录提供；默认 TOML 由管理员 act.buildkit_config 提供。显式 workflow image/config 优先。独立 BuildKit 不自动继承 engine 已预加载的所有镜像；构建 FROM 与工具下载仍需真实连通。
+- packages:write 仅在管理员登记 package_tokens → 仓库加密 Secret 名后生效，PR/native 拒绝。计划只有引用，领取时检查绑定，包 credential 与源 clone token 分离；YAML 声明不生成权限，也不将 write PAT 宣称为可降权的 packages:read token。
+- 支持显式 env GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}；其他 GITHUB_/RUNNER_/FORGELET_ 身份变量、任意 literal token 及 file-command 改写继续拒绝。新增 github.ref_type（branch/tag）并与 native/act 环境一致。
+- 本批实际通过的 Action SHA、输入与测试结果以 status 为准；编译样本和实现不自动算完整业务运行。artifact v4、OIDC、全部 GHES、跨分支 cache 和未验证的其他 builder driver 不在此声明内。
+
+## 镜像目录和日志（10.5d）
+
+管理员可在 act profile 配置 `image_mirrors`，将明确的 Docker Hub tag 对应到同 registry 的固定 digest。
+任务启动前自动拉取并登记原名，适配默认 Testcontainers PostgreSQL/Ryuk、Docker Action 和 Docker driver
+本地构建。源不存在、授权失败或 config ID 不符时失败，不忽略目录、不自动改拉公网。
+目录不支持 digest 形式的目标 alias、私有 registry alias 或任意 tag 的自动解析；相同 tag 的 upstream
+更新不会自动改变目录锁定的内容。强制拉取/独立构建引擎仍可能访问 upstream，需要另行配置。
+
+日志 API 仍以 seq/step_id/data 返回；data 可包含多行，不保证一行一个记录。
+合并不跨 step；最大块 8 KiB、低流量每 200ms 刷新，脱敏先于批量上报。
+连续 ACK、取消后尾部排空、重启继续原 attempt 及最终 LastLogSeq 语义保持不变。
+
+## steam-* 业务仓库盘点（2026-10-26，只读检查）
+
+以下为 **10.6a 当时的代码检查快照**；10.6b 已替换公共 Action tag 的白名单拒绝逻辑，
+本表中的历史拒绝不代表新解析器仍然拒绝该 tag，也不代表对应 Action 已做完实际执行验证。
+原业务 workflow 的最新执行结果与自动验证范围见 status；其他仓库继续按 10.6c–10.6e 推进。
+
+使用 gh 扫描 shitamachi 账号的 15 个 steam-* 仓库；9 个有 Actions，共 13 份 workflow。
+各仓库按默认分支当时的完整 SHA 获取源码，再调用本项目当前 `workflow.ValidateFiles`，包含同提交辅助文件。
+**6 份规划检查通过，7 份明确拒绝；没有在 Forgelet 运行这些业务 workflow。**
+规划检查不覆盖 profile admission、凭据、安装工具、实际构建/测试、外部发布或部署结果。
+以下短 SHA 的完整值可从对应 GitHub commit 获取，完整快照与检查 JSON 保存在本机私有证据目录。
+
+| 仓库 / 当前提交 | Workflow | 当前检查和下一步实际需求 |
+|---|---|---|
+| [steam-platform-server](https://github.com/shitamachi/steam-platform-server/commit/e37944b787fc89cc4e96c327e377dab09a09a940) `e37944b787fc` | check.yml | 规划通过；Go 1.26、vet/short/race/build；当前提交 GitHub CI 成功。原 workflow 没有镜像发布步骤。首批 Go 接入对象。 |
+| [steam-admin-web](https://github.com/shitamachi/steam-admin-web/commit/40140fc9e3281467d4199586f2f5f988fad0731f) `40140fc9e328` | ci.yml、image.yml | image 规划通过；CI 拒绝 setup-node@v4。实际要求 Node24、npm ci/check/test/build、生成文件不漂移、自有 registry 镜像发布；当前提交 GitHub 两份运行成功。首批 Node/镜像对象。 |
+| [steam-admin](https://github.com/shitamachi/steam-admin/commit/2d6d2f5eb0f7236ff68bec49b3db1aa09a38e07d) `2d6d2f5eb0f7` | ci.yml、image.yml | image 规划通过；CI 拒绝 bufbuild/buf-setup-action@v1。还需要 Buf 1.72.0、Go generator、make check 使用的 rg、生成文件 diff 检查；当前提交 GitHub 两份成功，不能只验证 Action 下载。 |
+| [steam-platform-etl](https://github.com/shitamachi/steam-platform-etl/commit/8c93d444e46f43bbfa1444a040e54fbb667397de) `8c93d444e46f` | check.yml | 拒绝 setup-go@v6。当前只允许 workflow_dispatch，执行 make check；原 workflow 不含镜像或数据库集成。较老 GitHub PR 的失败不能当作当前提交结果。 |
+| [steam-platform-web](https://github.com/shitamachi/steam-platform-web/commit/75ed69647af3c5aa4a44c416b5b60d1c491def48) `75ed69647af3` | check.yml | 拒绝 pnpm/action-setup@v4、setup-node@v4、setup-buildx@v3。实际要求 pnpm 9.15.9、Node24、真实 Chromium/Playwright、smoke、独立 BuildKit/type=gha 缓存与镜像发布；当前提交 GitHub 成功。 |
+| [steam-api](https://github.com/shitamachi/steam-api/commit/1992654114520fd13842a212ddebc7ccc8f8a850) `199265411452` | ci.yml | 拒绝 setup-buildx@v3、build-push@v5；还需要 type=gha 缓存、BuildKit secret、Go 测试及 Codecov。当前 GitHub test job 失败，具体为 TestRedisAdmissionAndParentSnapshotIntegration，build 被跳过；需读取业务测试后区分环境和逻辑错误，不推定为兼容层问题。 |
+| [steam-login](https://github.com/shitamachi/steam-login/commit/0a5ce9753cf4b6f429cf273eea000353a9a19106) `0a5ce9753cf4` | docker.yml | 拒绝 setup-buildx@v3、build-push@v5；此外 packages:write 当前不支持，源仓库只读 token 不能充当 GHCR 发布凭据。保留 GHCR + 自有 registry 双发布、type=gha 缓存；Bun 在应用 Dockerfile 内安装，不能误列为 runner 必装工具。当前提交 GitHub 成功。 |
+| [steam-cm](https://github.com/shitamachi/steam-cm/commit/62a86e085a4620a76934d2bfd70fdcd123306cbf) `62a86e085a46` | rust-ci.yml | 拒绝 pwsh；checkout 使用完整 SHA，不缺 tag 解析。需要 ubuntu-24.04 profile、Rust 1.97/rustup、rustfmt/clippy、Python3、PowerShell 和 Docker lifecycle/managed 测试；当前提交 GitHub 成功。仅 manual publish=true 时发布 tested image，不自动部署。 |
+| [steam-tasks](https://github.com/shitamachi/steam-tasks/commit/8265ad9772c5c92d3724a0372f17c31a4a8e498d) `8265ad9772c5` | ci.yml、image.yml、reliability.yml | 三份规划通过，含同仓库调用/inherit。当前提交 GitHub reliability 也因 SDK v0.6.0 缺 priceregion 失败；image 未向 Dockerfile 提供 steam_proto_go 命名 context。还需要 Atlas、race、显式打开的 PostgreSQL/Testcontainers 验收、BuildKit secret 和镜像发布。不能用编译通过或默认跳过数据库测试冒充全链通过。 |
+
+没有 workflow 的 6 个仓库：steam-platform、steam-lake、steam-proto-go、steam-proto、steam-etl、steam-game-scraper。
+暂不自动生成/启用它们的流水线。SDK `steam-proto-go` 当前公开，v0.6.0 的树确实没有 priceregion；
+私有依赖 token 是其他真实私有依赖出现时的显式配置需求，不是本次已确认的 SDK 授权故障。
+
+共同需求与兼容边界：
+
+- 本批未发现远程 reusable、动态 matrix、artifact upload/download 或 OIDC 引用；这些不作为下一批首要功能。
+- 6 个尚未解析的别名为 setup-node@v4、setup-go@v6、pnpm/action-setup@v4、bufbuild/buf-setup-action@v1、docker/setup-buildx-action@v3、docker/build-push-action@v5。目标是统一 ref→固定 SHA 与真实 Action 执行，不再逐个复制 Action 的业务逻辑；每个版本仍需行为验证。
+- 10.6a 盘点时的 job-local cache v1 facade 只验证 setup-go 等缓存，未验证 BuildKit type=gha；10.6c 已新增 v2 并完成独立 BuildKit 冷热/重启/失败/取消验证。独立 BuildKit 的网络、能力 token、分片/对象传输、版本和 cache scopes 均需真实测试。Docker 官方 GitHub cache 服务已转 API v2，不能据此推断我们自建 v1 facade 自动满足同样协议，见 [Docker 缓存文档](https://docs.docker.com/build/ci/github-actions/cache/)。
+- GitHub Actions 托管的 GITHUB_TOKEN 与本产品 mint 的只读 token 能力不同。GHCR 外部发布需独立凭据配置和权限边界；不能靠接受 packages:write 字段获得授权，见 [GitHub GHCR 认证](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
+- 当前 13 份 workflow 都没有部署到 Flux 的步骤；发布镜像与 CD 是两项验收。需要部署的仓库应接上现有 native CD，并明确 GitOps 路径、镜像 digest、环境、迁移/健康检查和回滚；不自动改写 steam-cm 等明确只发布的业务语义。
+
+实施顺序与待完成项见 [plan.md](plan.md) 的 10.6b–10.6e；此处只记录已经完成的只读检查。
+
+steam-platform-web 的比较状态失败已在 Forgelet 外的同提交 Chromium 慢 CPU 对照复现：
+业务控件在 hydration 前可操作，初始化恢复与早期输入存在竞态。源码修正与三项回归位于
+steam-build 的显式 hydration.patch；原始 YAML 不变。源码有补丁时分别记录 base/fixture SHA，
+不能宣称原 GitHub 提交全部字节未变；最终冷热缓存、CI 和镜像发布结果见 status。
+
+2026-10-27 最终验收：保留 platform-web 原 check.yml/Dockerfile/E2E 字节，对源码显式应用 hydration 修复，
+在提供官方 Node24/Chromium 的 act profile 完成冷/热两轮原 CI + needs:image；pnpm false→true、
+新 builder 依赖 RUN 层 CACHED、缓存 export 与两轮 latest/SHA 标签 digest 对照均通过。
+实际缓存客户端超过 128 个 1 MiB blocks 的行为已有默认 129 MiB Testcontainers 回归；
+重复精确 key/version 复用本 attempt 的不可变缓存文件，原字节预算与仓库/ref/version 隔离保持不变。

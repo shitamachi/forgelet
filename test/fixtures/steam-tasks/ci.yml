@@ -1,0 +1,13 @@
+name: Development checks
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: ./.github/workflows/reliability.yml
+    secrets: inherit
+# Images are built locally; see workspace docs/local-image-build.md.

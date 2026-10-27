@@ -246,3 +246,14 @@ func TestRuntimeContextRejectsUnavailableDependenciesAndSteps(t *testing.T) {
 		t.Fatal("accepted oversized literal")
 	}
 }
+
+func TestInterpolateEventFiltersAndNamespacedNeeds(t *testing.T) {
+	plan := run.Plan{Group: "caller/emit", Repository: "me/repo", Event: []byte(`{"labels":[{"name":"bug"}]}`), Needs: []string{"caller/build", "$start/caller"}, ParentGate: "$start/caller", NeedsAliases: map[string]string{"caller/build": "build"}, NeedsContext: map[string]run.Dependency{"caller/build": {Result: run.Succeeded, Outputs: map[string]string{"value": "ok"}}, "$start/caller": {Result: run.Succeeded, Outputs: map[string]string{"hidden": "forbidden"}}}}
+	got, err := interpolate("${{ github.job }}:${{ contains(github.event.labels.*.name, 'bug') }}:${{ contains(needs.*.result, 'success') }}:${{ needs['build'].outputs.value }}", plan, nil, nil)
+	if err != nil || got != "emit:true:true:ok" {
+		t.Fatal(got, err)
+	}
+	if _, ok := directDependency(plan, "$start/caller"); ok {
+		t.Fatal("control gate exposed as a user dependency")
+	}
+}

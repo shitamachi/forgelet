@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/shitamachi/forgelet/internal/expression"
 	"github.com/shitamachi/forgelet/internal/run"

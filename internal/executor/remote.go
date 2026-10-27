@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
@@ -64,9 +65,10 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		return client.request(flushCtx, http.MethodPost, "/result", result, nil)
 	}
 	var credentials struct {
-		CloneURL   string            `json:"clone_url"`
-		CloneToken string            `json:"clone_token"`
-		Secrets    map[string]string `json:"secrets"`
+		CloneURL     string            `json:"clone_url"`
+		PackageToken string            `json:"package_token"`
+		CloneToken   string            `json:"clone_token"`
+		Secrets      map[string]string `json:"secrets"`
 	}
 	needsCheckout := false
 	for _, step := range plan.Steps {
@@ -74,16 +76,44 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 			needsCheckout = true
 		}
 	}
+	if plan.Kernel == "act" && (plan.Permissions == nil || plan.Permissions["contents"] == "read") {
+		needsCheckout = true
+	}
 	if needsCheckout || len(plan.SecretNames) > 0 {
 		if err := client.request(ctx, http.MethodGet, "/credentials", nil, &credentials); err != nil {
 			result := run.Result{State: run.Failed, Error: "clone credentials unavailable"}
-			if ctx.Err() != nil {
+			cancelled := ctx.Err() != nil
+			if !cancelled {
+				// Credentials are deliberately denied once cancellation starts. The Pod
+				// can still read control state and acknowledge cancellation with its UID.
+				checkCtx, cancelCheck := context.WithTimeout(context.WithoutCancel(ctx), min(flushTimeout, 5*time.Second))
+				var control struct {
+					CancelRequested bool `json:"cancel_requested"`
+				}
+				checkErr := client.request(checkCtx, http.MethodGet, "/control", nil, &control)
+				cancelCheck()
+				cancelled = checkErr == nil && control.CancelRequested || ctx.Err() != nil
+			}
+			if cancelled {
 				result.State = run.Cancelled
+				result.Error = ""
 			}
 			if reportErr := finish(result); reportErr != nil {
 				return fmt.Errorf("executor: report credential failure: %w", reportErr)
 			}
+			if cancelled {
+				return errRemoteCancellation
+			}
 			return fmt.Errorf("executor: credentials: %w", err)
+		}
+	}
+	var mirrors map[string]string
+	if value := os.Getenv("FORGELET_IMAGE_MIRRORS"); value != "" {
+		if err := json.Unmarshal([]byte(value), &mirrors); err != nil {
+			if err := finish(run.Result{State: run.Failed, Error: "invalid act image mirror configuration"}); err != nil {
+				return err
+			}
+			return errors.New("executor: invalid act image mirror configuration")
 		}
 	}
 	sessionCtx, cancelSession := context.WithCancel(ctx)
@@ -91,9 +121,11 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	watchDone := make(chan error, 1)
 	go func() { watchDone <- client.watchControl(sessionCtx, cancelSession, options.PollInterval) }()
 	var logMu sync.Mutex
+	uploadGate := make(chan struct{}, 1)
 	var acknowledged int64
 	var pending []run.Log
 	var pendingBytes int
+	var attempted int64
 	appendLog := func(requestCtx context.Context, entry run.Log) error {
 		var response struct {
 			Seq int64 `json:"seq"`
@@ -104,14 +136,31 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		if response.Seq != entry.Seq {
 			return errors.New("executor: log acknowledgement mismatch")
 		}
-		acknowledged = entry.Seq
 		return nil
 	}
 	flushLogs := func(requestCtx context.Context) error {
+		// No producer may wait on network I/O while holding the queue lock.
+		// Its own job/step context can then stop waiting for the uploader at
+		// timeout, allowing Execute to return and cancel the in-flight request.
+		logMu.Unlock()
+		select {
+		case uploadGate <- struct{}{}:
+		case <-requestCtx.Done():
+			logMu.Lock()
+			return requestCtx.Err()
+		}
+		logMu.Lock()
+		defer func() { <-uploadGate }()
 		for len(pending) > 0 {
-			if err := appendLog(requestCtx, pending[0]); err != nil {
+			entry := pending[0]
+			attempted = entry.Seq
+			logMu.Unlock()
+			err := appendLog(requestCtx, entry)
+			logMu.Lock()
+			if err != nil {
 				return err
 			}
+			acknowledged = entry.Seq
 			pendingBytes -= len(pending[0].Data)
 			pending[0] = run.Log{}
 			pending = pending[1:]
@@ -124,20 +173,31 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		if pendingBytes+len(data) > 1<<20 {
 			return errors.New("executor: pending log buffer exhausted; output is incomplete")
 		}
-		// Retain the entire callback before uploading any chunk. Cancellation
-		// after the first ACK must not lose the rest of the same output write.
+		// Coalesce only unsent data from the same step. Once attempted, a
+		// sequence is immutable even if the server committed but its ACK was lost.
 		for len(data) > 0 {
-			n := len(data)
-			if n > 8<<10 {
-				n = 8 << 10
+			last := len(pending) - 1
+			if last < 0 || pending[last].Seq <= attempted || pending[last].StepID != stepID || len(pending[last].Data) == 8<<10 {
+				pending = append(pending, run.Log{Seq: acknowledged + int64(len(pending)) + 1, StepID: stepID})
+				last++
 			}
-			entry := run.Log{Seq: acknowledged + int64(len(pending)) + 1, StepID: stepID, Data: string(data[:n])}
-			pending = append(pending, entry)
+			n := min(len(data), (8<<10)-len(pending[last].Data))
+			for n > 0 && n < len(data) && !utf8.RuneStart(data[n]) {
+				n--
+			}
+			if n == 0 {
+				pending = append(pending, run.Log{Seq: acknowledged + int64(len(pending)) + 1, StepID: stepID})
+				continue
+			}
+			pending[last].Data += string(data[:n])
 			pendingBytes += n
 			data = data[n:]
 		}
 		if logCtx.Err() != nil {
 			return nil // Final bounded flush persists output after process shutdown.
+		}
+		if pendingBytes < 8<<10 {
+			return nil
 		}
 		err := flushLogs(logCtx)
 		if logCtx.Err() != nil {
@@ -145,9 +205,36 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		}
 		return err
 	}
-	result, executeErr := Execute(sessionCtx, plan, Options{BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: os.Getenv("FORGELET_REGISTRY_CONFIG"), Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
+	// A small bounded delay preserves live logs from quiet/long-running steps;
+	// large writes flush synchronously and retain the original backpressure.
+	logDone := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sessionCtx.Done():
+				logDone <- nil
+				return
+			case <-ticker.C:
+				logMu.Lock()
+				err := flushLogs(sessionCtx)
+				logMu.Unlock()
+				if err != nil {
+					if sessionCtx.Err() != nil {
+						err = nil
+					}
+					cancelSession()
+					logDone <- err
+					return
+				}
+			}
+		}
+	}()
+	result, executeErr := Execute(sessionCtx, plan, Options{BuildkitConfig: os.Getenv("FORGELET_BUILDKIT_CONFIG"), PackageToken: credentials.PackageToken, ActCacheHost: os.Getenv("FORGELET_ACT_CACHE_HOST"), ImageMirrors: mirrors, ActImage: os.Getenv("FORGELET_ACT_IMAGE"), BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: os.Getenv("FORGELET_REGISTRY_CONFIG"), Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
 	cancelSession()
 	watchErr := <-watchDone
+	logErr := <-logDone
 	// Execution has stopped, so a bounded context can safely outlive SIGTERM or
 	// cancellation long enough to persist a pending log and the terminal result.
 	flushCtx, cancelFlush := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
@@ -172,9 +259,17 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		result.State = run.Failed
 		result.Error = "control-plane cancellation status unavailable"
 	}
+	if logErr != nil {
+		result.State = run.Failed
+		result.Error = "control-plane log upload failed"
+		executeErr = errors.Join(executeErr, logErr)
+	}
 	if !result.State.Terminal() {
 		result.State = run.Failed
 		result.Error = "executor returned a nonterminal result"
+	}
+	if errors.Is(executeErr, errActCleanup) {
+		return fmt.Errorf("executor: waiting for Pod-owned engine termination: %w", executeErr)
 	}
 	if err := client.request(flushCtx, http.MethodPost, "/result", result, nil); err != nil {
 		return fmt.Errorf("executor: report result: %w", err)

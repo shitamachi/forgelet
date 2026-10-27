@@ -1,0 +1,20 @@
+{
+  "steam-platform-server/check.yml": {
+    "repository": "shitamachi/steam-platform-server",
+    "commit": "e37944b787fc89cc4e96c327e377dab09a09a940",
+    "path": ".github/workflows/check.yml",
+    "sha256": "60a3582f41af15f15dc63878cb7dc8c9623ad6d416aa161d46882cbd04fe4d38"
+  },
+  "steam-admin-web/image.yml": {
+    "repository": "shitamachi/steam-admin-web",
+    "commit": "40140fc9e3281467d4199586f2f5f988fad0731f",
+    "path": ".github/workflows/image.yml",
+    "sha256": "867553deb95683cf2fbae6979787cd44d95e1d99a74f83745af785dc9eb0413f"
+  },
+  "steam-admin-web/ci.yml": {
+    "repository": "shitamachi/steam-admin-web",
+    "commit": "40140fc9e3281467d4199586f2f5f988fad0731f",
+    "path": ".github/workflows/ci.yml",
+    "sha256": "f31e231367c00c57cd199fbd213bca585fa4fd70926b75a585e99be5f422ebbf"
+  }
+}

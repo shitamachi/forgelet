@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/shitamachi/forgelet/internal/expression"
 )
@@ -96,6 +96,35 @@ type referenceScope struct {
 
 func (scope referenceScope) allowed(reference string) bool {
 	parts := strings.Split(reference, ".")
+	if reference == "env" {
+		return scope.env
+	}
+	if reference == "vars" {
+		return true
+	}
+	if reference == "needs" {
+		return scope.needs != nil
+	}
+	if reference == "steps" {
+		return scope.steps != nil
+	}
+	if len(parts) >= 2 && parts[0] == "needs" && parts[1] == "*" {
+		return len(scope.needs) > 0 && (len(parts) == 2 || parts[2] == "result" || parts[2] == "outputs")
+	}
+	if len(parts) == 3 && parts[0] == "needs" && scope.needs[parts[1]] && parts[2] == "outputs" {
+		return true
+	}
+	if len(parts) == 3 && parts[0] == "steps" && scope.steps[parts[1]] && parts[2] == "outputs" {
+		return true
+	}
+
+	if reference == "github" || strings.HasPrefix(reference, "github.event.") || reference == "github.event" {
+		return true
+	}
+	if len(parts) >= 3 && parts[0] == "inputs" && identifier.MatchString(parts[1]) {
+		return true
+	}
+
 	if reference == "matrix" {
 		return scope.matrix
 	}
@@ -128,7 +157,7 @@ func (scope referenceScope) allowed(reference string) bool {
 				return true
 			}
 			switch parts[1] {
-			case "sha", "ref", "ref_name", "repository", "event_name", "actor", "head_ref", "base_ref", "workflow", "repository_owner", "run_id", "job":
+			case "sha", "ref", "ref_name", "ref_type", "repository", "event_name", "actor", "head_ref", "base_ref", "workflow", "repository_owner", "run_id", "job":
 				return true
 			}
 		}

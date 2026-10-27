@@ -1,0 +1,27 @@
+package run
+
+// ActRequest is an ephemeral pipe message, never a persisted execution plan.
+// It deliberately carries no control-plane identity or Kubernetes credential.
+type ActRequest struct {
+	BuildkitImage  string            `json:"buildkit_image,omitempty"`
+	BuildkitConfig string            `json:"buildkit_config,omitempty"`
+	Plan           Plan              `json:"plan"`
+	Workspace      string            `json:"workspace"`
+	Image          string            `json:"image"`
+	Secrets        map[string]string `json:"secrets"`
+	PackageToken   string            `json:"package_token,omitempty"`
+	Token          string            `json:"token"`
+	CacheURL       string            `json:"cache_url"`
+	CacheToken     string            `json:"cache_token"`
+	ActionBaseURL  string            `json:"action_base_url,omitempty"`
+}
+
+type ActMessage struct {
+	ExitCode *int    `json:"exit_code,omitempty"`
+	StepID   string  `json:"step_id,omitempty"`
+	Message  string  `json:"message,omitempty"`
+	Mask     string  `json:"mask,omitempty"`
+	Result   *Result `json:"result,omitempty"`
+}
+
+const ActSocket = "/run/forgelet-act/docker.sock"

@@ -66,6 +66,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or reserved setting name", 400)
 		return
 	}
+	if kind == "secrets" && name != "" && s.cfg.RepositoryTokens[repository][name] != "" && r.Method != http.MethodGet {
+		http.Error(w, "secret is an administrator-managed repository token reference", http.StatusConflict)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		values, err := s.store.Settings(r.Context(), repository, kind)
@@ -77,6 +81,11 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			names := make([]string, 0, len(values))
 			for name := range values {
 				names = append(names, name)
+			}
+			for name := range s.cfg.RepositoryTokens[repository] {
+				if _, exists := values[name]; !exists {
+					names = append(names, name)
+				}
 			}
 			sort.Strings(names)
 			writeJSON(w, 200, map[string]any{"names": names})
@@ -131,8 +140,20 @@ func (s *Server) runtimeSecrets(ctx context.Context, plan run.Plan) (map[string]
 		return nil, err
 	}
 	for _, name := range plan.SecretNames {
-		if data, ok := values[name]; ok {
-			plain, err := openSecret(s.cfg.SecretKey, plan.Repository, name, data)
+		original := name
+		if plan.RestrictSecrets {
+			original = plan.SecretBindings[name]
+		}
+		if target := s.cfg.RepositoryTokens[plan.Repository][original]; target != "" {
+			value, err := s.dependencyToken(ctx, plan, target)
+			if err != nil {
+				return nil, err
+			}
+			result[name] = value
+			continue
+		}
+		if data, ok := values[original]; ok && original != "" {
+			plain, err := openSecret(s.cfg.SecretKey, plan.Repository, original, data)
 			if err != nil {
 				return nil, err
 			}
@@ -142,4 +163,32 @@ func (s *Server) runtimeSecrets(ctx context.Context, plan run.Plan) (map[string]
 		}
 	}
 	return result, nil
+}
+
+func (s *Server) validateRequiredSecrets(ctx context.Context, repository string, plans []run.Plan) error {
+	required := map[string]bool{}
+	for _, p := range plans {
+		if p.PackageTokenSecret != "" {
+			required[p.PackageTokenSecret] = true
+		}
+		for _, name := range p.RequiredSecrets {
+			required[name] = true
+		}
+	}
+	if len(required) == 0 {
+		return nil
+	}
+	available, err := s.store.Settings(ctx, repository, "secrets")
+	if err != nil {
+		return err
+	}
+	for name := range required {
+		if s.cfg.RepositoryTokens[repository][name] != "" {
+			continue
+		}
+		if _, ok := available[name]; !ok {
+			return fmt.Errorf("required workflow secret %q is not configured", name)
+		}
+	}
+	return nil
 }

@@ -1,0 +1,100 @@
+diff --git a/src/shared/components.tsx b/src/shared/components.tsx
+index f3aa5c5..58e8e65 100644
+--- a/src/shared/components.tsx
++++ b/src/shared/components.tsx
+@@ -64,12 +64,13 @@ export function SaveButton({ game, iconOnly = false }: { game: Game; iconOnly?:
+ }
+ 
+ export function CompareButton({ game, compact = false }: { game: Game; compact?: boolean }) {
+-  const { compare, toggleCompare } = useProduct()
++  const { compare, toggleCompare, hydrated } = useProduct()
+   const active = compare.includes(game.id)
+   return (
+     <button
+       className={compact ? 'text-button' : 'button secondary'}
+       aria-pressed={active}
++      disabled={!hydrated}
+       onClick={() => toggleCompare(game.id)}
+       aria-label={`${active ? '移出比较' : '加入比较'}：${game.title}`}
+     >
+diff --git a/src/shared/state.tsx b/src/shared/state.tsx
+index 0e1eac8..8187bda 100644
+--- a/src/shared/state.tsx
++++ b/src/shared/state.tsx
+@@ -68,6 +68,7 @@ export function ProductState({ children, catalog }: { children: ReactNode; catal
+     }
+   }
+   const toggleCompare = (id: string) => {
++    if (!hydrated || !validId(id)) return
+     if (compare.includes(id)) {
+       setCompare(compare.filter((x) => x !== id))
+       return
+diff --git a/src/shared/state.test.tsx b/src/shared/state.test.tsx
+new file mode 100644
+index 0000000..daa7267
+--- /dev/null
++++ b/src/shared/state.test.tsx
+@@ -0,0 +1,63 @@
++// @vitest-environment jsdom
++
++import '@testing-library/jest-dom/vitest'
++import { act, cleanup, render } from '@testing-library/react'
++import { useLayoutEffect } from 'react'
++import { renderToStaticMarkup } from 'react-dom/server'
++import { afterEach, beforeEach, expect, it } from 'vitest'
++import { games } from '../features/catalog'
++import { CompareButton } from './components'
++import { ProductState, useProduct } from './state'
++
++beforeEach(() => {
++  localStorage.clear()
++  sessionStorage.clear()
++})
++afterEach(cleanup)
++
++it('keeps server-rendered comparison controls disabled until storage hydration', () => {
++  const html = renderToStaticMarkup(
++    <ProductState catalog={[]}>
++      <CompareButton game={games[0]} />
++    </ProductState>,
++  )
++  const container = document.createElement('div')
++  container.innerHTML = html
++  expect(container.querySelector('button')).toBeDisabled()
++})
++
++it('ignores early comparison input instead of overwriting the stored selection', () => {
++  sessionStorage.setItem('nextplay-compare', JSON.stringify(['previous-page']))
++  let state: ReturnType<typeof useProduct>
++  function Probe() {
++    state = useProduct()
++    useLayoutEffect(() => {
++      state.toggleCompare('next-page')
++    }, [])
++    return null
++  }
++  render(<ProductState catalog={[]}><Probe /></ProductState>)
++  expect(state!.hydrated).toBe(true)
++  expect(state!.compare).toEqual(['previous-page'])
++  expect(JSON.parse(sessionStorage.getItem('nextplay-compare')!)).toEqual(['previous-page'])
++  act(() => state!.toggleCompare('next-page'))
++  expect(state!.compare).toEqual(['previous-page', 'next-page'])
++  expect(JSON.parse(sessionStorage.getItem('nextplay-compare')!)).toEqual(['previous-page', 'next-page'])
++})
++
++it('validates comparison IDs and preserves removal and the three-game limit', () => {
++  sessionStorage.setItem('nextplay-compare', JSON.stringify(['one', 'two', 'three']))
++  let state: ReturnType<typeof useProduct>
++  function Probe() {
++    state = useProduct()
++    return null
++  }
++  render(<ProductState catalog={[]}><Probe /></ProductState>)
++  act(() => state!.toggleCompare('four'))
++  expect(state!.compare).toEqual(['one', 'two', 'three'])
++  act(() => state!.toggleCompare('two'))
++  act(() => state!.toggleCompare('invalid/id'))
++  expect(state!.compare).toEqual(['one', 'three'])
++  act(() => state!.toggleCompare('four'))
++  expect(JSON.parse(sessionStorage.getItem('nextplay-compare')!)).toEqual(['one', 'three', 'four'])
++})

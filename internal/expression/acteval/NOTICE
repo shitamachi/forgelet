@@ -1,0 +1,8 @@
+Derived from github.com/nektos/act/pkg/exprparser v0.2.89.
+Source: https://github.com/nektos/act/tree/v0.2.89/pkg/exprparser
+Local changes: bounded numeric coercion, null comparison, nil map values and format bounds.
+The public adapter supplies status semantics and rejects implicit filesystem access.
+Forgelet uses map contexts instead of act's runner models, removes filesystem
+hashing and runner status evaluation, and supports integral JSON array indexes.
+No act runner, Docker client, Git client or resident Node runtime is linked.
+The internal API omits act Config/default-status modes; the adapter owns them.

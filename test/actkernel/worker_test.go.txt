@@ -1,0 +1,242 @@
+package main
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestArchiveCache(t *testing.T) {
+	dir := t.TempDir()
+	sha := strings.Repeat("a", 40)
+	file, err := os.Create(filepath.Join(dir, sha+".tar.gz"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for name, content := range map[string]string{"root/action.yml": "metadata", "root/dist/main.js": "console.log('real action')"} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Size: int64(len(content)), Mode: 0644, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cache := archiveCache{dir: dir, pins: map[string]string{"owner/action@v1": sha}}
+	if _, err := cache.Fetch(t.Context(), "owner/action", "https://evil.example/owner/action", "v1", "unused"); err == nil {
+		t.Fatal("unapproved source accepted")
+	}
+	if _, err := cache.Fetch(t.Context(), "owner/action", "https://github.com/owner/action", "v2", "unused"); err == nil {
+		t.Fatal("unlocked ref accepted")
+	}
+	for _, prefix := range []string{"action.yml", "dist"} {
+		archive, err := cache.GetTarArchive(t.Context(), "owner/action", sha, prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(archive)
+		header, err := tr.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(tr)
+		archive.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prefix == "action.yml" && (header.Name != "action.yml" || string(data) != "metadata") {
+			t.Fatal("single file metadata contract")
+		}
+		if prefix == "dist" && (header.Name != "main.js" || !strings.Contains(string(data), "real action")) {
+			t.Fatal("subdirectory contract")
+		}
+	}
+}
+
+func TestLogBoundary(t *testing.T) {
+	var output bytes.Buffer
+	w := &logBoundary{output: &output, secrets: []string{"secret-value"}}
+	_, _ = w.Write([]byte("prefix sec"))
+	_, _ = w.Write([]byte("ret-value suffix\n"))
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				_, _ = w.Write([]byte("secret-value\n"))
+			}
+		}()
+	}
+	wg.Wait()
+	w.Flush()
+	if strings.Contains(output.String(), "secret-value") || !strings.Contains(output.String(), "prefix *** suffix") {
+		t.Fatal("split or concurrent secret logging escaped")
+	}
+}
+
+func TestInvalidRequest(t *testing.T) {
+	for _, req := range []request{{}, {Workdir: "/does-not-exist", Workflow: "x", Mode: "all"}, {Workdir: "/does-not-exist", Workflow: "x", Mode: "job"}} {
+		var output bytes.Buffer
+		got := execute(t.Context(), req, &output)
+		if got.State != "failure" || got.Error == "" {
+			t.Fatalf("invalid request accepted: %+v", got)
+		}
+	}
+}
+
+func TestDockerModeOutputs(t *testing.T) {
+	image := os.Getenv("FORGELET_KERNEL_DOCKER_TEST_IMAGE")
+	if image == "" {
+		t.Skip("enabled by the disposable Docker backend integration")
+	}
+	dir := t.TempDir()
+	source := `name: docker-backend
+on: push
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    outputs:
+      answer: ${{ steps.value.outputs.answer }}
+    steps:
+      - id: value
+        run: echo "answer=42" >> "$GITHUB_OUTPUT"
+`
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yml"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	var output bytes.Buffer
+	got := execute(ctx, request{Mode: "job", Workdir: dir, Workflow: "workflow.yml", JobID: "only", Docker: true, RunnerImage: image, EngineSocket: "-"}, &output)
+	if got.State != "success" || got.Outputs["answer"] != "42" {
+		t.Fatalf("%+v\n%s", got, output.String())
+	}
+}
+
+func TestSingleJobDependencySnapshot(t *testing.T) {
+	for _, state := range []string{"success", "failure"} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			source := `name: dependencies
+on: push
+jobs:
+  before:
+    runs-on: ubuntu-latest
+    steps:
+      - run: touch forbidden
+  only:
+    needs: before
+    runs-on: ubuntu-latest
+    outputs:
+      answer: ${{ steps.value.outputs.answer }}
+    steps:
+      - id: value
+        env:
+          ANSWER: ${{ needs.before.outputs.answer }}
+        run: echo "answer=$ANSWER" >> "$GITHUB_OUTPUT"
+`
+			if err := os.WriteFile(filepath.Join(dir, "workflow.yml"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			got := execute(t.Context(), request{Mode: "job", Workdir: dir, Workflow: "workflow.yml", JobID: "only", Needs: map[string]dependency{"before": {Result: state, Outputs: map[string]string{"answer": "from-forgelet"}}}}, &logs)
+			if state == "success" && (got.State != "success" || got.Outputs["answer"] != "from-forgelet") {
+				t.Fatalf("%+v\n%s", got, logs.String())
+			}
+			if state == "failure" && got.State != "skipped" {
+				t.Fatalf("%+v\n%s", got, logs.String())
+			}
+			if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {
+				t.Fatal("kernel re-executed completed dependency")
+			}
+		})
+	}
+}
+
+func TestSingleJob(t *testing.T) {
+	for _, tc := range []struct{ name, script, want string }{
+		{"outputs", `echo "answer=42" >> "$GITHUB_OUTPUT"`, "success"},
+		{"failure", `exit 17`, "failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := "name: probe\non: push\njobs:\n  forbidden:\n    runs-on: ubuntu-latest\n    steps:\n      - run: touch forbidden\n  only:\n    runs-on: ubuntu-latest\n    outputs:\n      answer: ${{ steps.step.outputs.answer }}\n    steps:\n      - id: step\n        run: " + tc.script + "\n"
+			if err := os.WriteFile(filepath.Join(dir, "workflow.yml"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			got := execute(t.Context(), request{Mode: "job", Workdir: dir, Workflow: "workflow.yml", JobID: "only"}, &logs)
+			if got.State != tc.want {
+				t.Fatalf("%+v\n%s", got, logs.String())
+			}
+			if _, err := os.Stat(filepath.Join(dir, "forbidden")); !os.IsNotExist(err) {
+				t.Fatal("kernel executed an unselected job")
+			}
+			if tc.want == "success" && got.Outputs["answer"] != "42" {
+				t.Fatalf("outputs=%v", got.Outputs)
+			}
+		})
+	}
+}
+
+func TestCancellation(t *testing.T) {
+	dir := t.TempDir()
+	source := "name: cancel\non: push\njobs:\n  only:\n    runs-on: ubuntu-latest\n    steps:\n      - run: exec sleep 60\n"
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yml"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	var logs bytes.Buffer
+	got := execute(ctx, request{Mode: "job", Workdir: dir, Workflow: "workflow.yml", JobID: "only"}, &logs)
+	if got.State != "cancelled" || time.Since(started) > 10*time.Second {
+		t.Fatalf("cancellation %+v elapsed=%s", got, time.Since(started))
+	}
+}
+
+func TestSecretBoundary(t *testing.T) {
+	dir := t.TempDir()
+	source := `name: secrets
+on: push
+jobs:
+  only:
+    runs-on: ubuntu-latest
+    outputs:
+      leaked: ${{ steps.step.outputs.leaked }}
+    steps:
+      - id: step
+        env:
+          SECRET: ${{ secrets.TOKEN }}
+        run: |
+          echo "$SECRET"
+          echo "leaked=$SECRET" >> "$GITHUB_OUTPUT"
+`
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yml"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	got := execute(t.Context(), request{Mode: "job", Workdir: dir, Workflow: "workflow.yml", JobID: "only", Secrets: map[string]string{"TOKEN": "probe-secret-012345"}}, &logs)
+	if got.State != "success" || len(got.Outputs) != 0 || strings.Contains(logs.String(), "probe-secret-012345") {
+		t.Fatalf("state=%s outputs=%v secret masking failed", got.State, got.Outputs)
+	}
+}

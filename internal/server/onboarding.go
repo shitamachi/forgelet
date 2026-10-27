@@ -187,21 +187,26 @@ func (s *Server) onboardingFiles(ctx context.Context, input onboardingInput) (on
 	if err != nil {
 		return onboardingPreview{}, event, nil, fmt.Errorf("read fixed commit workflows: %w", err)
 	}
-	files = s.workflowFiles(repo.Name, files)
+	files = s.sourceBundle(repo.Name, files)
 	return onboardingPreview{Repository: repo, SHA: sha, Ref: ref, Workflows: []workflowPreview{}}, event, files, nil
 }
-func (s *Server) checkOnboarding(source []byte, event run.Event, path string) (int, error) {
+func (s *Server) checkOnboarding(ctx context.Context, source []byte, event run.Event, path string, bundles ...map[string][]byte) (int, error) {
+	var files map[string][]byte
+	if len(bundles) > 0 {
+		files = bundles[0]
+	}
 	event.WorkflowPath = path
-	plans, err := workflow.Validate(source, event)
+	plans, err := workflow.ValidateFiles(source, event, files)
 	if err != nil {
 		return 0, err
 	}
-	for _, plan := range plans {
-		if _, ok := s.cfg.Profiles[plan.Profile]; !ok {
-			return 0, fmt.Errorf("unknown execution profile %s; select a configured runs-on profile", plan.Profile)
-		}
+	if err := s.validateProfiles(plans); err != nil {
+		return 0, err
 	}
-	plans, err = workflow.Compile(source, event, "onboarding-preview")
+	if err := s.resolveActions(ctx, plans); err != nil {
+		return 0, err
+	}
+	plans, err = workflow.CompileFiles(source, event, "onboarding-preview", files)
 	if err != nil {
 		return 0, err
 	}
@@ -221,8 +226,8 @@ func (s *Server) githubPreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	for path, source := range files {
-		jobs, err := s.checkOnboarding(source, event, path)
+	for path, source := range s.workflowFiles(event.Repository, files) {
+		jobs, err := s.checkOnboarding(r.Context(), source, event, path, files)
 		item := workflowPreview{Path: path, Source: string(source), Runnable: err == nil, Jobs: jobs}
 		if err != nil {
 			item.Diagnostic = err.Error()
@@ -244,15 +249,13 @@ func (s *Server) githubRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	source, ok := files[input.Path]
+	source, ok := s.workflowFiles(event.Repository, files)[input.Path]
 	if !ok {
 		http.Error(w, "enabled workflow is missing at this commit", http.StatusUnprocessableEntity)
 		return
 	}
-	if _, err = s.checkOnboarding(source, event, input.Path); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
+	// createRunFiles performs admission once and returns a saved delivery before
+	// touching mutable Action refs on a retried first-run request.
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
 	if s.management().Version != version || !s.allowed(event.Repository) {
@@ -265,7 +268,7 @@ func (s *Server) githubRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event.DeliveryID = "onboarding-" + stableID(event.Repository, event.SHA, input.Path, input.Ref, input.EventName, string(inputBytes), string(source), input.RequestID)
-	item, err := s.createRun(r.Context(), event, input.Path, source)
+	item, err := s.createRunFiles(r.Context(), event, input.Path, source, files)
 	if err != nil {
 		if errors.Is(err, ErrWorkflow) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)

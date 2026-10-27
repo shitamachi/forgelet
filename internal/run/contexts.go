@@ -12,7 +12,18 @@ func (p Plan) Contexts() (map[string]string, map[string]any) {
 	if eventName == "" {
 		eventName = "push"
 	}
-	values := map[string]string{"github.workflow": p.WorkflowName, "github.job": p.Group, "github.run_id": p.RunID, "github.repository_owner": strings.SplitN(p.Repository, "/", 2)[0], "github.server_url": "https://github.com", "github.api_url": "https://api.github.com", "github.sha": p.SHA, "github.ref": p.Ref, "github.ref_name": strings.TrimPrefix(strings.TrimPrefix(p.Ref, "refs/heads/"), "refs/tags/"), "github.repository": p.Repository, "github.event_name": eventName, "github.base_ref": p.BaseRef, "github.action_path": p.ActionPath}
+	jobKey := p.Group
+	if at := strings.LastIndexByte(jobKey, '/'); at >= 0 {
+		jobKey = jobKey[at+1:]
+	}
+	values := map[string]string{"github.workflow": p.WorkflowName, "github.job": jobKey, "github.run_id": p.RunID, "github.repository_owner": strings.SplitN(p.Repository, "/", 2)[0], "github.server_url": "https://github.com", "github.api_url": "https://api.github.com", "github.sha": p.SHA, "github.ref": p.Ref, "github.ref_name": strings.TrimPrefix(strings.TrimPrefix(p.Ref, "refs/heads/"), "refs/tags/"), "github.repository": p.Repository, "github.event_name": eventName, "github.base_ref": p.BaseRef, "github.action_path": p.ActionPath}
+	values["github.ref_type"] = "branch"
+	if strings.HasPrefix(p.Ref, "refs/tags/") {
+		values["github.ref_type"] = "tag"
+	}
+	if p.GitHubAPIURL != "" {
+		values["github.api_url"] = p.GitHubAPIURL
+	}
 	var event struct {
 		Sender struct {
 			Login string `json:"login"`
@@ -29,7 +40,9 @@ func (p Plan) Contexts() (map[string]string, map[string]any) {
 	if eventName == "pull_request" {
 		values["github.ref_name"] = strings.TrimPrefix(p.Ref, "refs/pull/")
 	}
-	typed := map[string]any{"matrix": p.Matrix, "inputs": p.Inputs, "strategy.job-index": p.MatrixIndex, "strategy.job-total": p.MatrixTotal, "strategy.max-parallel": p.MaxParallel, "strategy.fail-fast": p.FailFast}
+	var payload any
+	_ = json.Unmarshal(p.Event, &payload)
+	typed := map[string]any{"github.event": payload, "matrix": p.Matrix, "inputs": p.Inputs, "strategy.job-index": p.MatrixIndex, "strategy.job-total": p.MatrixTotal, "strategy.max-parallel": p.MaxParallel, "strategy.fail-fast": p.FailFast}
 	for key, v := range p.Matrix {
 		typed["matrix."+key] = v
 	}
@@ -52,4 +65,11 @@ func (p Plan) Contexts() (map[string]string, map[string]any) {
 		typed["inputs"] = p.ActionInputs
 	}
 	return values, typed
+}
+
+// TokenEnvironment allows an explicit secret binding, without permitting
+// replacement of runner identity variables or ambient credentials.
+func TokenEnvironment(name, value string) bool {
+	value = strings.TrimSpace(value)
+	return name == "GITHUB_TOKEN" && strings.HasPrefix(value, "${{") && strings.HasSuffix(value, "}}") && strings.TrimSpace(value[3:len(value)-2]) == "secrets.GITHUB_TOKEN"
 }

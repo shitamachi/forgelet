@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const maxLogLine = 64 << 10
@@ -61,8 +62,19 @@ func (m *masker) consume(data []byte, final bool) []byte {
 			}
 		}
 		if !matched {
-			result.WriteByte(m.tail[index])
-			index++
+			if !final && !utf8.FullRune(m.tail[index:]) {
+				break
+			}
+			r, size := utf8.DecodeRune(m.tail[index:])
+			if !final && index+size > end {
+				break
+			}
+			if r == utf8.RuneError && size == 1 {
+				result.WriteRune(utf8.RuneError)
+			} else {
+				result.Write(m.tail[index : index+size])
+			}
+			index += size
 		}
 	}
 	copy(m.tail, m.tail[index:])
