@@ -22,6 +22,8 @@ forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为�
 | 共享状态 | 同 job 内 shell、JS、Composite 共享 workspace、GITHUB_ENV、GITHUB_PATH；输出使用 GITHUB_OUTPUT；shell export 不跨 step |
 | 配额 | 最多 64 个逻辑 job、展开后合计 256 个 job，每 job 最多 256 steps；省略 job timeout 时使用 GitHub 默认 360 分钟，显式整数 1–1440 分钟仍保留 |
 
+act profile在workflow预算之前单独提供最多15分钟的管理员runner镜像及镜像目录准备时间。原timeout-minutes覆盖之后的worker及全部workflow步骤，准备和执行均可取消；native计时不变。这是Forgelet的环境准备策略，不承诺与GitHub托管runner计时完全一致。
+
 Filters 支持字面量、`*`、`**`、`?` 和按顺序覆盖的 `!` 排除；不支持字符组、`+`、转义语法。
 同类 include/ignore 不能同时声明；每列表 1–100 项，每 pattern 最多 256 bytes，至少一个正向 pattern。
 branch 与 path filters 同时存在时均须匹配；tag push 不检查 paths。PR 分支过滤使用 base branch。

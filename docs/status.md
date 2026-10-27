@@ -779,3 +779,11 @@ b8f4702原固定计划重跑8ca9acc3最终success：test与build-and-push均成�
 8220b7c完整Testcontainers PASS1575.496秒：27个必选叶场景通过，2个需外部私有业务目录的可选fixture跳过，独立SDK归档checksum拒绝场景通过；act251.19秒（含后台helper/256MiB写层后的真实超时终态ACK、重启、取消、失败和缓存）、Rust102.47秒、384MiB缓存185.66秒、自动CD96.50秒、真实SDK12.18秒、浏览器35.48秒、GitHub登录/授权/重启103.78秒、GC16.30秒。临时k3s7d0ee39dfec5已清理。此前make verify与race专项通过，现有源码自动回归齐备；homelab公共标准库层属于另行构建/复用验证的实际环境优化，未将其算作临时集群SDK外网下载成功。
 
 真实API验收已通过并恢复托管Actions；Tasks e352/e4仍在运行/排队，原20分钟不变，手动PG/Mongo和Rust原业务workflow尚未结束。自动测试成功不能替代这些实际业务结果。
+
+## 2026-10-28 04:45：准备预算与停止状态延迟修正（验证中）
+
+Tasks原固定fe3计划的CI e35240de最终interrupted，实际supervisor stderr明确记录owned act containers are still running；静态检查/编译9分21.33秒、Atlas59.90秒、迁移1.41秒，已进入race，尚未获得断言结果。原20分钟包含此前约7分钟runner及镜像目录准备。公共标准库层有所复用，但不足以单独解决总预算；保留失败历史，不改写为已确认的业务断言失败。自主排队image e4bf1c97已明确cancelled以便换新策略重跑，不取消外部push。
+
+新实现将管理员镜像准备独立限制15分钟，之后完整保留原workflow预算；Pod deadline同步增加有界准备额度。杀停改为5秒信号请求加20秒总窗口内轮询确认状态，继续fail closed，不等待overlay删除。专项race PASS15.389秒（executor）/1.574秒（kube）；make verify完整通过，含35前端单测与14浏览器31.3秒。新的真实临时k3s增加同Pod准备时冻结executor65秒、超过原workflow一分钟后恢复，以及busy Node/2000小文件/256MiB后台helper的超时ACK回归；专项与全量尚待完成，尚未部署新源码。
+
+Rust原workflow已由真实push 8e265947触发run50d91035，正在编译；原publish=false保持，不能把触发视为验收成功。API完整原workflow已通过，Tasks两个入口及手动PG18/Mongo7仍待完成。

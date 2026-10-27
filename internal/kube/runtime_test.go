@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -298,6 +299,30 @@ func TestWorkspaceLimit(t *testing.T) {
 			}
 			if len(client.Actions()) != 0 {
 				t.Fatal("invalid quota reached Kubernetes")
+			}
+		})
+	}
+}
+
+func TestActPodDeadlineIncludesBoundedPreparation(t *testing.T) {
+	for _, seconds := range []int{0, 1, 1200, 21600} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			rt, client, job, profile := fixture(t)
+			job.Plan.TimeoutSeconds = seconds
+			profile.Act = &ActProfile{}
+			if _, err := rt.Ensure(t.Context(), job, profile); err != nil {
+				t.Fatal(err)
+			}
+			pod, err := client.CoreV1().Pods("ci").Get(t.Context(), job.PodName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := int64(seconds + 120 + run.ActPreparationSeconds)
+			if seconds <= 0 {
+				expected = 1320 + run.ActPreparationSeconds
+			}
+			if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds != expected {
+				t.Fatalf("deadline=%v want=%d", pod.Spec.ActiveDeadlineSeconds, expected)
 			}
 		})
 	}

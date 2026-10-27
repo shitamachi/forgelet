@@ -146,8 +146,14 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	if seconds <= 0 {
 		seconds = 1200
 	}
-	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	preparationTimeout := opts.ActPreparationTimeout
+	if preparationTimeout <= 0 {
+		preparationTimeout = time.Duration(run.ActPreparationSeconds) * time.Second
+	}
+	preparationCtx, cancelPreparation := context.WithTimeout(jobCtx, preparationTimeout)
+	defer cancelPreparation()
 	mask := newMasker()
 	for _, value := range append(append([]string(nil), opts.Masks...), opts.CloneToken) {
 		if err := mask.add(value); err != nil {
@@ -191,7 +197,7 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	// All containers belong to this one engine/job. Stop them before reporting
 	// cancellation or timeout, including Testcontainers and nested build helpers.
 	defer func() {
-		cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer done()
 		if err := stopActContainers(cleanupCtx); err != nil {
 			returnErr = errors.Join(returnErr, errActCleanup, err)
@@ -223,11 +229,11 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	}()
 	// Pull with the supervisor's read-only registry config; the job container
 	// receives neither that config nor the control-plane workload token.
-	pull := exec.CommandContext(jobCtx, "docker", "pull", opts.ActImage)
+	pull := exec.CommandContext(preparationCtx, "docker", "pull", opts.ActImage)
 	pull.Env = append(os.Environ(), "DOCKER_CONFIG="+opts.RegistryConfig)
 	pullSink := &logSink{mask: mask, stepID: "", emit: func(id string, b []byte) error {
 		if opts.ContextLog != nil {
-			return opts.ContextLog(jobCtx, id, b)
+			return opts.ContextLog(preparationCtx, id, b)
 		}
 		if opts.Log != nil {
 			return opts.Log(id, b)
@@ -237,29 +243,35 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	pull.Stdout, pull.Stderr = pullSink, pullSink
 	image := opts.ActImage
 	code := 0
-	if local, verified := preloadedActImage(jobCtx, opts); verified {
+	if local, verified := preloadedActImage(preparationCtx, opts); verified {
 		image = local
 		_, err = pullSink.Write([]byte("Using verified preloaded act image " + local + "\n"))
 	} else {
-		code, err = runProcess(jobCtx, pull)
+		code, err = runProcess(preparationCtx, pull)
 	}
 	if flushErr := pullSink.finish(); flushErr != nil {
 		return result, flushErr
 	}
 	if err != nil || code != 0 {
-		if jobCtx.Err() != nil {
-			result.State = contextState(jobCtx)
+		if preparationCtx.Err() != nil {
+			result.State = contextState(preparationCtx)
+			result.Error = "act environment preparation did not complete"
 			return result, nil
 		}
 		return result, fmt.Errorf("prepare act runtime image")
 	}
-	if err := prepareActMirrors(jobCtx, opts, pullSink); err != nil {
-		if jobCtx.Err() != nil {
-			result.State = contextState(jobCtx)
+	if err := prepareActMirrors(preparationCtx, opts, pullSink); err != nil {
+		if preparationCtx.Err() != nil {
+			result.State = contextState(preparationCtx)
+			result.Error = "act environment preparation did not complete"
 			return result, nil
 		}
 		return result, err
 	}
+	cancelPreparation()
+	workflowCtx, cancelWorkflow := context.WithTimeout(jobCtx, time.Duration(seconds)*time.Second)
+	defer cancelWorkflow()
+	protocol.ctx = workflowCtx
 	request := run.ActRequest{CPUCount: opts.ActCPUCount, BuildkitImage: opts.ImageMirrors["moby/buildkit:buildx-stable-1"], BuildkitConfig: opts.BuildkitConfig, PackageToken: opts.PackageToken, Plan: plan, Workspace: workspace, Image: image, Secrets: opts.Secrets, Token: opts.CloneToken, CacheURL: cache.URL(), CacheToken: cache.token, ActionBaseURL: opts.ActionBaseURL}
 	data, err := json.Marshal(request)
 	if err != nil {
@@ -269,16 +281,16 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	if worker == "" {
 		worker = "/usr/local/bin/forgelet-act"
 	}
-	cmd := exec.CommandContext(jobCtx, worker)
+	cmd := exec.CommandContext(workflowCtx, worker)
 	cmd.Env = append(os.Environ(), "ACTIONS_RUNTIME_TOKEN="+cache.token, "ACTIONS_RUNTIME_URL="+cache.URL())
 	cmd.Stdin = bytes.NewReader(data)
 	cmd.Stdout = protocol
-	code, err = runProcess(jobCtx, cmd)
+	code, err = runProcess(workflowCtx, cmd)
 	if protocol.failure != nil {
 		return result, protocol.failure
 	}
-	if jobCtx.Err() != nil {
-		result.State = contextState(jobCtx)
+	if workflowCtx.Err() != nil {
+		result.State = contextState(workflowCtx)
 		return result, nil
 	}
 	if err != nil {
@@ -318,18 +330,27 @@ func stopActContainers(ctx context.Context) error {
 	// The entire private engine and its data are reclaimed with the Pod. Removing
 	// a large build container here can exhaust the result-reporting grace period.
 	args := append([]string{"kill"}, ids...)
-	killErr := exec.CommandContext(ctx, "docker", args...).Run()
-	remaining, err := exec.CommandContext(ctx, "docker", "ps", "-q").Output()
-	if err != nil {
-		return fmt.Errorf("confirm owned act containers stopped: %w", err)
-	}
-	if len(strings.Fields(string(remaining))) != 0 {
-		if killErr != nil {
-			return fmt.Errorf("stop owned act containers: %w", killErr)
+	// Reserve time to observe daemon state after signalling, even if Docker's
+	// kill request waits for its own container cleanup before returning.
+	killCtx, cancelKill := context.WithTimeout(ctx, 5*time.Second)
+	killErr := exec.CommandContext(killCtx, "docker", args...).Run()
+	cancelKill()
+	for {
+		remaining, err := exec.CommandContext(ctx, "docker", "ps", "-q").Output()
+		if err != nil {
+			return fmt.Errorf("confirm owned act containers stopped: %w", err)
 		}
-		return fmt.Errorf("owned act containers are still running")
+		if len(strings.Fields(string(remaining))) == 0 {
+			// A container can exit between listing and kill. Conversely, Docker
+			// can acknowledge the signal before updating its running state.
+			return nil
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("owned act containers did not stop: %w", errors.Join(ctx.Err(), killErr))
+		case <-timer.C:
+		}
 	}
-	// A container can exit between listing and kill; the final observation is
-	// authoritative even when Docker returns an already-stopped error.
-	return nil
 }

@@ -84,6 +84,60 @@ func testActJobs(t *testing.T, ctx context.Context, cluster testcontainers.Conta
 			}
 			return result
 		}
+		// Suspend the real executor during its first image pull for longer than
+		// this workflow's entire execution budget. The Pod and identity stay the
+		// same, and the workflow must still receive its own minute after resume.
+		preparing := create(t, `on: push
+jobs:
+  preparation:
+    runs-on: actions
+    timeout-minutes: 1
+    steps:
+      - run: echo act-preparation-budget-ready
+`)
+		var preparingPod *corev1.Pod
+		var containerID string
+		waitForTimeout(t, ctx, "act runtime preparation before workflow", 4*time.Minute, func() bool {
+			current := get(t, preparing.ID)
+			job := actJob(current)
+			if job.State != run.Running || !strings.Contains(logs(preparing), "Pulling from") {
+				return false
+			}
+			var err error
+			preparingPod, err = client.CoreV1().Pods("forgelet").Get(ctx, job.PodName, metav1.GetOptions{})
+			if err != nil {
+				return false
+			}
+			for _, status := range preparingPod.Status.ContainerStatuses {
+				if status.Name == "executor" && status.State.Running != nil {
+					containerID = strings.TrimPrefix(status.ContainerID, "containerd://")
+					return containerID != ""
+				}
+			}
+			return false
+		})
+		if preparingPod.Spec.ActiveDeadlineSeconds == nil || *preparingPod.Spec.ActiveDeadlineSeconds != int64(60+120+run.ActPreparationSeconds) {
+			t.Fatal("Pod deadline omits bounded preparation", preparingPod.Spec.ActiveDeadlineSeconds)
+		}
+		clusterCommand(t, ctx, cluster, "ctr", "--namespace=k8s.io", "tasks", "pause", containerID)
+		resumePreparation := func() {
+			resumeCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer done()
+			_, _, _ = cluster.Exec(resumeCtx, []string{"ctr", "--namespace=k8s.io", "tasks", "resume", containerID})
+		}
+		defer resumePreparation()
+		timer := time.NewTimer(65 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatal(ctx.Err())
+		case <-timer.C:
+		}
+		clusterCommand(t, ctx, cluster, "ctr", "--namespace=k8s.io", "tasks", "resume", containerID)
+		prepared := waitDone(preparing)
+		if actJob(prepared).PodUID != string(preparingPod.UID) || !strings.Contains(logs(preparing), "act-preparation-budget-ready") {
+			t.Fatal("preparation resumed with a different attempt or lost workflow output", prepared)
+		}
 		source := `on: push
 jobs:
   act:
@@ -262,9 +316,9 @@ jobs:
     timeout-minutes: 1
     steps:
       - run: |
-          docker run -d --network none --name timeout-owned-helper forgelet-mirror-probe:stage10d sh -c 'dd if=/dev/zero of=/cleanup-fixture bs=1048576 count=256; sleep 120'
+          docker run -d --network none --name timeout-owned-helper forgelet-mirror-probe:stage10d sh -c 'dd if=/dev/zero of=/cleanup-fixture bs=1048576 count=256; mkdir /cleanup-files; i=0; while test "$i" -lt 2000; do printf fixture > /cleanup-files/$i; i=$((i+1)); done; sleep 120'
           echo act-timeout-ready
-          sleep 120
+          node -e 'for (;;) {}'
 `)
 		waitForTimeout(t, ctx, "act job deadline", 4*time.Minute, func() bool { return get(t, timed.ID).State.Terminal() })
 		if got := get(t, timed.ID); actJob(got).State != run.TimedOut {

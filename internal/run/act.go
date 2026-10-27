@@ -26,3 +26,7 @@ type ActMessage struct {
 }
 
 const ActSocket = "/run/forgelet-act/docker.sock"
+
+// Preparing the administrator's execution environment is bounded separately
+// from the workflow job's timeout. No workflow steps run during this phase.
+const ActPreparationSeconds = 15 * 60

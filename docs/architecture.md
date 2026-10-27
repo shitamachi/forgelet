@@ -614,4 +614,6 @@ homelab ubuntu-latest额外预编译Go1.26.4公共标准库的普通和race缓�
 
 下载代理的复用HTTP/2连接出现长时间等待后，homelab工具镜像临时设置GODEBUG=http2client=0；新进程/三组空缓存已验证公共模块校验通过，尚不据此断言代理或Go的唯一缺陷。该网络绕行仅为部署环境设置，项目默认Dockerfile仍保持原配置。
 
-act超时/取消/返回前，supervisor杀停本Pod自有引擎中的运行容器，再次列举确认没有运行容器才允许终态ACK。无需等待大overlay文件系统删除，磁盘数据随引擎Pod回收；确认失败仍保持interrupted语义，不把未证明停止的执行当作完成。
+act超时/取消/返回前，supervisor杀停本Pod自有引擎中的运行容器，在20秒清理窗口内轮询确认没有运行容器才允许终态ACK。kill请求最多占用5秒，为Docker运行状态延迟更新保留观察时间。无需等待大overlay文件系统删除，磁盘数据随引擎Pod回收；确认失败仍保持interrupted语义，不把未证明停止的执行当作完成。
+
+act 的管理员环境准备单独限时15分钟，仅覆盖固定runner镜像和镜像目录的准备；完成后才启动workflow原timeout-minutes预算，worker初始化、Action下载、checkout、工具安装和所有原步骤仍计入workflow预算。两段均可取消，准备超时给出明确诊断；Pod总deadline增加对应15分钟并保留原120秒回传/清理余量，native不变。这是Forgelet明确的执行策略，不声称与GitHub托管runner准备阶段完全等价，也不修改原业务YAML的20分钟限制。

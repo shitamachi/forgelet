@@ -28,30 +28,31 @@ import (
 // Options supplies the execution workspace and scoped credentials. CloneToken is
 // passed only to git child processes and is never persisted in a git config file.
 type Options struct {
-	ActCPUCount         int64
-	ActCacheObjectBytes int64
-	BuildkitConfig      string
-	PackageToken        string
-	ActCacheHost        string
-	ImageMirrors        map[string]string
-	ActImage            string
-	ActWorker           string
-	Services            Services
-	Buildctl            string
-	BuildAddress        string
-	BuildImages         []string
-	BuildInsecure       bool
-	RegistryConfig      string
-	Workspace           string
-	Log                 func(stepID string, data []byte) error
-	ContextLog          func(context.Context, string, []byte) error
-	CloneURL            string
-	CloneToken          string
-	Masks               []string
-	Secrets             map[string]string
-	NodeRuntimes        map[string]string
-	ActionClient        *http.Client
-	ActionBaseURL       string
+	ActCPUCount           int64
+	ActCacheObjectBytes   int64
+	ActPreparationTimeout time.Duration
+	BuildkitConfig        string
+	PackageToken          string
+	ActCacheHost          string
+	ImageMirrors          map[string]string
+	ActImage              string
+	ActWorker             string
+	Services              Services
+	Buildctl              string
+	BuildAddress          string
+	BuildImages           []string
+	BuildInsecure         bool
+	RegistryConfig        string
+	Workspace             string
+	Log                   func(stepID string, data []byte) error
+	ContextLog            func(context.Context, string, []byte) error
+	CloneURL              string
+	CloneToken            string
+	Masks                 []string
+	Secrets               map[string]string
+	NodeRuntimes          map[string]string
+	ActionClient          *http.Client
+	ActionBaseURL         string
 }
 
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

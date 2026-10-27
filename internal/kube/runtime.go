@@ -138,6 +138,9 @@ func (r *Runtime) Ensure(ctx context.Context, job run.Job, profile Profile) (str
 	if job.Plan.TimeoutSeconds <= 0 {
 		deadline = 1320
 	}
+	if profile.Act != nil {
+		deadline += run.ActPreparationSeconds
+	}
 	resources := corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}
 	workspaceLimit := profile.WorkspaceLimit
 	if workspaceLimit == "" {
