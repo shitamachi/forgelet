@@ -617,3 +617,9 @@ homelab ubuntu-latest额外预编译Go1.26.4公共标准库的普通和race缓�
 act超时/取消/返回前，supervisor杀停本Pod自有引擎中的运行容器，在20秒清理窗口内轮询确认没有运行容器才允许终态ACK。kill请求最多占用5秒，为Docker运行状态延迟更新保留观察时间。无需等待大overlay文件系统删除，磁盘数据随引擎Pod回收；确认失败仍保持interrupted语义，不把未证明停止的执行当作完成。
 
 act 的管理员环境准备单独限时15分钟，仅覆盖固定runner镜像和镜像目录的准备；完成后才启动workflow原timeout-minutes预算，worker初始化、Action下载、checkout、工具安装和所有原步骤仍计入workflow预算。两段均可取消，准备超时给出明确诊断；Pod总deadline增加对应15分钟并保留原120秒回传/清理余量，native不变。这是Forgelet明确的执行策略，不声称与GitHub托管runner准备阶段完全等价，也不修改原业务YAML的20分钟限制。
+
+### 可选的 DuckDB 原生库 CPU 兼容工具层（可选镜像已验证，业务验收独立记录）
+
+`tools/duckdb` 独立构建固定源提交的 DuckDB2.0.0共享库，采用上游EXTENSION/x86-64-v2参数，保留core/json/parquet/icu；用Debian bookworm GCC12原生交叉编译到amd64，避免在homelab编译或通过QEMU模拟整套C++构建。源归档SHA和产物SHA分别固定/记录，不改Go模块缓存或校验和。
+
+只有管理员显式选择的工具镜像设置`GOFLAGS=-tags=duckdb_use_lib`与`CGO_LDFLAGS`，走官方Go绑定的动态链接入口；该设置影响该工具镜像内的Go命令，不影响Dockerfile独立build stage，其他默认/native/Rust镜像不改。驱动升级必须同步核对C API版本并重新构建/测试，不能作为任意版本通用替代库。代价是一次本机构建和按需镜像层，不增加常驻服务；原workflow、单测和race门禁保留。可选Testcontainers用真实Go绑定核对版本、SQL、JSON、ICU与Parquet，物理N5105兼容性及原业务流程另行验收，不将模拟amd64容器结果当作真实CPU兼容证明。此段是新增实现设计，实际构建/测试/部署结果见status。

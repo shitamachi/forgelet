@@ -152,7 +152,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
     - [x] packages:write 显式 Secret 引用、领取时权限复核、源只读 token 分离，拒绝 PR/native；原始 steam-admin image 与 steam-login 的自有 registry/GHCR 两次隔离发布及 digest 验证通过。
     - [x] steam-platform-web 原 check 冷热两次与各自 needs:image 完整通过：在 Forgelet 外确认并修复业务 hydration 竞态，保留原 workflow/E2E/Dockerfile 字节；显式源码补丁与标准工具 profile 下，共 28 个原主步骤、56 Playwright、pnpm false→true、新 builder RUN 层 CACHED 及 latest/SHA 标签 digest 核对通过。默认 129 MiB 实际 SDK 分块、重启/失败/取消专项及 make verify 通过；单对象与暂存字节预算不变。steam-api 本批仍为原 YAML 编译样本，真实业务测试问题留在 10.6e。
   - [x] **10.6d Rust 执行环境**：steam-cm 原 rust-ci.yml 使用 ubuntu-24.04、Rust 1.97/rustup、pwsh、Python3 和 Docker smoke/managed tests；补齐显式 profile、shell 行为及取消/退出码测试。保持 publish=false 默认，不把普通 push 改成发布，更不绕过容器安全/生命周期验收。工具与引擎均随 job 按需运行，不新增常驻服务。
-  - [ ] **10.6e 业务修正与 CD 接续**：steam-tasks 的 SDK priceregion 与独立 Docker context 已修正并提交，尚需事故后的原 workflow 与 PostgreSQL 实际验收；steam-api 原 SHA 的本地测试及事故后原 workflow 测试任务已成功，镜像任务验收中；steam-platform-web 比较竞态已修复并完成原 workflow 冷/热与镜像发布专项，相关修复已提交/推送，执行环境已部署，真实 push 冷/热 CI 与镜像发布通过；业务 CD 接续继续单独交付。分别记录业务失败与平台失败，修正需保留真实测试语义。SDK 当前公开，不将其误报为已确认的私有授权阻塞。为实际需要部署的仓库明确镜像 digest、GitOps repo/path、环境与健康检查，接上现有 native CD → Flux；逐库记录 CI、镜像发布、部署、失败阻断、回滚/恢复，不能将原 workflow 的镜像 push 当成 CD 完成。跨仓库短期 token 仅在真实私有依赖需要时按管理员显式范围扩展。
+  - [ ] **10.6e 业务修正与 CD 接续**：steam-tasks 的 SDK priceregion 与独立 Docker context 已修正并提交，尚需事故后的原 workflow 与 PostgreSQL 实际验收；steam-api 原 SHA 的本地测试及事故后原 workflow 测试/镜像/Checks和标签digest均已验收成功（b8f4702/8ca9acc3）；steam-platform-web 比较竞态已修复并完成原 workflow 冷/热与镜像发布专项，相关修复已提交/推送，执行环境已部署，真实 push 冷/热 CI 与镜像发布通过；业务 CD 接续继续单独交付。分别记录业务失败与平台失败，修正需保留真实测试语义。SDK 当前公开，不将其误报为已确认的私有授权阻塞。为实际需要部署的仓库明确镜像 digest、GitOps repo/path、环境与健康检查，接上现有 native CD → Flux；逐库记录 CI、镜像发布、部署、失败阻断、回滚/恢复，不能将原 workflow 的镜像 push 当成 CD 完成。跨仓库短期 token 仅在真实私有依赖需要时按管理员显式范围扩展。
 - [x] **10.7a 第一批自动验证**：make verify、单测/真实 HTTP/SQLite/执行器、23 个全量 Testcontainers 叶子场景通过（1117.652 秒）；最新整对象诊断追加 2 场景专项通过（217.507 秒）。覆盖嵌套/括号 typed inputs/secret 作用域/outputs、失败/跳过/取消、rerun、并发、真实重启和原 CI/CD；workflow 88.2%，调度/调用核心细项见 status。修复真实 Pod 发现的领取→凭据阶段取消竞态。
 - [ ] **10.7b 完整业务与实际环境验证**：后续每批继续单测/集成/Testcontainers；独立记录 steam-tasks 完整 workflow 与 homelab 实际部署、GitOps/Flux 结果，解析样本或独立 fixture 不能代替业务运行。
 
@@ -160,7 +160,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 
 ## 接下来
 
-阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；接下来推进 10.6d Rust profile，并继续 10.6e 的业务修正与 CD 接续；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
+阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；10.6d Rust原workflow与smoke/managed验收已完成，接下来完成10.6e的Tasks原流程/PG-Mongo和已接续业务CD的收尾；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。
@@ -196,3 +196,7 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 05:24追加：c1d1929全量Testcontainers PASS1653.055秒（27必选叶场景、2可选私有fixture跳过，临时资源已清理），make verify/专项/全量齐备；真实Rust已通过，Tasks两入口和手动PG/Mongo仍待结果，10.7b继续未完成。
 
 2026-10-28 05:30追加：3CPU原冷CI 7f025d00仍20分钟timed_out，但已正确ACK/清理。只将homelab Ubuntu引擎突发limit调整为4核、request1/内存4Gi/并发2/worker隔离不变，Rust仍3；原固定计划7d1b8239/54637ffc新运行待验收。保留原20分钟和真实失败，Tasks/PG验收继续未完成。
+
+2026-10-28 06:12追加：Ubuntu4CPU实际可见性通过，原Tasks CI7d1b8239在原20分钟内返回failure，race暴露DuckDB2.0原生库SIGILL和fence测试异步时序；3CPU旧日志也包含SIGILL。fence测试本地修复/race重复验证通过但未推送；固定版本的CPU兼容共享库正在本机限额交叉编译，尚未部署。image54637ffc独立遇到Atlas下载TLS失败，发布skipped。保持原workflow/断言、worker隔离/内存准入，不把CPU调整或本地回归视为Tasks完整验收，10.6e/10.7b继续待完成。
+
+2026-10-28 06:24追加：DuckDB同2.0.0/x86-64-v2可选工具镜像已构建，make verify和真实Go驱动Testcontainers PASS35.310秒；物理N5105原生SQL探针通过并清理。固定镜像6ace4272已只替换Ubuntu runner，资源/隔离策略保持；测试同步修复7c5d09a已真实push，原YAML的CI1b17a3c4/image221882fe正在运行，随后验收手动PG18/Mongo7，清单尚不勾选。

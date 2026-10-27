@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 的真实业务验收仍在进行，最新完整自动回归已通过，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 的原生库 CPU 兼容镜像已部署、测试时序修复已推送，原 workflow 与 PG/Mongo 正在重新验收，最新完整自动回归已通过，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | fe3f7df；4CPU原计划CI 7d1b8239 / image 54637ffc | 准备分离后的3CPU冷CI 7f025d00明确timed_out并完成ACK；旧失败保留，4CPU新运行待验收 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
+| steam-tasks | 新7c5d09a；真实push CI1b17a3c4 / image221882fe | 原YAML保持；测试同步修复与DuckDB2.0 CPU兼容工具层已部署，新流程运行中，旧失败/超时留存 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -811,3 +811,23 @@ c1d1929全量Testcontainers PASS1653.055秒：27个必选叶场景通过，2个�
 核对节点及现有准入后，只将homelab ubuntu-latest引擎CPU limit由3改为worker物理4核边界，request仍1；Rust保持3。内存request=limit4Gi、act-data24Gi、worker-only及并发2保留，仍依赖节点准入/真实余量，不保证繁忙worker能持续提供4核。当前Pod不回写；自主旧3CPU image重跑86901c7e明确cancelled留证，新同fe3/固定计划CI7d1b8239、image54637ffc已入队。只替换本次自主诊断运行，不取消外部push。
 
 变更前etcd无告警/leader1、P99 fsync39.35ms/commit53.74ms，Web HTTP200/Deployment ready1/Flux revision564223da和原镜像digest保持。本次仅部署配置调整，源码自动回归仍为c1d1929的make verify、专项及完整Testcontainers通过；4CPU实际可见性、原workflow成功与后续PG/Mongo仍需另证。
+
+## 2026-10-28 06:12：Tasks 原始 workflow 的两处失败已定位
+
+4CPU可见性已在真实Pod验证（内核quota=400000/100000、Docker NanoCpus=4e9、Node availableParallelism=4，内存4Gi），原固定fe3计划CI 7d1b8239最终failure而非timeout：静态检查/构建9分25.02秒、Atlas60.23秒、迁移1.10秒、race8分32.73秒返回exit1，checkout post及终态ACK正常。race暴露internal/lake初始化SIGILL和online/engine的TestEngineStopsWritingWhenFenced时序断言。回查此前3CPU 7f025d00日志也已有lake SIGILL；其最终超时属实，但不能将全部问题归因为CPU预算。
+
+engine生产实现会先取消并join旧worker，再报告OwnerLost；原测试在异步提交尚未确认fence时就记录读计数，可能把合法的fence前读取误判。业务库本地测试修复7c5d09a等待这个现有quiescence信号，不改生产逻辑或删除断言：整个engine包race重复30次PASS38.826秒，目标回归race重复200次PASS26.550秒；尚未推送，原Linux/Go1.26.4 workflow待重新验收。
+
+node3是无AVX/AVX2的Intel N5105；校验官方发布SHA256后，DuckDB2.0.0独立CLI在同worker的限额临时容器中同样SIGILL，ptrace记录故障指令字节c5f81005…（AVX VEX编码）。[上游2.0构建参数](https://github.com/duckdb/duckdb/blob/v2.0.0/scripts/architecture_flags.cmake)默认Linux amd64 CLI采用x86-64-v3，而EXTENSION profile采用x86-64-v2；该硬件与原生依赖二进制不兼容，不能通过调整Go并发修复。正在本机限额交叉编译同版本/固定源提交的兼容共享库（初始2CPU/4Gi，后改4CPU/6Gi与3个编译任务；集群未参与编译），拟通过[官方duckdb_use_lib机制](https://github.com/duckdb/duckdb-go-bindings/tree/v0.20000.0#dynamic-libraries)显式配置可选执行镜像；尚未完成或部署，不提前称成功，不替换模块缓存或降级依赖。
+
+另一个原fe3镜像入口54637ffc在静态检查/构建8分19.92秒成功后，下载Atlas遇到curl TLS错误35，按原定义failure、镜像任务skipped，未进入race；这是独立外部下载失败，不能冒称重现同一业务断言或镜像发布成功。上述自主诊断历史保留。当前etcd无告警/leader1、P99 fsync26.6ms/commit49.4ms，Web HTTP200/ready1、Flux564223da及部署digest保持。源码c1d1929自动验证已齐备；Tasks原CI、镜像和手动PG18/Mongo7仍未完成。
+
+## 2026-10-28 06:24：DuckDB CPU 兼容工具镜像验证并部署
+
+新增可选`tools/duckdb`构建脚本/镜像配方、原生C API探针及独立Go驱动Testcontainers回归，不增加控制面依赖或常驻服务。DuckDB仍为2.0.0/固定源d54cbbe3df17e8e5ce68312f483b4155836112aa，源归档SHA256 e2b89ce6…；Debian12 GCC12跨编译的EXTENSION/x86-64-v2共享库SHA256 9b758e8a960213b19e3b653848a27b4717351bdcec96d3dc33c49d977a507b73，包含core/json/parquet/icu。管理员显式选择的镜像设置官方duckdb_use_lib链接tag/搜索路径，原workflow和Go模块校验不改；不承诺其他DuckDB API版本或默认预编译包的所有可选扩展。
+
+自动验证：本批make verify完整PASS（Go race/进程内集成、构建/lint/generate、35前端单测、14浏览器32.8秒）；独立Testcontainers PASS35.310秒，真实Go1.26.4驱动race重复两轮，版本/聚合/JSON/ICU时区/Parquet写读均通过，先执行原生C API聚合探针。该amd64容器在本机arm64环境运行，不单独作为物理CPU证明。此前c1d1929核心完整临时k3s回归PASS1653.055秒仍对应当时源码；本次没有改控制面或执行协议，不将新增可选工具镜像专项称为全量k3s重跑。
+
+实际集群验证：候选固定镜像在node3/N5105以独立非root、只读root、无Kubernetes token、0.5CPU/256Mi Pod执行原生SQL，明确PASS sum=4950；现场flags确认无AVX/AVX2，probe Pod已删除。镜像zot.k.mygo.rocks/forgelet/executor-act-web-tools@sha256:6ace4272df85694d4c9addd94eed64e3ce7c8d69fa04bc414c8706a6c8edc01f新增压缩层47,178,231字节，固定基础1f8ecd0f及公共Go标准库缓存保留，没有业务源码/模块/token预热。兼容库在本机4CPU/6Gi上以3个编译任务完成，未占用集群编译。
+
+已只替换homelab Ubuntu runner镜像并rollout，server724e776d/supervisor083b2a4d、Rust镜像及CPU1/4与1/3、内存4Gi、data24Gi、并发2/worker隔离/所有镜像别名保持。业务测试同步修复7c5d09a已真实push；三个workflow YAML与原fe3字节一致，GitHub原CI1b17a3c4和image221882fe已接收并进入运行/等待。该触发不是成功验收，原CI/镜像、Checks及手动PG18/Mongo7待实际结果；10.6e/10.7b继续未完成。

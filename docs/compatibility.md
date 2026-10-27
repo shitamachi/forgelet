@@ -358,3 +358,5 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 新编译计划的默认 job timeout 对齐 [GitHub 官方语义](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes)：360 分钟。此前 Forgelet 独自采用20分钟，会在受限 CPU 的冷构建及外部 Action 下载时提前终止；显式 timeout-minutes 不变，已持久化计划/重跑仍保留原快照，零值旧计划的运行时20分钟兜底不变。
 
 2026-10-28真实Rust验收：steam-cm 8e265947原rust-ci.yml在显式ubuntu-24.04 profile完成test、独立release构建、smoke和release内两个managed lifecycle测试，Checks成功；原普通push不触发远程publish，不扩展到真实Steam或自动部署。homelab使用自定义Rust1.97 Debian builder alias而非保证上游镜像字节一致；临时k3s与真实业务结果分别见status。
+
+原生依赖的CPU要求仍是执行镜像/worker契约，不能由YAML解析兼容保证。DuckDB2.0的默认amd64原生库在无AVX的N5105上会SIGILL；可选`tools/duckdb`镜像以同版本x86-64-v2共享库和官方`duckdb_use_lib` tag解决这一特定ABI/硬件组合，需管理员显式选用。默认profile不隐式改写应用依赖或workflow；构建、容器回归和实际Tasks验收分别记录于status。

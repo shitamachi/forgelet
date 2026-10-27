@@ -1,0 +1,46 @@
+package probe
+
+import (
+    "database/sql"
+    "fmt"
+    "path/filepath"
+    "testing"
+
+    _ "github.com/duckdb/duckdb-go/v2"
+)
+
+// Exercise the real Go bindings, native library and built-in extensions.
+// No extension downloads or external database are permitted by this fixture.
+func TestPortableDuckDB(t *testing.T) {
+    db, err := sql.Open("duckdb", "")
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { if err := db.Close(); err != nil { t.Error(err) } })
+    db.SetMaxOpenConns(1)
+    for _, q := range []string{
+        "SET threads=2", "SET memory_limit='256MiB'",
+        "SET autoinstall_known_extensions=false", "SET autoload_known_extensions=false",
+        "LOAD json", "LOAD parquet", "LOAD icu", "SET TimeZone='UTC'",
+    } {
+        if _, err := db.ExecContext(t.Context(), q); err != nil { t.Fatalf("%s: %v", q, err) }
+    }
+    var version string
+    if err := db.QueryRowContext(t.Context(), "SELECT version()").Scan(&version); err != nil { t.Fatal(err) }
+    if version != "v2.0.0" { t.Fatalf("version=%q", version) }
+    for _, tc := range []struct{name, query string; want int64}{
+        {"query", "SELECT 42::BIGINT", 42},
+        {"aggregate", "SELECT sum(i)::BIGINT FROM range(100) r(i)", 4950},
+        {"json", `SELECT json_extract('{"answer":42}', '$.answer')::BIGINT`, 42},
+        {"icu", "SELECT hour(timezone('Asia/Shanghai', TIMESTAMPTZ '2026-01-01 00:00:00+00'))::BIGINT", 8},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            var got int64
+            if err := db.QueryRowContext(t.Context(), tc.query).Scan(&got); err != nil { t.Fatal(err) }
+            if got != tc.want { t.Fatalf("got=%d want=%d", got, tc.want) }
+        })
+    }
+    file := filepath.Join(t.TempDir(), "rows.parquet")
+    if _, err := db.ExecContext(t.Context(), fmt.Sprintf("COPY (SELECT 42::BIGINT AS answer) TO '%s' (FORMAT PARQUET)", file)); err != nil { t.Fatal(err) }
+    var got int64
+    if err := db.QueryRowContext(t.Context(), "SELECT answer FROM read_parquet(?)", file).Scan(&got); err != nil { t.Fatal(err) }
+    if got != 42 { t.Fatalf("parquet round trip=%d", got) }
+}
