@@ -16,8 +16,8 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | fe3f7df；CI重跑f495f8ff / image诊断5cbd3fb3 | 原CI超时、原image入口空间驱逐留证；3CPU/24Gi CI执行中，image下载HTTP/2阻塞已采栈 | 待网络绕行后重跑原发布流程，随后手动PG/Mongo | 非本批部署目标 |
-| steam-cm | 旧729dd6b测试成功、镜像生命周期失败 | shared/tmp修复后待新真实push | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
+| steam-tasks | fe3f7df；新准备策略CI 7f025d00 / image 86901c7e | 旧超时/空间驱逐/缺ACK历史保留；修复后原固定计划已入队 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
+| steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原9个测试步骤全部success，镜像job进行中 | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
 
@@ -787,3 +787,9 @@ Tasks原固定fe3计划的CI e35240de最终interrupted，实际supervisor stderr
 新实现将管理员镜像准备独立限制15分钟，之后完整保留原workflow预算；Pod deadline同步增加有界准备额度。杀停改为5秒信号请求加20秒总窗口内轮询确认状态，继续fail closed，不等待overlay删除。专项race PASS15.389秒（executor）/1.574秒（kube）；make verify完整通过，含35前端单测与14浏览器31.3秒。新的真实临时k3s增加同Pod准备时冻结executor65秒、超过原workflow一分钟后恢复，以及busy Node/2000小文件/256MiB后台helper的超时ACK回归；专项与全量尚待完成，尚未部署新源码。
 
 Rust原workflow已由真实push 8e265947触发run50d91035，正在编译；原publish=false保持，不能把触发视为验收成功。API完整原workflow已通过，Tasks两个入口及手动PG18/Mongo7仍待完成。
+
+## 2026-10-28 04:56：新准备策略专项通过并部署
+
+c1d1929已提交/推送；真实临时k3s专项PASS507.893秒，act子场景342.68秒，包含准备时冻结executor65秒后同Pod成功执行原一分钟workflow，以及busy Node/2000小文件/256MiB helper超时ACK、缓存、取消、重启及失败；临时k3s30b53a078448和registry19d383bba192均已清理。全量Testcontainers另行进行，不能将专项称全量通过。
+
+已rollout server724e776d…与supervisor083b2a4d…，保留ubuntu工具1f8ecd0f/Rust工具、worker selector、CPU1/3、内存4Gi、data24Gi、并发2及原活跃Pod UID。Tasks原fe3/固定计划CI新7f025d00、image86901c7e已入队，仍为原20分钟；既有失败/取消attempt完整保留。Rust50d91035原test九步成功，image构建进行中。etcd当前无告警、leader=1，P99 fsync约30.6ms/commit50.3ms；该现场健康检查不替代剩余实际业务验收。

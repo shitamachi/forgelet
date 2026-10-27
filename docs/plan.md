@@ -188,3 +188,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 04:17追加：停止确认修正8220b7c的make verify及全量Testcontainers PASS1575.496秒（27必选叶场景、2可选私有fixture跳过），实际API b8/8ca9原测试、镜像、缓存导出、Checks及标签digest验收成功；Tasks/PG/Mongo/Rust继续待验收，10.7b尚不勾选。
 
 2026-10-28 04:45追加：API实际原workflow与镜像已通过。Tasks e352证实kill后Docker状态延迟导致缺ACK；新增有界准备15分钟/原workflow预算分离、停止状态轮询，make verify及专项race通过，新的真实k3s/全量/部署与业务重跑仍待完成。Rust新真实push 8e265947已启动，尚不勾选验收。
+
+2026-10-28 04:56追加：c1d1929准备预算/停止轮询真实k3s专项PASS507.893秒，已部署server724e776d/supervisor083b2a4d并保留活跃任务。全量仍进行；Tasks原fe3两入口7f025d00/86901c7e入队，Rust原test九步成功/image进行中，仍按实际结果逐项勾选。
