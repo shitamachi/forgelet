@@ -2,6 +2,7 @@
 # Opt-in amd64 compatibility tools, independent of the controller/executor build.
 # RUNNER_IMAGE must be an existing Go1.26.4-capable, Debian bookworm tools image.
 ARG RUNNER_IMAGE=forgelet-executor-act-web:dev
+ARG RUNNER_PLATFORM=linux/amd64
 FROM --platform=$BUILDPLATFORM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS duckdb-build
 ARG TARGETARCH
 RUN test "$TARGETARCH" = amd64
@@ -16,7 +17,7 @@ ARG BUILD_JOBS=2
 RUN DUCKDB_SOURCE=/src DUCKDB_BUILD=/build DUCKDB_RESULT=/result sh /duckdb-tools/build.sh "$BUILD_JOBS"
 FROM scratch AS duckdb-library
 COPY --from=duckdb-build /result/ /
-FROM ${RUNNER_IMAGE} AS portable-tools
+FROM --platform=$RUNNER_PLATFORM ${RUNNER_IMAGE} AS portable-tools
 USER root
 COPY --from=duckdb-build /result/duckdb-probe /opt/forgelet/duckdb/bin/duckdb-probe
 COPY --from=duckdb-build /result/libduckdb.so /opt/forgelet/duckdb/lib/libduckdb.so

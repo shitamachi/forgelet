@@ -831,3 +831,5 @@ node3是无AVX/AVX2的Intel N5105；校验官方发布SHA256后，DuckDB2.0.0独
 实际集群验证：候选固定镜像在node3/N5105以独立非root、只读root、无Kubernetes token、0.5CPU/256Mi Pod执行原生SQL，明确PASS sum=4950；现场flags确认无AVX/AVX2，probe Pod已删除。镜像zot.k.mygo.rocks/forgelet/executor-act-web-tools@sha256:6ace4272df85694d4c9addd94eed64e3ce7c8d69fa04bc414c8706a6c8edc01f新增压缩层47,178,231字节，固定基础1f8ecd0f及公共Go标准库缓存保留，没有业务源码/模块/token预热。兼容库在本机4CPU/6Gi上以3个编译任务完成，未占用集群编译。
 
 已只替换homelab Ubuntu runner镜像并rollout，server724e776d/supervisor083b2a4d、Rust镜像及CPU1/4与1/3、内存4Gi、data24Gi、并发2/worker隔离/所有镜像别名保持。业务测试同步修复7c5d09a已真实push；三个workflow YAML与原fe3字节一致，GitHub原CI1b17a3c4和image221882fe已接收并进入运行/等待。该触发不是成功验收，原CI/镜像、Checks及手动PG18/Mongo7待实际结果；10.6e/10.7b继续未完成。
+
+06:33追加：实际CI Pod804eb421的job容器镜像ID6659fec9与候选工具一致，直接读取Go环境确认duckdb_use_lib、固定库搜索路径及HTTP/1.1设置生效；setup-go原cache-hit=false，正在原静态检查/构建阶段。独立配方增加显式amd64 runtime平台（源码仍用build-platform交叉编译），Dockerfile frontend检查无告警；不改变已部署产物。仅本次自建的本机交叉编译容器已清理，owner的lg-multiarch builder保持。
