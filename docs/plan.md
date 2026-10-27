@@ -200,3 +200,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 06:12追加：Ubuntu4CPU实际可见性通过，原Tasks CI7d1b8239在原20分钟内返回failure，race暴露DuckDB2.0原生库SIGILL和fence测试异步时序；3CPU旧日志也包含SIGILL。fence测试本地修复/race重复验证通过但未推送；固定版本的CPU兼容共享库正在本机限额交叉编译，尚未部署。image54637ffc独立遇到Atlas下载TLS失败，发布skipped。保持原workflow/断言、worker隔离/内存准入，不把CPU调整或本地回归视为Tasks完整验收，10.6e/10.7b继续待完成。
 
 2026-10-28 06:24追加：DuckDB同2.0.0/x86-64-v2可选工具镜像已构建，make verify和真实Go驱动Testcontainers PASS35.310秒；物理N5105原生SQL探针通过并清理。固定镜像6ace4272已只替换Ubuntu runner，资源/隔离策略保持；测试同步修复7c5d09a已真实push，原YAML的CI1b17a3c4/image221882fe正在运行，随后验收手动PG18/Mongo7，清单尚不勾选。
+
+2026-10-28 07:00追加：Tasks真实7c/1b原20分钟终态timed_out，但lake PASS1.073秒证实该原生初始化不再SIGILL；另有engine transcript事件处理时序失败。修复c836ca1保留golden/原YAML，race目标500轮与全包30轮通过，已推送独立分支，尚未推送remote main。自主旧image221明确cancelled，托管Actions恢复。Mongo7官方需要AVX；node2具备、node3缺少。已准备并dry-run将无状态windmill-app从node2迁到node3、再以500m/4CPU及4Gi完整预留在AVX2 worker运行Ubuntu CI的方案，涉及其他服务，等待owner确认，未部署。10.6e/10.7b保持未完成，不能把额外迁移方案或本地通过算成CI/PG-Mongo真实验收。

@@ -623,3 +623,5 @@ act 的管理员环境准备单独限时15分钟，仅覆盖固定runner镜像�
 `tools/duckdb` 独立构建固定源提交的 DuckDB2.0.0共享库，采用上游EXTENSION/x86-64-v2参数，保留core/json/parquet/icu；用Debian bookworm GCC12原生交叉编译到amd64，避免在homelab编译或通过QEMU模拟整套C++构建。源归档SHA和产物SHA分别固定/记录，不改Go模块缓存或校验和。
 
 只有管理员显式选择的工具镜像设置`GOFLAGS=-tags=duckdb_use_lib`与`CGO_LDFLAGS`，走官方Go绑定的动态链接入口；该设置影响该工具镜像内的Go命令，不影响Dockerfile独立build stage，其他默认/native/Rust镜像不改。驱动升级必须同步核对C API版本并重新构建/测试，不能作为任意版本通用替代库。代价是一次本机构建和按需镜像层，不增加常驻服务；原workflow、单测和race门禁保留。可选Testcontainers用真实Go绑定核对版本、SQL、JSON、ICU与Parquet，物理N5105兼容性及原业务流程另行验收，不将模拟amd64容器结果当作真实CPU兼容证明。此段是新增实现设计，实际构建/测试/部署结果见status。
+
+CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不能替代Mongo7等镜像所需的AVX；完整此类workflow应由管理员将profile约束到已验证CPU特征的worker。当前AVX2调度/资源腾挪方案尚待owner批准额外服务迁移，不能视为已实施；不新增NFD常驻daemon、不改现有业务内存预留、不把重任务回落到etcd节点。

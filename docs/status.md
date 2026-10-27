@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 的原生库 CPU 兼容镜像已部署、测试时序修复已推送，原 workflow 与 PG/Mongo 正在重新验收，最新完整自动回归已通过，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已完成DuckDB兼容镜像/两处测试同步修复；真实冷CI仍超时，Mongo7需要AVX节点，当前等待owner确认额外的Windmill无状态服务迁移后继续完整验收，最新完整自动回归已通过，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | 新7c5d09a；真实push CI1b17a3c4 / image221882fe | 原YAML保持；测试同步修复与DuckDB2.0 CPU兼容工具层已部署，新流程运行中，旧失败/超时留存 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
+| steam-tasks | 7c5d09a/CI1b17a3c4；下一修复c836ca1已推送独立分支 | lake已通过；原20分钟终态timed_out，engine另有transcript时序失败；后者修复race500/全包30轮通过，原YAML/golden不改 | 自主旧image221882fe取消留证；CI/发布/PG-Mongo继续待验收 | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -833,3 +833,15 @@ node3是无AVX/AVX2的Intel N5105；校验官方发布SHA256后，DuckDB2.0.0独
 已只替换homelab Ubuntu runner镜像并rollout，server724e776d/supervisor083b2a4d、Rust镜像及CPU1/4与1/3、内存4Gi、data24Gi、并发2/worker隔离/所有镜像别名保持。业务测试同步修复7c5d09a已真实push；三个workflow YAML与原fe3字节一致，GitHub原CI1b17a3c4和image221882fe已接收并进入运行/等待。该触发不是成功验收，原CI/镜像、Checks及手动PG18/Mongo7待实际结果；10.6e/10.7b继续未完成。
 
 06:33追加：实际CI Pod804eb421的job容器镜像ID6659fec9与候选工具一致，直接读取Go环境确认duckdb_use_lib、固定库搜索路径及HTTP/1.1设置生效；setup-go原cache-hit=false，正在原静态检查/构建阶段。独立配方增加显式amd64 runtime平台（源码仍用build-platform交叉编译），Dockerfile frontend检查无告警；不改变已部署产物。仅本次自建的本机交叉编译容器已清理，owner的lg-multiarch builder保持。
+
+## 2026-10-28 07:00：真实 Tasks 结果与 AVX worker 调度方案（等待额外部署授权）
+
+7c5d09a真实冷CI1b17a3c4的静态检查/构建9分28.06秒、Atlas60.92秒、迁移1.43秒成功；race明确`internal/lake` PASS1.073秒，原DuckDB初始化SIGILL没有重现。原fencing测试未再报告失败，但同包`TestTranscriptUnclassifiedBacksOffWithoutCharging`暴露独立时序问题：第四条CM记录在fetch goroutine返回前生成，测试立即stop，可能取消尚未处理该结果的event loop，导致原golden四条attempt paused实际只有三条。最终workflow仍到原20分钟timed_out，race部分失败和超时同时留证；不能称原workflow成功或只有CPU不足。旧原image221882fe属于我们自己的7c验证push，因已知需要下一测试修复而明确cancelled，未取消owner额外push。
+
+业务修复c836ca1等待第四个已处理的attempt paused事件后停止；保留原超时、零commit断言和golden字节，不改生产逻辑。目标race重复500次PASS30.111秒，整个engine race重复30次PASS38.625秒。已推送[独立修复分支](https://github.com/shitamachi/steam-tasks/tree/codex/tasks-transcript-quiescence)，尚未推送remote main，以免在未准备好的环境重复触发已知失败；原三个workflow YAML保持。等待确认期间已恢复Tasks原GitHub托管Actions设置enabled=true，其他已验收仓库不改，未创建手动PG run。
+
+完整数据库验收还有硬件前提：[MongoDB官方说明](https://www.mongodb.com/docs/manual/administration/production-notes/)要求现代amd64的mongod使用AVX，换DuckDB库并不能让Mongo7获得该CPU能力。实际只读检查node2现有系统Pod中的/proc/cpuinfo，确认i5-4210H具备avx/avx2/fma/bmi1/bmi2；node3/N5105缺AVX。node2现有预留为3300mCPU/7214Mi内存，allocatable为4CPU/10032660Ki，不能承接原1100m/4352Mi执行Pod。没有降低任何已有服务或CI的内存预留来制造容量，也没有向控制面安排重任务。
+
+已准备未执行的方案：Windmill app无数据卷、单replica，现有限制2Gi（Pod默认request同为2Gi）、RollingUpdate maxUnavailable=0/maxSurge=1且Ready。只新增nodeSelector使它从node2滚动到node3，所有image/env/资源/数据库与worker配置保持；服务端dry-run通过。然后Ubuntu CI只选择已确认AVX2的worker，CPU request500m/limit4、内存request=limit4Gi、supervisor100m/256Mi，合计600m/4352Mi；node2预期总预留3900m/9518Mi，在当前allocatable内，仍需执行前重查容量与业务健康，不能保证CPU突发吞吐。Rust和并发2保持。迁移涉及Forgelet之外的Windmill服务，因此已单独向owner请求确认，未修改Windmill、节点标签或该CI配置；等待时间不作为授权。proposal/dry-run与容量计算保存在本机私有证据目录，未提交潜在配置凭据。
+
+当前所有本批执行/诊断Pod和本机临时编译/Testcontainers容器已清理，owner的lg-multiarch builder保持。最终etcd无告警、leader1、P99 fsync12.0ms/commit15.3ms，Web HTTP200/ready1、Flux564223da和部署digest保持。10.6e/10.7b仍未完成，剩余为准备AVX容量、合入测试修复后原CI/镜像/Checks/缓存及手动PG18/Mongo7；不以本地回归或计划替代实际运行。
