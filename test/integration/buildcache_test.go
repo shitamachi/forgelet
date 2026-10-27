@@ -87,7 +87,7 @@ jobs:
       - run: |
           test "$ACTIONS_CACHE_SERVICE_V2" = true
           case "$ACTIONS_RESULTS_URL" in http://127.*) exit 9;; esac
-          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 314572800 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
+          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 402653184 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
           touch prepared
           while [ ! -f continue ]; do sleep 1; done
       - uses: docker/login-action@v3

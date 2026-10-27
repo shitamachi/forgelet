@@ -260,7 +260,11 @@ func (c *actCache) azureUpload(w http.ResponseWriter, r *http.Request, key strin
 		var list struct {
 			Latest []string `xml:"Latest"`
 		}
-		if err := xml.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&list); err != nil || len(list.Latest) == 0 || len(list.Latest) > c.blockLimit() {
+		// Azure IDs may encode 64 bytes (88 base64 characters). Keep enough
+		// bounded XML space for every permitted block, tags and SDK formatting.
+		// A fixed 32 KiB body rejects valid large BuildKit cache exports.
+		listBytes := int64(1024 + 128*c.blockLimit())
+		if err := xml.NewDecoder(http.MaxBytesReader(w, r.Body, listBytes)).Decode(&list); err != nil || len(list.Latest) == 0 || len(list.Latest) > c.blockLimit() {
 			http.Error(w, "invalid block list", http.StatusBadRequest)
 			return
 		}

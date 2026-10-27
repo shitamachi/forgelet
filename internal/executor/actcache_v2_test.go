@@ -8,12 +8,58 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shitamachi/forgelet/internal/blob"
 )
+
+func TestActCacheV2LargeBlockLists(t *testing.T) {
+	for _, budget := range []int64{blob.MaxArchive, 512 << 20, blob.MaxCacheArchive} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			c, err := startActCacheAt(t.Context(), &localServices{}, "127.0.0.1", budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			u := &cacheUpload{File: filepath.Join(c.dir, "blocks"), Blocks: map[string]string{}, BlockDigests: map[string][32]byte{}}
+			c.uploads[1] = u
+			put := func(query, body string, want int) {
+				t.Helper()
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, c.URL()+"blob/1?"+query, strings.NewReader(body))
+				res := httptest.NewRecorder()
+				c.ServeHTTP(res, req)
+				if res.Code != want {
+					t.Fatalf("PUT: %d: %s", res.Code, res.Body.String())
+				}
+			}
+			var list strings.Builder
+			list.WriteString("<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList>")
+			for i := range c.blockLimit() {
+				id := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%064d", i)))
+				put("comp=block&blockid="+url.QueryEscape(id), "x", http.StatusCreated)
+				fmt.Fprintf(&list, "<Latest>%s</Latest>", id)
+			}
+			list.WriteString("</BlockList>")
+			if budget > blob.MaxArchive && list.Len() <= 32<<10 {
+				t.Fatal("fixture does not cross the old XML body limit")
+			}
+			// A complete legal block list must fit even with maximum-length IDs.
+			put("comp=blocklist", list.String(), http.StatusCreated)
+			put("comp=blocklist", list.String(), http.StatusCreated)
+			data, err := os.ReadFile(u.File)
+			if err != nil || string(data) != strings.Repeat("x", c.blockLimit()) {
+				t.Fatal("assembled payload", len(data), err)
+			}
+			// Count and byte ceilings remain enforced independently of payload size.
+			put("comp=blocklist", strings.Replace(list.String(), "</BlockList>", "<Latest>eA==</Latest></BlockList>", 1), http.StatusBadRequest)
+			put("comp=blocklist", strings.Repeat(" ", 256<<10)+list.String(), http.StatusBadRequest)
+		})
+	}
+}
 
 func TestActCacheExplicitLargerObjectKeepsSeparateLimits(t *testing.T) {
 	c, err := startActCacheAt(t.Context(), &localServices{}, "127.0.0.1", blob.MaxCacheArchive)

@@ -351,5 +351,6 @@ act 的 Docker/Buildx 资源约束要求 Linux cgroup v2 和配套升级后的 s
 job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动并发数；不足1核时逻辑值为1，精确总配额继续由引擎祖先约束。现存 attempt 不回写。
 默认缓存对象256MiB不变；管理员可显式将 opaque Actions/BuildKit cache 对象提高至1GiB，artifact仍最大256MiB。
 单块64MiB、全局保留/并发上传预留、每attempt有界暂存、错误/ACK/取消语义继续保留；未获配置的超限不会静默成功。
+分块清单XML的字节上限随允许的block数量增长（每block预留128字节、整体1KiB格式开销）；支持最长64字节的base64 block ID，不再用固定32KiB截断合法的大对象清单。block数量、payload与对象额度分别继续校验。
 
 新编译计划的默认 job timeout 对齐 [GitHub 官方语义](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes)：360 分钟。此前 Forgelet 独自采用20分钟，会在受限 CPU 的冷构建及外部 Action 下载时提前终止；显式 timeout-minutes 不变，已持久化计划/重跑仍保留原快照，零值旧计划的运行时20分钟兜底不变。
