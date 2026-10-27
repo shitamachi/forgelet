@@ -3,6 +3,7 @@ package run
 // ActRequest is an ephemeral pipe message, never a persisted execution plan.
 // It deliberately carries no control-plane identity or Kubernetes credential.
 type ActRequest struct {
+	CPUCount       int64             `json:"cpu_count,omitempty"`
 	BuildkitImage  string            `json:"buildkit_image,omitempty"`
 	BuildkitConfig string            `json:"buildkit_config,omitempty"`
 	Plan           Plan              `json:"plan"`

@@ -260,7 +260,7 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 		}
 		return result, err
 	}
-	request := run.ActRequest{BuildkitImage: opts.ImageMirrors["moby/buildkit:buildx-stable-1"], BuildkitConfig: opts.BuildkitConfig, PackageToken: opts.PackageToken, Plan: plan, Workspace: workspace, Image: image, Secrets: opts.Secrets, Token: opts.CloneToken, CacheURL: cache.URL(), CacheToken: cache.token, ActionBaseURL: opts.ActionBaseURL}
+	request := run.ActRequest{CPUCount: opts.ActCPUCount, BuildkitImage: opts.ImageMirrors["moby/buildkit:buildx-stable-1"], BuildkitConfig: opts.BuildkitConfig, PackageToken: opts.PackageToken, Plan: plan, Workspace: workspace, Image: image, Secrets: opts.Secrets, Token: opts.CloneToken, CacheURL: cache.URL(), CacheToken: cache.token, ActionBaseURL: opts.ActionBaseURL}
 	data, err := json.Marshal(request)
 	if err != nil {
 		return result, err

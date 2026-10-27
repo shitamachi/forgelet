@@ -125,9 +125,12 @@ func TestActEngineResourceAdmission(t *testing.T) {
 		name    string
 		act     ActProfile
 		invalid bool
+		cpus    string
 	}{
-		{name: "defaults"},
-		{name: "bounded worker", act: ActProfile{CPURequest: "1", CPULimit: "1", MemoryRequest: "4Gi", MemoryLimit: "4Gi"}},
+		{name: "defaults", cpus: "3"},
+		{name: "bounded worker", act: ActProfile{CPURequest: "1", CPULimit: "1", MemoryRequest: "4Gi", MemoryLimit: "4Gi"}, cpus: "1"},
+		{name: "sub CPU budget", act: ActProfile{CPULimit: "250m", MemoryLimit: "2Gi"}, cpus: "1"},
+		{name: "fractional CPU budget", act: ActProfile{CPULimit: "1500m", MemoryLimit: "2Gi"}, cpus: "2"},
 		{name: "invalid quantity", act: ActProfile{CPURequest: "invalid"}, invalid: true},
 		{name: "negative", act: ActProfile{MemoryLimit: "-1Gi"}, invalid: true},
 		{name: "zero", act: ActProfile{CPURequest: "0"}, invalid: true},
@@ -171,6 +174,15 @@ func TestActEngineResourceAdmission(t *testing.T) {
 			}
 			if tc.act.CPULimit != "" && (r.Limits.Cpu().String() != tc.act.CPULimit || r.Limits.Memory().String() != tc.act.MemoryLimit) {
 				t.Fatalf("wrong engine limits: %v", r)
+			}
+			var cpus string
+			for _, env := range pod.Spec.Containers[0].Env {
+				if env.Name == "FORGELET_ACT_CPU_COUNT" {
+					cpus = env.Value
+				}
+			}
+			if cpus != tc.cpus {
+				t.Fatalf("job logical CPUs = %q, want %q", cpus, tc.cpus)
 			}
 		})
 	}

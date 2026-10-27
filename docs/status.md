@@ -1,7 +1,39 @@
 # 项目状态
 
-更新：2026-10-27（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 和最新全量回归仍在验证，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API/Tasks/Rust 和最新全量回归仍在验证，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
+
+## 本轮逐仓库验收（2026-10-28，仍在进行）
+
+以下固定提交代表已经核对的结果，不将后续业务新提交自动视为通过。镜像发布与实际部署分别记录。
+
+| 仓库 | 已核对源码/运行 | 原 CI / workflow | 镜像 | 实际 CD |
+|---|---|---|---|---|
+| steam-platform-server | 冷e4b90b1 / 热ac3f90d；1ace135 / 9fe77a46 | 五步通过，Go缓存false→true | 原workflow未发布镜像 | 非本批部署目标 |
+| steam-admin-web | 冷1c0ebb6 / 热b9061de；a81b/4209 / fbc8/a25c | 原CI/镜像workflow通过，npm false→true | digest302929e…，标签/Action一致 | 非本批部署目标 |
+| steam-platform-web | baa4b54 / 2e2d793b | 48单测、28 Playwright、缓存与Checks通过 | digestc85afdd… | GitOps→Flux健康、失败阻断、回滚/恢复通过；当前revision564223da |
+| steam-login | a177934 / a212d600 | 原六步全部通过；原流程没有单测步骤 | GHCR6f3b286… / 自定义registry3384791…，latest/完整SHA一致 | 非本批部署目标 |
+| steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
+| steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
+| steam-api | 最新b8f4702 / 2af5b0f8 | 排队；前a02测试成功后Codecov下载触及旧默认超时 | 待完整workflow验收；旧c2ee已push但缓存413使任务失败 | 非本批部署目标 |
+| steam-tasks | 最新业务fe3f7df的已触发push | 队列中，随后手动启用PG/Mongo集成 | 待核对原发布流程 | 非本批部署目标 |
+| steam-cm | 旧729dd6b测试成功、镜像生命周期失败 | shared/tmp修复后待新真实push | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
+
+验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；尚未复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。
+
+实现与资源/缓存修复已提交并推送 `c2aa4fa`。完整回归第一轮（默认超时修正之前）PASS2582.609秒，27个必选叶场景、2个需外部私有业务目录的可选SKIP；包含默认超时修正的最新完整回归也已PASS2066.079秒：27个必选叶场景、2个可选SKIP，真实SDK Actions35.05秒、浏览器33.61秒、登录/授权重启106.74秒、保留清理16.26秒；公共Action元数据首次读取失败后，在未持久化运行前有界重试成功。SDK预载仅使用官方SHA验证归档，不计公网SDK下载。实际仓库证据与可选fixture是否执行分别记录，不能互相替代。
+
+## 2026-10-28 01:10：job CPU 可见性修正（验证中）
+
+真实 worker 的引擎祖先 `cpu.max=100000 100000` 已约束1 CPU，但内层 Node24 `availableParallelism()` 返回4，Vitest默认由此启动3个worker。新实现把管理员引擎CPU limit向上取整，通过supervisor/临时act请求设置job `--cpus`；精确聚合预算、并发2和worker隔离保持不变，现有Pod不回写。
+
+资源配置/协议回归race通过，`make verify`通过（Go race/HTTP/SQLite、35前端单测、14浏览器31.5秒、构建/lint/generate）；临时k3s专项PASS478.430秒（执行子场景249.40秒），直接断言job内Node可见CPU=1，重启/缓存/失败/超时/取消/清理继续通过；临时资源已清理。包含此修正的全量Testcontainers回归另已启动，尚无结果。
+
+Admin Web `4d5cd9d` 的原32个测试在独立Node24.14容器中，1 CPU和2 CPU各三轮通过；强制3worker时1 CPU和2 CPU也各三轮通过。极限0.2 CPU/3worker的三轮均失败，其中复现同一补采按钮断言；这说明资源压力可造成该症状，但不是实际1 CPU环境的精确复现，不能据此宣布唯一根因或已修复。业务代码、断言和workflow未修改。追加0.2 CPU/1worker对照32项通过54.60秒；尚不将其等同实际集群根因证明。
+
+01:14已部署 server `749b0bc62b7aa43a7b916684c1c3212304bf7e23efa80f6bd2ff13a1d84f09f7` + supervisor `949b3b5f3d4162becde64b266b39d0cbc6b4dd5cd6a31b793d4703aaada688f6`，保留全部活跃Pod UID和配置预算、工具runner、镜像别名。原Admin Web失败计划重跑 `3178ee3aa00a1c6f77ed287d62216c91`已入队，使用同一4d5提交和固定Action快照；尚未运行，原失败历史保留。
+
+01:08实际集群etcd无当前告警、leader=1，P99 fsync约39ms/commit约61ms；Tasks已进入原版Go构建，API仍在队列。额外Admin Web镜像workflow已成功，独立CI失败仍保留。
 
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 

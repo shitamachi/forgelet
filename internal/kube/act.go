@@ -101,6 +101,12 @@ func addAct(pod *corev1.Pod, a ActProfile, image string) {
 	}
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "act-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, corev1.Volume{Name: "act-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer(limit)}}})
 	main := &pod.Spec.Containers[0]
+	// A nested private cgroup hides the engine's quota from toolchain discovery.
+	// Advertise its rounded-up logical CPU count inside the job as well. The
+	// engine ancestor still enforces the exact fractional aggregate budget.
+	resources := a.resources()
+	cpu := resources.Limits.Cpu().Value()
+	main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_ACT_CPU_COUNT", Value: strconv.FormatInt(cpu, 10)})
 	main.VolumeMounts = append(main.VolumeMounts, socket)
 	main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_ACT_CACHE_HOST", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}}, corev1.EnvVar{Name: "DOCKER_HOST", Value: "unix://" + run.ActSocket}, corev1.EnvVar{Name: "FORGELET_ACT_IMAGE", Value: image})
 	if a.CacheObjectBytes > 0 {

@@ -1,13 +1,27 @@
 package actworker
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
+
+func TestWorkerRejectsNegativeCPUBeforeStartingJob(t *testing.T) {
+	request := run.ActRequest{CPUCount: -1, Image: "runner:test", Workspace: "/workspace", Plan: run.Plan{Kernel: "act", JobID: "job"}}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(t.Context(), bytes.NewReader(data), io.Discard); err == nil || !strings.Contains(err.Error(), "invalid act job identity or profile") {
+		t.Fatalf("negative CPU budget was not rejected before execution: %v", err)
+	}
+}
 
 func TestWorkerProtocolPreservesExitCodesAndDecodedMasks(t *testing.T) {
 	for _, tc := range []struct {

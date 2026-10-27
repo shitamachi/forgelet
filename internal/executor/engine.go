@@ -28,6 +28,7 @@ import (
 // Options supplies the execution workspace and scoped credentials. CloneToken is
 // passed only to git child processes and is never persisted in a git config file.
 type Options struct {
+	ActCPUCount         int64
 	ActCacheObjectBytes int64
 	BuildkitConfig      string
 	PackageToken        string

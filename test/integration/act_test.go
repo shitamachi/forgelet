@@ -92,6 +92,7 @@ jobs:
     env: {TOKEN: '${{ secrets.TOKEN }}', CACHE_UPLOAD_CHUNK_SIZE: '64'}
     steps:
       - run: |
+          node -e 'const n=require("node:os").availableParallelism(); if(n!==1) throw new Error("job CPU discovery="+n); console.log("job-visible-cpus="+n)'
           test ! -e /var/run/forgelet/token
           test ! -e /var/run/forgelet-act-registry/config.json
           docker run --rm --network none forgelet-mirror-probe:stage10d sh -c 'echo mirrored-public-image-ready'

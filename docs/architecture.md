@@ -588,6 +588,9 @@ act profile 独立配置引擎 CPU/内存 request/limit，顶层 profile 限制 
 act-bootstrap 以 supervisor 镜像在 Pod 自有 socket emptyDir 放置同版本执行器；引擎启动器创建私有 cgroup/mount namespace，
 重新挂载以本引擎 cgroup 为根的 cgroup v2，将 daemon 放入 init 子组并委派 cpu/memory/pids 后 exec dockerd。
 普通 job、显式 Buildx 父组与其构建进程都位于该资源祖先下。无法建立该视图时启动失败，要求 Linux cgroup v2。
+私有 cgroup 隐藏祖先配额，因此 supervisor 同时把引擎 CPU limit 向上取整后传给 job 的 Docker `--cpus`，
+让 Node 等工具的自动并发发现反映执行预算（250m→1、1500m→2）；精确的聚合分数配额仍由引擎祖先约束。
+这个值来自管理员 profile，不写入 workflow 快照，也不放宽调度、引擎或显式 Buildx 的总预算。
 调度预算必须包括引擎；未配置时兼容旧资源默认，部署需显式设定预算。此约束针对可信 workflow，不提供恶意 privileged Docker 的多租户安全隔离。
 并发上限和节点容量共同决定可执行数，超额 Pod Pending 并继续占现有 starting 额度及超时预算。
 emptyDir sizeLimit 限制容量而不限制写盘速率；worker 隔离能减少本地构建争用，不能隔离共享 registry/Longhorn 后端 I/O。

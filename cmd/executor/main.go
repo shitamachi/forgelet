@@ -21,6 +21,14 @@ func main() {
 		os.Exit(1)
 	}
 	options := executor.RemoteOptions{URL: os.Getenv("FORGELET_URL"), JobID: os.Getenv("JOB_ID"), PodUID: os.Getenv("POD_UID"), TokenFile: os.Getenv("TOKEN_FILE"), Workspace: os.Getenv("WORKSPACE")}
+	if value := os.Getenv("FORGELET_ACT_CPU_COUNT"); value != "" {
+		count, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || count <= 0 {
+			log.Print("invalid FORGELET_ACT_CPU_COUNT")
+			os.Exit(1)
+		}
+		options.ActCPUCount = count
+	}
 	if value := os.Getenv("FORGELET_ACT_CACHE_OBJECT_BYTES"); value != "" {
 		bytes, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || bytes <= 0 {

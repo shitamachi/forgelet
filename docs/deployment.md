@@ -721,6 +721,7 @@ act job 的 workspace 由 UID 1000 的 supervisor 创建，内层工具以 root 
 若需预加载，必须加载到该 attempt 自有引擎。对固定 manifest digest 的 runner 镜像，supervisor
 校验远端原始 manifest 的 SHA 与本地完整 config digest 后可复用；tag、index 或校验失败走标准 pull。
 这不提供共享 Docker data 或常驻镜像缓存。真实验证中的手工预加载需在状态文档单独记录。
+`act.image_mirrors` 当前在每个attempt中逐项拉取并登记别名，并非按实际Docker请求惰性加载；配置候选越多，冷启动的网络、解包和临时磁盘开销越大。只登记当前workflow实际需要的镜像，仍计入该Pod预算。
 
 homelab 后续已将 `ubuntu-latest` 的 image 改用 `zot.k.mygo.rocks/forgelet/executor-act`，
 沿用相同 manifest digest，act.registry_secret 使用现有 `forgelet/zot-registry`。
@@ -927,6 +928,8 @@ act 现在要求 Linux cgroup v2。Pod 增加一次性 act-bootstrap（与 super
 然后引擎启动器建立私有 cgroup 视图。仅更新 server 而仍引用旧 supervisor 镜像无法启动，两个镜像必须配套升级。
 引擎仍使用管理员固定的 Docker28.5.1镜像，启动器最终 exec dockerd；无新增常驻服务或额外引擎镜像。
 应检查真实嵌套 PID 的 cgroup 祖先和 cpu.stat/cpu.max/memory.max；Docker stats 可显示宿主总内存，不能据其单独判断祖先限额。
+配套升级后，新 job 同时获得引擎 CPU limit 向上取整的内层 `--cpus`，用于 Node 等工具的并发发现；
+精确的总配额仍在引擎祖先。现存 Pod 不回写，需新 attempt 才采用这个值。
 
 当原始 BuildKit workflow 的缓存层超过默认256MiB，可显式设置以下预算；不删除 cache-to 或忽略导出失败：
 

@@ -56,7 +56,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	if err := dec.Decode(&request); err != nil {
 		return fmt.Errorf("decode job request: %w", err)
 	}
-	if request.Plan.Kernel != "act" || request.Plan.JobID == "" || request.Image == "" || request.Workspace == "" {
+	if request.Plan.Kernel != "act" || request.Plan.JobID == "" || request.Image == "" || request.Workspace == "" || request.CPUCount < 0 {
 		return fmt.Errorf("invalid act job identity or profile")
 	}
 	meta, err := os.MkdirTemp("", "forgelet-act-")
@@ -81,6 +81,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		Platforms: map[string]string{"forgelet": request.Image}, BindWorkdir: true, ContainerOptions: "--user 0:0 --mount type=bind,source=/tmp,target=/tmp", ContainerDaemonSocket: run.ActSocket, LogOutput: true, NoSkipCheckout: true, AutoRemove: true, ActionCacheDir: filepath.Join(meta, "actions"), ActionCache: cache}
 	if cfg.EventName == "" {
 		cfg.EventName = "push"
+	}
+	if request.CPUCount > 0 {
+		cfg.ContainerOptions += fmt.Sprintf(" --cpus=%d", request.CPUCount)
 	}
 	log := loggerFactory{output}
 	ctx = runner.WithJobLoggerFactory(ctx, log)
