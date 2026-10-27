@@ -184,3 +184,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 - [ ] 在受限预算下逐个恢复真实 workflow，观察共享 registry/Longhorn I/O；owner 已要求继续，当前 API 测试通过、镜像运行中，Tasks/PG/Rust 待完成。保持现有预算，不自动增加任务槽位。
 
 2026-10-28 03:50追加：Tasks f495原race阶段最终缺失终态ACK，保留interrupted；停止确认由等待容器文件系统删除改为杀停并复查运行状态，新增回归及含后台容器/256MiB层的真实k3s超时验证，自动测试中，尚未部署。homelab公共Go标准库编译缓存层构建中，仅优化冷启动；API/Tasks/PG/Mongo/Rust仍按原条件逐项验收，不提前勾选10.7b。
+
+2026-10-28 04:17追加：停止确认修正8220b7c的make verify及全量Testcontainers PASS1575.496秒（27必选叶场景、2可选私有fixture跳过），实际API b8/8ca9原测试、镜像、缓存导出、Checks及标签digest验收成功；Tasks/PG/Mongo/Rust继续待验收，10.7b尚不勾选。

@@ -15,7 +15,7 @@
 | steam-login | a177934 / a212d600 | 原六步全部通过；原流程没有单测步骤 | GHCR6f3b286… / 自定义registry3384791…，latest/完整SHA一致 | 非本批部署目标 |
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
-| steam-api | b8f4702；原2af5b0f8，修复后重跑8ca9acc3待执行 | 原test成功、Go缓存true；原image缓存400使整条失败 | 已push9b324d69但未通过整体验收，新执行器重跑待核对 | 非本批部署目标 |
+| steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
 | steam-tasks | fe3f7df；CI重跑f495f8ff / image诊断5cbd3fb3 | 原CI超时、原image入口空间驱逐留证；3CPU/24Gi CI执行中，image下载HTTP/2阻塞已采栈 | 待网络绕行后重跑原发布流程，随后手动PG/Mongo | 非本批部署目标 |
 | steam-cm | 旧729dd6b测试成功、镜像生命周期失败 | shared/tmp修复后待新真实push | 待验证原Rust构建/安全/lifecycle；普通push保留publish=false | 不连接真实Steam，不自动部署 |
 
@@ -769,3 +769,13 @@ Tasks CIf495在原race步骤期间最终interrupted，server记录executor stopp
 同时准备仅含Go1.26.4公共标准库普通/race编译缓存的homelab工具层，在本机有界Go并行度构建，不装业务模块、不保存任何业务token或私有源码、不更改原workflow的20分钟限制。该优化仍需实际完整运行验证，不能预先视为解决冷启动预算。API8ca9原test已开始执行，HTTP/1.1工具镜像的Tasks image重跑c43538a7排队中，业务验收未完成。
 
 03:59追加：make verify已完整PASS。新执行器06162882…（Go1.27.3从8220b7c原生交叉编译executor，act-worker与c021基础镜像层保持）及工具镜像1f8ecd0f…已rollout，活跃Pod UID/全部预算和别名保留；server仍为749b0bc6。公共标准库额外压缩层84.4MiB；3核设置下普通/race net/http均复用缓存，合计1.2秒，无重新编译。仅自主旧工具重跑c43538a7明确cancelled留存，非原业务push；新同fe3/固定原计划CI e35240de及image e4bf1c97已入队，原20分钟不变。原API镜像任务已先分配node3，原test已success；现有任务保留其创建时镜像，不回写。完整临时k3s仍进行，尚不把新源码的完整集成验证记为通过。
+
+## 2026-10-28 04:13：API 原 workflow 完整验收通过
+
+b8f4702原固定计划重跑8ca9acc3最终success：test与build-and-push均成功，原检查/coverage与Go缓存true保留，Codecov无token的上传仍为原软失败，不声称外部上传成功。镜像digest5da8352665c7607968f39582b67ef6636ea8a7456573322736ba5583018916f9，latest与b8f4702d标签及Action输出一致，GitHub Checks核对完成。旧2af5的test成功/镜像缓存400失败历史保留，不能把旧attempt改为成功。此次实际镜像Pod仍是先前c021执行器快照，确认XML清单修复在原业务流程中成功；新0616停止确认另由临时k3s与后续业务任务验证。API托管Actions已恢复。Tasks两原入口、手动PG/Mongo及Rust仍待验收；新源码全量Testcontainers仍进行。
+
+## 2026-10-28 04:17：停止确认修正后的完整自动回归通过
+
+8220b7c完整Testcontainers PASS1575.496秒：27个必选叶场景通过，2个需外部私有业务目录的可选fixture跳过，独立SDK归档checksum拒绝场景通过；act251.19秒（含后台helper/256MiB写层后的真实超时终态ACK、重启、取消、失败和缓存）、Rust102.47秒、384MiB缓存185.66秒、自动CD96.50秒、真实SDK12.18秒、浏览器35.48秒、GitHub登录/授权/重启103.78秒、GC16.30秒。临时k3s7d0ee39dfec5已清理。此前make verify与race专项通过，现有源码自动回归齐备；homelab公共标准库层属于另行构建/复用验证的实际环境优化，未将其算作临时集群SDK外网下载成功。
+
+真实API验收已通过并恢复托管Actions；Tasks e352/e4仍在运行/排队，原20分钟不变，手动PG/Mongo和Rust原业务workflow尚未结束。自动测试成功不能替代这些实际业务结果。
