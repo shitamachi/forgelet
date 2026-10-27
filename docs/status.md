@@ -27,7 +27,7 @@
 
 真实 worker 的引擎祖先 `cpu.max=100000 100000` 已约束1 CPU，但内层 Node24 `availableParallelism()` 返回4，Vitest默认由此启动3个worker。新实现把管理员引擎CPU limit向上取整，通过supervisor/临时act请求设置job `--cpus`；精确聚合预算、并发2和worker隔离保持不变，现有Pod不回写。
 
-资源配置/协议回归race通过，`make verify`通过（Go race/HTTP/SQLite、35前端单测、14浏览器31.5秒、构建/lint/generate）；临时k3s专项PASS478.430秒（执行子场景249.40秒），直接断言job内Node可见CPU=1，重启/缓存/失败/超时/取消/清理继续通过；临时资源已清理。包含此修正的全量Testcontainers回归另已启动，尚无结果。
+资源配置/协议回归race通过，`make verify`通过（Go race/HTTP/SQLite、35前端单测、14浏览器31.5秒、构建/lint/generate）；临时k3s专项PASS478.430秒（执行子场景249.40秒），直接断言job内Node可见CPU=1，重启/缓存/失败/超时/取消/清理继续通过；临时资源已清理。包含此修正的全量Testcontainers回归PASS1522.854秒：27个必选叶场景通过，2个需私有业务目录的可选fixture跳过；act241.35秒、Rust99.25秒、300MiB缓存168.90秒、真实SDK15.82秒、浏览器34.91秒、登录授权/重启106.15秒、GC17.06秒。临时k3s已清理；源码b10fa93，实际业务仓库验证另行记录。
 
 Admin Web `4d5cd9d` 的原32个测试在独立Node24.14容器中，1 CPU和2 CPU各三轮通过；强制3worker时1 CPU和2 CPU也各三轮通过。极限0.2 CPU/3worker的三轮均失败，其中复现同一补采按钮断言；这说明资源压力可造成该症状，但不是实际1 CPU环境的精确复现，不能据此宣布唯一根因或已修复。业务代码、断言和workflow未修改。追加0.2 CPU/1worker对照32项通过54.60秒；尚不将其等同实际集群根因证明。
 
@@ -40,6 +40,12 @@ Admin Web `4d5cd9d` 的原32个测试在独立Node24.14容器中，1 CPU和2 CPU
 旧业务提交a69da5a的CI `3710b197a7dabb9108b417f8` 最终failure：reusable子任务 `check/reliability` timed_out，模块校验通过，尚在静态检查/编译，未到Atlas/业务测试。原20分钟和失败结果保留；这个attempt使用CPU可见性升级前的Pod，不回写。
 
 观察时node3 CPU1182m/29%、内存39%，其中执行Pod约1 CPU；node2 CPU749m/18%。为验证原workflow在有界预算内能否完成，将后续act引擎CPU request保留1、limit从1调为2，内存request=limit=4Gi、并发2与worker-only selector保留。调度仍按request准入，CPU有争用时不保证持续2核；不是增加常驻执行器，也没有放宽业务timeout或减少检查。现有1 CPU Pod不变，新attempt才获得2 CPU祖先限额与内层可见CPU。01:24配置rollout成功，原活跃Pod UID保留；新2 CPU任务的实际限额/流程结果仍待核对。原API344及旧Tasks继续正常排队，不取消其他业务push。
+
+## 2026-10-28 01:46：完整回归与线上配额核对
+
+CPU可见性修正后的完整Testcontainers PASS1522.854秒（27必选叶场景，2可选私有fixture SKIP），全部临时集群/registry已清理，无新增代码修正。实际API旧Pod `f-316f23ed5e1b780a0fa8479a` 仍为1 CPU/4Gi：祖先cpu.max=100000/100000、memory.max=4294967296，内层NanoCpus=1000000000，Node24实际availableParallelism=1（宿主4核）；证明升级保留已有配额且修正可见性，不计作该workflow已通过。新Tasks Pod `f-b728251526edc9398fde1b26` 的spec为request1/limit2 CPU、4Gi、CPU_COUNT=2，尚Pending，内核配额待运行核对。
+
+旧Tasks a69的CI及镜像入口均因reliability子任务20分钟超时而failure；镜像构建正确skipped，非业务测试失败。最新fe3两个入口仍待验收。01:40现有Web HTTP200、Flux Ready/revision564223da、Deployment digestc85afdd保持。node2预留CPU3300m/4、内存7214Mi/~9.8Gi，不能接纳4Gi引擎加256Mi supervisor；node3当前只能准入一个重任务，并发上限2不等于同时可运行两个重任务。本轮保留这些预留与现有业务任务，不以降低内存预留制造吞吐。若需稳定两重任务并行，需要额外worker余量。
 
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
