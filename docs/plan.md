@@ -194,3 +194,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 05:02追加：10.6d实际8e265947/50d91035原test/image、GitHub Checks、原smoke及release内两项managed生命周期测试全部通过；普通push publish=false保持且托管Actions恢复。10.6e/10.7b仍待Tasks两个原入口与手动PG18/Mongo7，不因Rust成功提前勾选。
 
 2026-10-28 05:24追加：c1d1929全量Testcontainers PASS1653.055秒（27必选叶场景、2可选私有fixture跳过，临时资源已清理），make verify/专项/全量齐备；真实Rust已通过，Tasks两入口和手动PG/Mongo仍待结果，10.7b继续未完成。
+
+2026-10-28 05:30追加：3CPU原冷CI 7f025d00仍20分钟timed_out，但已正确ACK/清理。只将homelab Ubuntu引擎突发limit调整为4核、request1/内存4Gi/并发2/worker隔离不变，Rust仍3；原固定计划7d1b8239/54637ffc新运行待验收。保留原20分钟和真实失败，Tasks/PG验收继续未完成。

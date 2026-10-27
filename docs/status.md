@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | fe3f7df；新准备策略CI 7f025d00 / image 86901c7e | 旧超时/空间驱逐/缺ACK历史保留；修复后原固定计划已入队 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
+| steam-tasks | fe3f7df；4CPU原计划CI 7d1b8239 / image 54637ffc | 准备分离后的3CPU冷CI 7f025d00明确timed_out并完成ACK；旧失败保留，4CPU新运行待验收 | 待原发布流程通过，随后手动PG/Mongo | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -803,3 +803,11 @@ c1d1929已提交/推送；真实临时k3s专项PASS507.893秒，act子场景342.
 ## 2026-10-28 05:24：新准备策略完整自动回归通过
 
 c1d1929全量Testcontainers PASS1653.055秒：27个必选叶场景通过，2个依赖外部私有业务目录的可选fixture跳过，独立SDK checksum拒绝场景通过。act339.39秒（含65秒准备冻结/原一分钟执行预算、busy Node与大写层超时ACK/取消/重启）、Rust98.68秒、大缓存217.61秒、自动CD97.90秒、真实setup SDK11.96秒、浏览器56.18秒、GitHub登录授权/重启83.05秒、GC17.27秒。公共Action源在持久化前两次503，第三次有界重试成功，不跳过原Action或运行断言；SDK为校验后官方归档预载，不计公网下载。临时k3s3a08cb3cbb1a与registrya7168f1f8692均已清理。与本次make verify及专项组成完整自动验证；真实Tasks的CI/镜像/手动PG-Mongo仍需独立收尾，不能以自动测试替代。
+
+## 2026-10-28 05:30：Tasks 冷路径预算仍不足，限定 worker CPU 突发上限
+
+3CPU原固定计划7f025d00明确timed_out；静态检查/构建9分39.10秒、Atlas59.52秒、迁移0.95秒，race已有多个handlers与internal包通过，但原20分钟内尚未全部结束。supervisor实际stderr记录job finished with state timed_out，终态ACK/杀停确认成功，之前interrupted问题本轮未重现。不能因此宣称冷workflow通过，也未延长原20分钟或删减测试。
+
+核对节点及现有准入后，只将homelab ubuntu-latest引擎CPU limit由3改为worker物理4核边界，request仍1；Rust保持3。内存request=limit4Gi、act-data24Gi、worker-only及并发2保留，仍依赖节点准入/真实余量，不保证繁忙worker能持续提供4核。当前Pod不回写；自主旧3CPU image重跑86901c7e明确cancelled留证，新同fe3/固定计划CI7d1b8239、image54637ffc已入队。只替换本次自主诊断运行，不取消外部push。
+
+变更前etcd无告警/leader1、P99 fsync39.35ms/commit53.74ms，Web HTTP200/Deployment ready1/Flux revision564223da和原镜像digest保持。本次仅部署配置调整，源码自动回归仍为c1d1929的make verify、专项及完整Testcontainers通过；4CPU实际可见性、原workflow成功与后续PG/Mongo仍需另证。
