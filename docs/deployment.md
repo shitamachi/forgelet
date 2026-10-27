@@ -913,6 +913,8 @@ profiles:
       data_limit: 12Gi
 ```
 
+2026-10-28恢复真实业务时，homelab将上述act引擎CPU limit调为2、request保留1；内存4Gi、worker隔离与并发2保持，用于原20分钟Tasks冷编译。此前已创建的Pod保留1 CPU；此调整不保证争用时持续获得2核，也不隔离磁盘I/O。最终原workflow与集群验证结果见status。
+
 新增引擎字段省略时保持旧默认（100m / 256Mi request、3 CPU / 4Gi limit）；
 共享小集群应显式设置真实预算，不能将此旧默认视作安全容量。
 负数、无效量及高于最终 limit（含默认值）的 request 在访问 Kubernetes 前拒绝。

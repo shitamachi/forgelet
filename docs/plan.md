@@ -178,4 +178,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 - [x] Testcontainers 真实 act/restart/cancel 回归及受限资源断言通过（首轮公共 Action 源 EOF 失败，独立重跑 PASS 468.427 秒；不是全量回归）。
 - [x] 保护版本部署：引擎 1 CPU / 4Gi 真实预算、worker 限定；恢复最多 2 个 starting/running，容量不足继续等待。
 - [x] 部署后健康与 etcd 告警复查、状态文档同步；事故处置阶段未恢复重型业务全链路。
+- [x] 修复嵌套Docker/Buildx绕过祖先配额、job CPU发现失真与大缓存256MiB限制；make verify、完整回归与最新CPU专项分别记录于status，已配套部署；包含CPU发现修正的新完整回归仍在运行。
+- [ ] Tasks旧1 CPU attempt冷编译触及原20分钟；后续预算改为request1/limit2 CPU（内存4Gi、worker-only、并发2保持），待真实新attempt验证限额/原流程结果及etcd健康。
 - [ ] 在受限预算下逐个恢复真实 workflow，观察共享 registry/Longhorn I/O；owner 已要求继续，当前 API 测试通过、镜像运行中，Tasks/PG/Rust 待完成。保持现有预算，不自动增加任务槽位。

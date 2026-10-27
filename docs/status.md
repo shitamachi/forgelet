@@ -35,6 +35,12 @@ Admin Web `4d5cd9d` 的原32个测试在独立Node24.14容器中，1 CPU和2 CPU
 
 01:08实际集群etcd无当前告警、leader=1，P99 fsync约39ms/commit约61ms；Tasks已进入原版Go构建，API仍在队列。额外Admin Web镜像workflow已成功，独立CI失败仍保留。
 
+## 2026-10-28 01:24：Tasks 冷编译与 worker CPU 预算调整
+
+旧业务提交a69da5a的CI `3710b197a7dabb9108b417f8` 最终failure：reusable子任务 `check/reliability` timed_out，模块校验通过，尚在静态检查/编译，未到Atlas/业务测试。原20分钟和失败结果保留；这个attempt使用CPU可见性升级前的Pod，不回写。
+
+观察时node3 CPU1182m/29%、内存39%，其中执行Pod约1 CPU；node2 CPU749m/18%。为验证原workflow在有界预算内能否完成，将后续act引擎CPU request保留1、limit从1调为2，内存request=limit=4Gi、并发2与worker-only selector保留。调度仍按request准入，CPU有争用时不保证持续2核；不是增加常驻执行器，也没有放宽业务timeout或减少检查。现有1 CPU Pod不变，新attempt才获得2 CPU祖先限额与内层可见CPU。01:24配置rollout成功，原活跃Pod UID保留；新2 CPU任务的实际限额/流程结果仍待核对。原API344及旧Tasks继续正常排队，不取消其他业务push。
+
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
 owner 反馈集群 etcd 告警后，停止推进新的真实 push、构建与部署；排查时 Forgelet 命名空间已无执行 Pod，保留控制面服务。
