@@ -59,7 +59,7 @@ CPU可见性修正后的完整Testcontainers PASS1522.854秒（27必选叶场景
 
 额外344提交的镜像已推送b4d11d54…，但原build-push因缓存PUT HTTP400而failure，不能计作完整发布验收。代码检查与回归复现发现：允许512MiB/1GiB对象及更多分块后，提交XML清单仍固定32KiB；合法的最大长度block ID列表会被拒绝。该缺口已修正为按block额度有界预留XML空间，未调整对象/payload/块数/单块额度，尚待真实API验证确认其是否为本次400的全部原因。
 
-新增256/512/1024分块和最长64字节ID的HTTP handler回归：修复前512/1024失败400，修复后race通过，包含完整组装、幂等重试、超数量及超XML字节拒绝。真实独立BuildKit Testcontainers随机层由300MiB增到384MiB，跨过旧XML边界；make verify已通过（Go race/进程内集成、构建/lint/generate、35前端单测、14浏览器32.2秒），完整与缓存专项Testcontainers正在运行，部署尚未更新。原API目标b8的test已开始，实际Pod f-079a44a6 位于node3、祖先cpu.max=300000/100000、memory.max=4Gi、内层NanoCpus=3e9/Node24 availableParallelism=3（宿主4核）；Tasks和Rust仍待后续原workflow验收，不覆盖本次失败记录。
+新增256/512/1024分块和最长64字节ID的HTTP handler回归：修复前512/1024失败400，修复后race通过，包含完整组装、幂等重试、超数量及超XML字节拒绝。真实独立BuildKit Testcontainers随机层由300MiB增到384MiB，跨过旧XML边界；make verify已通过（Go race/进程内集成、构建/lint/generate、35前端单测、14浏览器32.2秒），缓存专项Testcontainers已PASS349.282秒（真实BuildKit场景209.62秒，cold3090dfe0/warm e43ae36f、digest3dfd40e8…，包含重启/失败/取消/清理），临时集群已清理；完整Testcontainers仍在运行。02:42已部署supervisor c021018d1899befc3460ab1876320c3355838408255572531e9d01dcfd50fd73，server仍为749b0bc6；只更新后续执行器镜像，已有Pod UID/配额和全部镜像别名/工具runner/worker selector保留。原API目标b8的test已success：Go缓存true，普通测试22.54秒、覆盖率25.96秒；Codecov上传缺token仍为原定义软失败。实际Pod f-079a44a6 位于node3、祖先cpu.max=300000/100000、memory.max=4Gi、内层NanoCpus=3e9/Node24 availableParallelism=3（宿主4核）；Tasks和Rust仍待后续原workflow验收，不覆盖本次失败记录。
 
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
