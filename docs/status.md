@@ -69,6 +69,12 @@ fe3镜像入口 `f7c385c7` 的reliability子任务为interrupted：Kubernetes事
 
 02:44现有Web HTTP200、Flux Ready/revision564223da、digestc85afdd保持；etcd当前告警为空、leader=1、P99 fsync约12ms/commit约15ms。Rust仓库已有新业务提交d3d62cd，后续验收前按原计划fetch/fast-forward并保留业务变更。
 
+## 2026-10-28 03:01：分块清单修正后的完整自动回归通过
+
+源码1842d17的完整Testcontainers已PASS1654.999秒：27个必选叶场景通过，2个依赖私有业务fixture目录的可选场景SKIP，另有工具链归档校验拒绝测试通过。临时k3s 2c3cbbd3945e及registry0776253e05cc均已清理；384MiB BuildKit冷热/重启/失败/取消场景199.64秒（cold63fa1c44/warmcceb5295，digest979c1596…），act250.35秒、Rust101.26秒、自动发布依赖/失败阻断94.89秒、真实SDK14.40秒、浏览器34.68秒、登录/授权重启104.03秒、保留清理17.66秒。公共Action元数据首次读取临时失败后，在未持久化运行前有界重试成功。此前make verify与缓存专项已通过，无新代码变更或自动测试待重跑。
+
+这不代表全部真实业务仓库已验收：APIb8原test成功/Go缓存true，但原image仍使用更新前创建的执行器；Tasks原失败/驱逐历史保留，3CPU/24Gi的新原快照重跑仍待执行；PG18/Mongo7手动原workflow和Rust真实push尚未完成。进度清单保持相应待办，不以可选fixture跳过或模拟API替代homelab证据。
+
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
 owner 反馈集群 etcd 告警后，停止推进新的真实 push、构建与部署；排查时 Forgelet 命名空间已无执行 Pod，保留控制面服务。
