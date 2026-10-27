@@ -261,7 +261,10 @@ jobs:
     runs-on: actions
     timeout-minutes: 1
     steps:
-      - run: echo act-timeout-ready; sleep 120
+      - run: |
+          docker run -d --network none --name timeout-owned-helper forgelet-mirror-probe:stage10d sh -c 'dd if=/dev/zero of=/cleanup-fixture bs=1048576 count=256; sleep 120'
+          echo act-timeout-ready
+          sleep 120
 `)
 		waitForTimeout(t, ctx, "act job deadline", 4*time.Minute, func() bool { return get(t, timed.ID).State.Terminal() })
 		if got := get(t, timed.ID); actJob(got).State != run.TimedOut {

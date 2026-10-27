@@ -759,3 +759,11 @@ fe3镜像入口的自主重跑5cbd3fb3在go mod download阶段等待三个公共
 03:30已仅为homelab ubuntu-latest工具镜像设置GODEBUG=http2client=0，保留原goproxy.cn与全部镜像层，digest3d9cc8dc…；这是连接复用问题的运行环境绕行，尚未证明代理或Go实现的唯一根因，也不更改项目默认网络配置、业务workflow、模块校验或显式20分钟超时。后续实际原workflow结果另行记录。API8ca9已进入starting，Tasks原快照CIf495正在运行；剩余PG/Mongo及Rust验收继续待完成。
 
 该工具镜像配置已rollout，核对原活跃Pod UID未改变，CPU1/3、内存4Gi、data24Gi、并发2、worker-only、镜像别名与supervisor c021保持。新的原固定计划镜像重跑c43538a7已入队，仍为fe3提交；不把入队视为通过。当前CIf495已通过模块下载，进入go mod verify，使用其启动时的原网络设置。
+
+## 2026-10-28 03:50：超时后的停止确认与冷编译优化（实现/验证中）
+
+Tasks CIf495在原race步骤期间最终interrupted，server记录executor stopped without an acknowledged result；原检查/构建成功9分50.97秒、Atlas59.52秒、迁移1.64秒，未获得race断言结果。事件无Evicted/DeadlineExceeded，监控采样的引擎/执行器OOM计数均0、引擎峰值working set约3.2GiB；executor于03:25:08启动，engine于03:45:20被正常停止。这与20分钟执行预算和10秒清理窗口相符，但终态没有ACK，仍按interrupted保留，不能改写为确认的timed_out或唯一根因已证明。
+
+代码发现停止确认使用docker rm --force，会把大overlay文件系统删除也计入10秒窗口。新增修正只列出运行中容器、SIGKILL后再次确认无运行容器，再允许终态回传；整个私有引擎及磁盘随Pod回收。退出竞态以最终观测为准；kill失败且仍运行、最终观测失败均继续fail closed。新增空引擎、运行容器、退出竞态、列举/kill/确认失败、仍运行及context取消回归，race专项PASS2.904秒。真实临时k3s超时场景增加独立后台容器及256MiB可写层，要求保留timed_out ACK及清理；make verify已PASS（Go race/进程内集成、构建/lint/generate、35前端单测与14浏览器31.4秒），新一轮完整Testcontainers正在运行。尚未部署这段新源码，之前PASS1654.999秒对应1842d17，不能代替本次结果。
+
+同时准备仅含Go1.26.4公共标准库普通/race编译缓存的homelab工具层，在本机有界Go并行度构建，不装业务模块、不保存任何业务token或私有源码、不更改原workflow的20分钟限制。该优化仍需实际完整运行验证，不能预先视为解决冷启动预算。API8ca9原test已开始执行，HTTP/1.1工具镜像的Tasks image重跑c43538a7排队中，业务验收未完成。

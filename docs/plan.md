@@ -182,3 +182,5 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 - [x] 修复大对象分块清单XML仍限32KiB的协议缺口；最大长度ID/分块额度回归、make verify、384MiB真实BuildKit专项及完整Testcontainers PASS1654.999秒（27必选、2可选SKIP），新supervisor已部署；具体业务结果仍单列。
 - [ ] Tasks保留原20分钟：旧1/2CPU冷编译超时及12Gi引擎临时空间驱逐分别留证；后续CPU request1/limit3、内存4Gi、act-data24Gi、worker-only和并发2。实际3CPU内核/Node可见性已验证，待原workflow、PG/Mongo、镜像和etcd健康完整验收。
 - [ ] 在受限预算下逐个恢复真实 workflow，观察共享 registry/Longhorn I/O；owner 已要求继续，当前 API 测试通过、镜像运行中，Tasks/PG/Rust 待完成。保持现有预算，不自动增加任务槽位。
+
+2026-10-28 03:50追加：Tasks f495原race阶段最终缺失终态ACK，保留interrupted；停止确认由等待容器文件系统删除改为杀停并复查运行状态，新增回归及含后台容器/256MiB层的真实k3s超时验证，自动测试中，尚未部署。homelab公共Go标准库编译缓存层构建中，仅优化冷启动；API/Tasks/PG/Mongo/Rust仍按原条件逐项验收，不提前勾选10.7b。

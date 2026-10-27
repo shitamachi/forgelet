@@ -305,7 +305,7 @@ func containsSecret(value string, mask *masker) bool {
 	return false
 }
 func stopActContainers(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "docker", "ps", "-aq")
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-q")
 	data, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("list owned act containers: %w", err)
@@ -314,9 +314,22 @@ func stopActContainers(ctx context.Context) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	args := append([]string{"rm", "--force"}, ids...)
-	if err := exec.CommandContext(ctx, "docker", args...).Run(); err != nil {
-		return fmt.Errorf("stop owned act containers: %w", err)
+	// Prove execution has stopped without waiting for overlay filesystem removal.
+	// The entire private engine and its data are reclaimed with the Pod. Removing
+	// a large build container here can exhaust the result-reporting grace period.
+	args := append([]string{"kill"}, ids...)
+	killErr := exec.CommandContext(ctx, "docker", args...).Run()
+	remaining, err := exec.CommandContext(ctx, "docker", "ps", "-q").Output()
+	if err != nil {
+		return fmt.Errorf("confirm owned act containers stopped: %w", err)
 	}
+	if len(strings.Fields(string(remaining))) != 0 {
+		if killErr != nil {
+			return fmt.Errorf("stop owned act containers: %w", killErr)
+		}
+		return fmt.Errorf("owned act containers are still running")
+	}
+	// A container can exit between listing and kill; the final observation is
+	// authoritative even when Docker returns an already-stopped error.
 	return nil
 }
