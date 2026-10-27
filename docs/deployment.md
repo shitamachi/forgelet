@@ -915,6 +915,8 @@ profiles:
 
 2026-10-28恢复真实业务时，homelab将上述act引擎CPU limit先调为2、02:19再调为3，request保留1；内存4Gi、worker隔离与并发2保持，用于原20分钟Tasks冷编译。此前已创建的Pod保留各自1或2 CPU预算；此调整不保证争用时持续获得3核，也不隔离磁盘I/O。最终原workflow与集群验证结果见status。
 
+2026-10-28 02:54，原Tasks检查因act-data超过12Gi被kubelet驱逐后，homelab将后续act引擎data_limit提高为24Gi；workspace原预算和其他资源约束保留。调整前node2/node3文件系统分别余约67/341GiB，均无DiskPressure。此上限不是磁盘预留；运行中超限仍可能被驱逐。
+
 新增引擎字段省略时保持旧默认（100m / 256Mi request、3 CPU / 4Gi limit）；
 共享小集群应显式设置真实预算，不能将此旧默认视作安全容量。
 负数、无效量及高于最终 limit（含默认值）的 request 在访问 Kubernetes 前拒绝。

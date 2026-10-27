@@ -61,6 +61,14 @@ CPU可见性修正后的完整Testcontainers PASS1522.854秒（27必选叶场景
 
 新增256/512/1024分块和最长64字节ID的HTTP handler回归：修复前512/1024失败400，修复后race通过，包含完整组装、幂等重试、超数量及超XML字节拒绝。真实独立BuildKit Testcontainers随机层由300MiB增到384MiB，跨过旧XML边界；make verify已通过（Go race/进程内集成、构建/lint/generate、35前端单测、14浏览器32.2秒），缓存专项Testcontainers已PASS349.282秒（真实BuildKit场景209.62秒，cold3090dfe0/warm e43ae36f、digest3dfd40e8…，包含重启/失败/取消/清理），临时集群已清理；完整Testcontainers仍在运行。02:42已部署supervisor c021018d1899befc3460ab1876320c3355838408255572531e9d01dcfd50fd73，server仍为749b0bc6；只更新后续执行器镜像，已有Pod UID/配额和全部镜像别名/工具runner/worker selector保留。原API目标b8的test已success：Go缓存true，普通测试22.54秒、覆盖率25.96秒；Codecov上传缺token仍为原定义软失败。实际Pod f-079a44a6 位于node3、祖先cpu.max=300000/100000、memory.max=4Gi、内层NanoCpus=3e9/Node24 availableParallelism=3（宿主4核）；Tasks和Rust仍待后续原workflow验收，不覆盖本次失败记录。
 
+## 2026-10-28 02:54：Tasks 临时引擎空间修正
+
+fe3镜像入口 `f7c385c7` 的reliability子任务为interrupted：Kubernetes事件明确记录act-data emptyDir超过12Gi被Evicted，cancel_requested=false，镜像正确skipped。该attempt尚未完成原检查，不能称业务测试失败或沿用前次超时结论。根因范围为本Pod磁盘额度；预加载公共镜像与Go编译缓存叠加需要更多临时空间，不是SQLite/PVC低水位触发。
+
+调整前实际worker文件系统余量：node2约66.7GiB、node3约341.4GiB，Memory/Disk/PIDPressure均False。将两个act profile的data_limit由12Gi提高至24Gi；保留workspace原预算、CPU request1/limit3、内存4Gi、并发2、worker-only、所有镜像别名与工具runner。24Gi是每attempt emptyDir上限，并非磁盘预留或瞬时强制写入限速；kubelet可在观测到超限后驱逐。执行完成清理随Pod回收，无新常驻引擎。配置rollout通过，现有Pod UID/原额度保留；新原快照重跑已入队，仍使用显式20分钟，不删除检查。本次只调整配置，自动测试代码版本未变，完整回归仍运行中。
+
+02:44现有Web HTTP200、Flux Ready/revision564223da、digestc85afdd保持；etcd当前告警为空、leader=1、P99 fsync约12ms/commit约15ms。Rust仓库已有新业务提交d3d62cd，后续验收前按原计划fetch/fast-forward并保留业务变更。
+
 ## 2026-10-27：homelab etcd 告警排查与资源保护
 
 owner 反馈集群 etcd 告警后，停止推进新的真实 push、构建与部署；排查时 Forgelet 命名空间已无执行 Pod，保留控制面服务。
