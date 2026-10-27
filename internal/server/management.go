@@ -131,6 +131,9 @@ func (s *Server) validateManagement(m Management, requireRuntime bool) error {
 		if err := t.Validate(); err != nil {
 			return err
 		}
+		if err := s.validateAutomaticTarget(t); err != nil {
+			return err
+		}
 		if requireRuntime && s.cfg.Delivery == nil {
 			return errors.New("GitOps requires configured GitHub App and Flux adapter")
 		}

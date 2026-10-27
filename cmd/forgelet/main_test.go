@@ -52,6 +52,38 @@ func TestLoadConfigDefaultsAndParallelism(t *testing.T) {
 	}
 }
 
+func TestLoadAutomaticDeploymentTarget(t *testing.T) {
+	cfg, err := loadConfig(configFile(t, baseConfig+`
+targets:
+  web:
+    source_repository: me/repo
+    source_ref: refs/heads/main
+    repository: me/gitops
+    installation_id: 7
+    branch: main
+    path: apps/kustomization.yaml
+    mode: direct
+    image: registry.test/web
+    image_name: web
+    flux_namespace: flux-system
+    kustomization: web
+    namespace: apps
+    deployment: web
+    container: web
+    on_success:
+      workflow_path: .github/workflows/ci.yml
+      job: image
+      profile: small
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.Targets["web"].OnSuccess
+	if a == nil || a.WorkflowPath != ".github/workflows/ci.yml" || a.Job != "image" || a.Profile != "small" {
+		t.Fatalf("binding lost while loading YAML: %+v", cfg.Targets["web"])
+	}
+}
+
 func TestLoadConfigStrictDocuments(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

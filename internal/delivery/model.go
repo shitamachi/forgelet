@@ -21,27 +21,42 @@ var ErrNotFound = errors.New("delivery not found")
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 var shaPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
+var jobPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
 type Target struct {
-	GitURL           string `yaml:"git_url,omitempty" json:"git_url,omitempty"`
-	Name             string `yaml:"name" json:"name"`
-	SourceRepository string `yaml:"source_repository" json:"source_repository"`
-	SourceRef        string `yaml:"source_ref" json:"source_ref"`
-	Repository       string `yaml:"repository" json:"repository"`
-	InstallationID   int64  `yaml:"installation_id" json:"installation_id"`
-	Branch           string `yaml:"branch" json:"branch"`
-	Path             string `yaml:"path" json:"path"`
-	Mode             string `yaml:"mode" json:"mode"`
-	Image            string `yaml:"image" json:"image"`
-	ImageName        string `yaml:"image_name" json:"image_name"`
-	FluxNamespace    string `yaml:"flux_namespace" json:"flux_namespace"`
-	Kustomization    string `yaml:"kustomization" json:"kustomization"`
-	Namespace        string `yaml:"namespace" json:"namespace"`
-	Deployment       string `yaml:"deployment" json:"deployment"`
-	Container        string `yaml:"container" json:"container"`
+	OnSuccess        *OnSuccess `yaml:"on_success,omitempty" json:"on_success,omitempty"`
+	GitURL           string     `yaml:"git_url,omitempty" json:"git_url,omitempty"`
+	Name             string     `yaml:"name" json:"name"`
+	SourceRepository string     `yaml:"source_repository" json:"source_repository"`
+	SourceRef        string     `yaml:"source_ref" json:"source_ref"`
+	Repository       string     `yaml:"repository" json:"repository"`
+	InstallationID   int64      `yaml:"installation_id" json:"installation_id"`
+	Branch           string     `yaml:"branch" json:"branch"`
+	Path             string     `yaml:"path" json:"path"`
+	Mode             string     `yaml:"mode" json:"mode"`
+	Image            string     `yaml:"image" json:"image"`
+	ImageName        string     `yaml:"image_name" json:"image_name"`
+	FluxNamespace    string     `yaml:"flux_namespace" json:"flux_namespace"`
+	Kustomization    string     `yaml:"kustomization" json:"kustomization"`
+	Namespace        string     `yaml:"namespace" json:"namespace"`
+	Deployment       string     `yaml:"deployment" json:"deployment"`
+	Container        string     `yaml:"container" json:"container"`
+}
+
+// OnSuccess binds an original workflow publisher to a native deployment job.
+type OnSuccess struct {
+	WorkflowPath string `yaml:"workflow_path" json:"workflow_path"`
+	Job          string `yaml:"job" json:"job"`
+	Profile      string `yaml:"profile" json:"profile"`
 }
 
 func (t Target) Validate() error {
+	if t.OnSuccess != nil {
+		a := t.OnSuccess
+		if !blob.SafePath(a.WorkflowPath) || !strings.HasPrefix(a.WorkflowPath, ".github/workflows/") || strings.Count(a.WorkflowPath, "/") != 2 || (!strings.HasSuffix(a.WorkflowPath, ".yml") && !strings.HasSuffix(a.WorkflowPath, ".yaml")) || !jobPattern.MatchString(a.Job) || a.Profile == "" {
+			return fmt.Errorf("automatic deployment requires a workflow path, job and native profile")
+		}
+	}
 	if t.GitURL != "" {
 		u, err := url.Parse(t.GitURL)
 		if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "ssh") || (u.User != nil && u.Scheme != "ssh") {

@@ -530,6 +530,11 @@ func (s *Server) createRun(ctx context.Context, e run.Event, path string, source
 	return s.createRunFiles(ctx, e, path, source, files)
 }
 func (s *Server) createRunFiles(ctx context.Context, e run.Event, path string, source []byte, files map[string][]byte) (run.Run, error) {
+	// Manual admission has always defaulted to push in the workflow compiler.
+	// Apply that default once here so policy binding uses the same event.
+	if e.Name == "" {
+		e.Name = "push"
+	}
 	e.WorkflowPath = path
 	id := stableID(e.DeliveryID, path)
 	if saved, err := s.store.GetRun(ctx, id); err == nil {
@@ -569,6 +574,10 @@ func (s *Server) createRunFiles(ctx context.Context, e run.Event, path string, s
 	}
 	if len(plans) == 0 {
 		return run.Run{}, fmt.Errorf("%w: workflow has no runnable jobs", ErrWorkflow)
+	}
+	plans, err = s.attachDeployments(plans, e)
+	if err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	for i := range plans {
 		plans[i].GitHubAPIURL = strings.TrimRight(s.cfg.GitHubAPIURL, "/")
@@ -652,6 +661,9 @@ func (s *Server) validateProfiles(plans []run.Plan) error {
 				return fmt.Errorf("profile %q no longer enables act", p.Profile)
 			}
 			for _, step := range p.Steps {
+				if step.Shell == "pwsh" {
+					return fmt.Errorf("shell pwsh requires an act execution profile with PowerShell installed")
+				}
 				if step.Action == nil {
 					continue
 				}

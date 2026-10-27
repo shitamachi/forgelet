@@ -194,7 +194,21 @@ session 模式登录后可打开 `/connections`、`/workflows`、`/targets`；�
 
 1. **仓库接入**：填入 `owner/repository` 与已有 GitHub App installation ID，启用并保存。点击“检查接入”并填写完整 commit SHA，验证该 App 可以读取 `.github/workflows`。App 安装、权限与 webhook 仍按上一节在 GitHub 授权；纯手动 shell 可用 installation 0。
 2. **Workflows**：登记仓库与 `.github/workflows/*.yml/.yaml` 路径。Git 文件模式按事件 SHA 读取；切换“控制面保存 YAML”可编辑并保存独立源码，也可填写 SHA 读取 Git 源码为编辑副本。保存不修改远端 Git。启停决定未来事件是否执行；页面“运行”填写固定 SHA、ref、事件和 inputs，通过现有管理运行链执行。
-3. **发布目标**：填写来源仓库/ref、GitOps 仓库/installation/分支/文件、direct 或 PR、镜像映射、Flux 与应用资源字段。必须已配置 GitHub App；Flux controller 和必要 RBAC 仍需安装。保存不会自行发布，workflow 的 forgelet/deploy 请求使用对应目标。
+3. **发布目标**：填写来源仓库/ref、GitOps 仓库/installation/分支/文件、direct 或 PR、镜像映射、Flux 与应用资源字段。必须已配置 GitHub App；Flux controller 和必要 RBAC 仍需安装。默认由 workflow 的 forgelet/deploy 请求使用对应目标。可勾选“原始 workflow 成功后自动发布”，填写 workflow 路径、镜像任务 ID 和原生执行 profile；仅对匹配来源仓库/ref/path 的后续 push 生效，保存操作本身不发布。
+
+自动发布目标的 `on_success` 配置例如：
+
+```yaml
+on_success:
+  workflow_path: .github/workflows/check.yml
+  job: image
+  profile: homelab
+```
+
+镜像任务必须是单个非 matrix 任务，且只有一个 docker/build-push-action 或 forgelet/build 步骤。
+控制面从该步骤输出声明 digest，追加等待所有原始任务成功的原生发布任务；原 workflow 文件不修改。
+PR、workflow_dispatch、其他分支/文件不会自动追加；已有计划和重跑保留原图，不追溯应用新绑定。
+发布任务成功表示投递意图已持久化，实际部署结果仍需查看 Flux revision、Deployment 健康和发布状态。
 
 首次打开显示安装文件的初始配置，**第一次保存后 repositories/workflows/targets 以 SQLite 为准**，覆盖这三项的安装文件默认值；其他设置仍来自安装文件。
 修改失败不会应用部分配置。若有其他页面先保存，当前保存返回 409，保留未提交表单；关闭表单并点“重新加载”后再编辑。

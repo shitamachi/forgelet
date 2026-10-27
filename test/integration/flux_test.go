@@ -26,6 +26,7 @@ import (
 
 	"github.com/shitamachi/forgelet/internal/delivery"
 	"github.com/shitamachi/forgelet/internal/run"
+	serverapi "github.com/shitamachi/forgelet/internal/server"
 )
 
 func clusterCommand(t *testing.T, ctx context.Context, cluster testcontainers.Container, args ...string) string {
@@ -264,5 +265,51 @@ spec:
 	if merged.Commit == merged.Revision || merged.Revision != merged.ObservedRevision {
 		t.Fatalf("PR head mistaken for merged revision: %+v", merged)
 	}
+
+	t.Run("automatic publisher dependency survives restart and blocks failed CI", func(t *testing.T) {
+		// Exercise the same durable management update used by the Web UI.
+		var config serverapi.Management
+		must(t, json.Unmarshal(request(t, "GET", "/api/management", nil, 200), &config))
+		if len(config.Targets) != 1 {
+			t.Fatalf("unexpected active targets: %+v", config.Targets)
+		}
+		config.Targets[0].Mode = "direct"
+		config.Targets[0].OnSuccess = &delivery.OnSuccess{WorkflowPath: ".github/workflows/auto.yml", Job: "image", Profile: "homelab"}
+		request(t, "PUT", "/api/management", config, 200)
+		restartServer(t, ctx, client, httpClient, endpoint)
+		must(t, json.Unmarshal(request(t, "GET", "/api/management", nil, 200), &config))
+		if config.Targets[0].OnSuccess == nil || config.Targets[0].OnSuccess.Job != "image" {
+			t.Fatalf("automatic policy lost after restart: %+v", config.Targets)
+		}
+		launch := func(yaml string) run.Run {
+			var item run.Run
+			must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "workflow_path": ".github/workflows/auto.yml", "workflow": yaml, "installation_id": 7}, 201), &item))
+			if len(item.Jobs) != 2 {
+				t.Fatalf("automatic graph missing: %+v", item)
+			}
+			return item
+		}
+		auto := launch(source)
+		waitFor(t, ctx, "publisher starts before control-plane restart", func() bool { return jobByKey(t, get(t, auto.ID), "image").State == run.Running })
+		before := jobByKey(t, get(t, auto.ID), "image")
+		restartServer(t, ctx, client, httpClient, endpoint)
+		finished := finishRun(t, ctx, get, auto.ID)
+		publisher := jobByKey(t, finished, "image")
+		deploy := jobByKey(t, finished, "forgelet_deploy_app")
+		if finished.State != run.Succeeded || publisher.PodUID != before.PodUID || deploy.State != run.Succeeded || deploy.Plan.Kernel != "" {
+			t.Fatal(finished)
+		}
+		waitFor(t, ctx, "automatic digest reaches Flux and healthy Deployment", func() bool { return read(delivery.ID(auto.ID, "app")).State == delivery.Deployed })
+		published := publisher.Result.Outputs["forgelet_deploy_app_digest"]
+		if !run.ValidDigest(published) || read(delivery.ID(auto.ID, "app")).Digest != published {
+			t.Fatal("publisher digest lost")
+		}
+		bad := launch(strings.Replace(source, "RUN mkdir -p /www && echo healthy > /www/index.html", "RUN exit 7", 1))
+		failed := finishRun(t, ctx, get, bad.ID)
+		if failed.State != run.Failed || jobByKey(t, failed, "forgelet_deploy_app").State != run.Skipped {
+			t.Fatal("failed CI was deployed", failed)
+		}
+		request(t, "GET", "/api/deployments/"+delivery.ID(bad.ID, "app"), nil, 404)
+	})
 
 }

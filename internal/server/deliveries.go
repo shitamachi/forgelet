@@ -87,6 +87,12 @@ func validateDeliveryConfig(cfg Config) error {
 		if err := t.Validate(); err != nil {
 			return fmt.Errorf("target %s: %w", name, err)
 		}
+		if t.OnSuccess != nil {
+			p, exists := cfg.Profiles[t.OnSuccess.Profile]
+			if !exists || p.Act != nil {
+				return fmt.Errorf("automatic deployment target %q requires an available native profile", name)
+			}
+		}
 	}
 	return nil
 }

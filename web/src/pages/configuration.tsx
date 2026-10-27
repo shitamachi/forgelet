@@ -248,6 +248,7 @@ function Editor({
     workflow = doc.workflows[edit.index],
     target = doc.targets[edit.index]
   const [source, setSource] = useState(edit.section === 'workflows' ? workflow?.source || '' : '')
+  const [automatic, setAutomatic] = useState(Boolean(target?.on_success))
   const [mode, setMode] = useState(workflow?.source ? 'managed' : 'git')
   const [error, setError] = useState<unknown>()
   const [pending, setPending] = useState(false)
@@ -291,6 +292,12 @@ function Editor({
           targetFields.map(([key]) => [key, value(key)]),
         ) as unknown as Target
         t.installation_id = Number(value('installation_id'))
+        if (automatic)
+          t.on_success = {
+            workflow_path: value('automatic_workflow'),
+            job: value('automatic_job'),
+            profile: value('automatic_profile'),
+          }
         if (!Number.isSafeInteger(t.installation_id))
           throw new Error('Installation ID 必须是安全整数')
         if (edit.index < 0) next.targets.push(t)
@@ -455,6 +462,48 @@ function Editor({
                   )}
                 </label>
               ))}
+              <label>
+                <input
+                  type="checkbox"
+                  checked={automatic}
+                  onChange={(e) => setAutomatic(e.target.checked)}
+                />
+                原始 workflow 成功后自动发布
+              </label>
+              {automatic && (
+                <>
+                  <p>
+                    仅匹配来源仓库与分支的 push。全部原始任务成功后，使用镜像任务输出的 digest
+                    发布。
+                  </p>
+                  <label>
+                    发布 workflow 路径
+                    <input
+                      name="automatic_workflow"
+                      required
+                      defaultValue={
+                        target?.on_success?.workflow_path || '.github/workflows/check.yml'
+                      }
+                    />
+                  </label>
+                  <label>
+                    镜像任务 ID
+                    <input
+                      name="automatic_job"
+                      required
+                      defaultValue={target?.on_success?.job || 'image'}
+                    />
+                  </label>
+                  <label>
+                    发布执行 profile
+                    <input
+                      name="automatic_profile"
+                      required
+                      defaultValue={target?.on_success?.profile || 'homelab'}
+                    />
+                  </label>
+                </>
+              )}
             </>
           )}
           {error != null && <ErrorPanel error={error} />}

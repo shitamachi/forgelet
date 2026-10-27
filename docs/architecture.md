@@ -519,7 +519,8 @@ Azure 风格的 single PUT/block PUT/block list、HEAD 和 range 下载；不引
 监听地址由 downward API 提供 Pod IP，bridge 模式 BuildKit 能访问；不开放 hostNetwork、宿主 socket 或 Kubernetes token。
 服务随 attempt 结束关闭；恢复控制面保留原 Pod、端点与未完成上传，执行 Pod 消失仍按现有规则 interrupted，不重放构建。
 
-每对象最多原 blob 配额 256 MiB（减 envelope），单 block 32 MiB、每上传最多 256 blocks；
+每对象最多原 blob 配额 256 MiB（减 envelope），单 block 64 MiB、每上传最多 256 blocks；
+setup-go 固定 SDK 使用 64 MiB 分块；超大分块明确返回 413，不扩大对象或 attempt 总额度。
 每 attempt 最多 64 个 v2 上传/64 个下载，上传和下载保留 payload 合计最多 512 MiB。
 小对象 single PUT 流式写盘，重复 block、列表和 finalize 需一致；未完整上传不能 finalize。
 完成 block list 后移除原 blocks，重试以已保存的 block/list 摘要校验。single Put Blob 替换未提交分块时也删除旧 blocks，避免磁盘实际占用与 staging 计数脱节。envelope/assembly 与串行下载的临时归档最多各增加一个对象大小，
@@ -565,3 +566,14 @@ v2 RPC 暂存超限返回结构化 resource_exhausted，保留原有字节与对
 工具镜像与应用缓存分别验收；GitHub 原 workflow 继续执行 setup 和浏览器安装命令。
 代价为更大的按需执行镜像，空闲时仍只有原 Go 控制面；native 与普通 act target 保持独立。
 下载转发只属于镜像构建，执行 Pod 不依赖本机构建服务，不获得额外的 Kubernetes 权限。
+
+### 原始 workflow 的自动 CD 绑定（本轮实现，集群验收独立记录）
+
+发布目标可选 `on_success.workflow_path/job/profile`。只在接收匹配仓库、来源分支和 workflow 路径的 push 时，
+为原始图追加普通 native `forgelet/deploy` 任务；其 needs 包含全部原始任务组，复用调度、日志、取消、
+失败传播与重启恢复。镜像任务必须是唯一普通任务，唯一 docker/build-push-action 或 forgelet/build 步骤提供 digest。
+控制面声明一个内部 job output，部署任务通过 needs 读取；不复制 workflow，不更改其步骤，不继承业务 secrets/env。
+部署 profile 必须显式配置为 native，contents:none，没有 checkout 或 Kubernetes API 身份。
+目标绑定和图在 admission 时确定并保存；后续配置更改不追溯改变旧计划或重跑，投递仍核对当前目标权限和来源范围。
+多个目标按名称稳定追加，内部任务/output 冲突、模糊 publisher、图或输出数量超限均拒绝并保留诊断。
+PR、workflow_dispatch 不自动追加；CI 失败/跳过会使发布任务按默认 success 门禁跳过，不创建执行 Pod 或投递。

@@ -216,8 +216,24 @@ test('repository onboarding, workflow editing/dispatch and target forms persist 
   await page.goto('/targets')
   await page.getByLabel('编辑 homelab', { exact: true }).click()
   await page.getByLabel('目标名称', { exact: true }).fill('edited-target')
+  await page.getByLabel('原始 workflow 成功后自动发布', { exact: true }).check()
+  await page.getByLabel('发布 workflow 路径', { exact: true }).fill('.github/workflows/ci.yml')
+  await page.getByLabel('镜像任务 ID', { exact: true }).fill('publish')
+  await page.getByLabel('发布执行 profile', { exact: true }).fill('homelab')
   await page.getByRole('button', { name: '保存配置', exact: true }).click()
   await expect(page.getByText('edited-target', { exact: true })).toBeVisible()
+  await page.reload()
+  await page.getByLabel('编辑 edited-target', { exact: true }).click()
+  await expect(page.getByLabel('原始 workflow 成功后自动发布', { exact: true })).toBeChecked()
+  await expect(page.getByLabel('镜像任务 ID', { exact: true })).toHaveValue('publish')
+  await page.getByLabel('目标名称', { exact: true }).fill('edited-target')
+  await page.getByRole('button', { name: '保存配置', exact: true }).click()
+  const savedTarget = (await (await request.get('/__test/state')).json()).management.targets[0]
+  expect(savedTarget.on_success).toEqual({
+    workflow_path: '.github/workflows/ci.yml',
+    job: 'publish',
+    profile: 'homelab',
+  })
   await page.getByLabel('删除 edited-target', { exact: true }).click()
   await page.getByRole('button', { name: '确认删除配置' }).click()
   await expect(page.getByText('edited-target', { exact: true })).toHaveCount(0)

@@ -84,6 +84,7 @@ export interface DiskStatus {
   error?: string
 }
 export interface Target {
+  on_success?: { workflow_path: string; job: string; profile: string }
   image_name: string
   git_url?: string
   name: string
