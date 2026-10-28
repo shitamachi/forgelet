@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复自动回归中，随后验证热缓存和手动PG18，最新完整自动回归已通过，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，真实热缓存补验因原Atlas公网下载超时而停止，手动PG18尚未启动，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | 7c5d09a/CI1b17a3c4；下一修复c836ca1已推送独立分支 | lake已通过；原20分钟终态timed_out，engine另有transcript时序失败；后者修复race500/全包30轮通过，原YAML/golden不改 | 自主旧image221882fe取消留证；CI/发布/PG-Mongo继续待验收 | 非本批部署目标 |
+| steam-tasks | bd3cdc3；原CI5865abfb / image7aaf3b92；旧失败保留 | 原CI、镜像workflow和Checks成功，原YAML/20分钟不变；2Gi缓存保存、重启热命中及手动PG18继续验收，MongoDB已移除 | digestf557195f…，latest/sha-bd3cdc3/Action一致 | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -883,3 +883,28 @@ MongoDB移除后原AVX理由已撤销，但新实测证实N5105上的冷编译�
 自动验证：相关blob/kube/executor race通过1.805/1.997/33.016秒；加入HTTP期限、较短父Context、真实HTTP等待响应取消与认证前不延长期限的回归后，executor/server/blob race分别28.772/35.532/1.518秒通过。最新make verify完整PASS，35前端单测和14浏览器32.5秒。
 
 真实临时k3s扩大原BuildKit缓存用例为1120MiB不可压缩层，显式2Gi对象/4Gi全局测试预算，冷/热、实际RUN CACHED、原UID恢复、持久缓存重启、发布digest、失败阻断、取消/清理和脱敏均PASS；专项653.769秒，叶场景532.22秒。初次使用扩大的tmpfs PVC出现EOF并保留失败349.558秒：tmpfs数据计入写入容器的cgroup内存，与生产磁盘PVC不同。修正只将临时集群存储复制到其自身可回收磁盘后重启，保留安装清单的server512Mi上限；没有修改生产内存或跳过大数据断言。测试容器已清理。大数据专项对应上限/流式路径；后加入的5分钟策略由独立HTTP行为单测验证，包含二者的当前源码全量Testcontainers正在执行，不混称已经全量通过。缓存2Gi/新传输策略尚未部署，热缓存与PG18继续待实际结果，10.6e/10.7b仍未完成。
+
+
+## 2026-10-28 13:09：2Gi 缓存策略已部署，完整回归与实际缓存验收中
+
+源码3bb6814已推送，server a28ffec4、supervisor ff812b00已部署；Ubuntu工具镜像c1726fc1、node2选择、引擎500m/4CPU与4Gi、并发2及6Gi总blob预算保持。原bd3快照重跑a5888f0a正在执行，待确认真实Go归档超过1Gi且成功保存，再自动重启控制面核对元数据持久性并运行原手动PG18 workflow，要求setup-go实际cache-hit=true。尚未把这些结果标为通过。
+
+完整Testcontainers已通过1120MiB不可压缩层的冷/热、重启、发布digest、失败与取消场景，其余场景仍在执行。核对九个业务源码的Go/Rust/JS/TS/workflow与执行脚本没有Mongo7引用后，只从Ubuntu公共镜像预取映射移除mongo:7.0；registry对象、其他镜像、运行中任务及实际数据库不改。配置随上述已计划的server重启生效，不再为已移除的依赖预拉取镜像。Windmill已完成授权迁移至node3，原因与健康证据见前文，不再等待迁移授权。
+
+
+## 2026-10-28 13:12：当前源码完整 Testcontainers 回归通过
+
+3bb6814完整回归PASS2360.406秒，27个必选叶场景通过，2个需外部私有业务目录的可选fixture SKIP；独立1120MiB BuildKit大缓存场景777.28秒、act382.68秒、Rust102.60秒、真实SDK71.94秒、浏览器34.92秒、登录授权/重启115.28秒、保留清理17.33秒。实际Cold/Warm缓存与原UID/重启恢复、失败阻断、取消/清理、脱敏均通过，临时k3s/registry容器已回收；本机仅保留owner原lg-multiarch builder。35前端单测与14浏览器的make verify结果见前文。
+
+真实a588缓存验收当前被原Atlas latest公网下载拖慢，非Go静态检查失败：约137.8MB下载只有约80KB/s，HTTP/1.1与默认协议对照相近，本机相同URL约88KB/s。原20分钟不改，不用其他二进制替换或跳过迁移检查。此下载未完成，原大Go缓存保存/重启命中及PG18仍不能宣布完成。13:09复查业务Web HTTP200、ready1、Flux564223da；etcd无告警、leader1、P99 fsync11.1ms/commit15.3ms。
+
+
+## 2026-10-28 13:16：实际缓存补验因公网依赖超时，未启动手动 PG18
+
+a5888f0a最终failure，执行叶10764894明确timed_out：静态检查/构建6分25.14秒成功，随后原Atlas latest下载到原20分钟期限，未进入迁移/race，setup-go post未执行，不能记作缓存保存成功。控制面收到明确终态并回收Pod，原失败日志完整保留；验收脚本按失败停止，未重启server或创建手动PG18，前述mongo预取CM改动尚待下次正常重启生效。旧5865/7aaf原CI/镜像成功证据保持，但大缓存与PG18仍未完成。
+
+有界下载对照：原URL默认/HTTP1.1、本机、三个官方DNS A地址及集群已有mihomo代理均约54–143KB/s；flybit代理TLS握手失败。没有更改代理规则、节点网络或workflow，没有反复启动已知慢路径。诊断只读取公开文件小范围数据，临时port-forward均已关闭。已向owner询问是否接受将Tasks的Atlas安装改为固定版本/校验和及工具缓存，保留迁移校验、所有原测试与20分钟；尚未修改业务YAML，也不将未回复当作同意。
+
+13:16最终健康复查：业务Web HTTP200、Deployment ready1、Flux仍564223da；etcd无告警、leader1，P99 fsync15.4ms/commit26.5ms。已无本批executor Pod或Testcontainers容器；Windmill app Ready1/1，原镜像和2Gi预算保持。
+
+13:18在所有业务attempt已终态、无executor Pod时，正常重启控制面以应用Mongo预取清理；rollout成功，管理API可读，仍为a28ffec4/ff812b00与原预算。这次空闲重启只确认配置生效/控制面就绪，不作为尚未保存的大Go缓存重启验收。Atlas优化选项仍待owner选择，原业务workflow保持。
