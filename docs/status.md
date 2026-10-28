@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已完成DuckDB兼容镜像/两处测试同步修复；真实冷CI仍超时，Mongo7需要AVX节点，当前等待owner确认额外的Windmill无状态服务迁移后继续完整验收，最新完整自动回归已通过，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 最新业务提交已移除MongoDB；取消原AVX/Windmill迁移方案，继续原workflow及PG18验收，测试时序修复正在验证，最新完整自动回归已通过，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -845,3 +845,19 @@ node3是无AVX/AVX2的Intel N5105；校验官方发布SHA256后，DuckDB2.0.0独
 已准备未执行的方案：Windmill app无数据卷、单replica，现有限制2Gi（Pod默认request同为2Gi）、RollingUpdate maxUnavailable=0/maxSurge=1且Ready。只新增nodeSelector使它从node2滚动到node3，所有image/env/资源/数据库与worker配置保持；服务端dry-run通过。然后Ubuntu CI只选择已确认AVX2的worker，CPU request500m/limit4、内存request=limit4Gi、supervisor100m/256Mi，合计600m/4352Mi；node2预期总预留3900m/9518Mi，在当前allocatable内，仍需执行前重查容量与业务健康，不能保证CPU突发吞吐。Rust和并发2保持。迁移涉及Forgelet之外的Windmill服务，因此已单独向owner请求确认，未修改Windmill、节点标签或该CI配置；等待时间不作为授权。proposal/dry-run与容量计算保存在本机私有证据目录，未提交潜在配置凭据。
 
 当前所有本批执行/诊断Pod和本机临时编译/Testcontainers容器已清理，owner的lg-multiarch builder保持。最终etcd无告警、leader1、P99 fsync12.0ms/commit15.3ms，Web HTTP200/ready1、Flux564223da和部署digest保持。10.6e/10.7b仍未完成，剩余为准备AVX容量、合入测试修复后原CI/镜像/Checks/缓存及手动PG18/Mongo7；不以本地回归或计划替代实际运行。
+
+
+## 2026-10-28 10:16：跟随 Tasks 移除 MongoDB，撤销额外迁移方案
+
+owner确认已移除MongoDB，已fetch并核对main最新04f3dec（移除提交40af05d）。当前运行代码、Go依赖与容器测试不再使用MongoDB；少量历史说明及拒绝旧backend的配置测试不构成MongoDB运行依赖。原reliability.yml仍保留20分钟、完整short/race、手动PostgreSQL输入与postgres:18-alpine。因此本轮不再要求Mongo7/AVX，不执行Windmill迁移、不改node标签或CPU request；旧方案标记superseded，业务代码更新优先于此前迁移授权。
+
+owner04f3dec的原CI dfe66cb8已完成但failure：queue容量取消测试在worker尚未claim时取消，断言期望1个已执行任务、实际0；不是MongoDB或DuckDB非法指令。原image050d1da4仍运行，保持原任务，不取消owner push。候选只修测试同步：transcript等待已处理事件、queue先等执行回调开始，再保留原取消/claimed/pending断言；workflow与golden字节不变。目标queue race500轮PASS7.536秒；相关两包short/race30轮PASS（queue4.244秒、engine36.605秒）。真实PG18回归尚在运行，候选尚未push main，不将局部测试称完整原workflow验收。
+
+
+## 2026-10-28 10:38：统一 transcript 结束条件与匹配 CGO 的标准库缓存
+
+owner04f原image050d1da4最终timed_out且原image构建skipped；race还记录TestTranscriptExplicitNoPlayerCountSleeps缺少dormant事件，不能只归因为冷CPU耗时。该用例与此前unclassified一样，在worker记录commit后、event loop处理结果前就stop。候选业务修复bd3cdc3统一相关场景，要求原commit条件和最后attempt语义事件同时满足，resource fault等待已处理pause；原golden/超时/生产代码不改。全部transcript race重复300轮PASS77.006秒；相关engine/queue short-race30轮PASS39.840/4.270秒。前一候选c942本地全仓库short/race51个有测试包通过（Go1.27.3/darwin arm64），queue真实PG18 Testcontainers回归PASS98.654秒，均与尚待Linux原workflow分别记录。自主c942两入口已明确cancelled并留证，为完整修复/新工具镜像重跑做准备；owner运行未取消，托管Actions已恢复。
+
+独立断网镜像检查确认：工具层设置CGO_LDFLAGS后runtime/cgo出现build ID mismatch，依赖它的部分公共标准库缓存失效。新增tools/duckdb/warm-std.sh，在最终链接参数下只重建Go1.26.4公共std的普通/race缓存，并检查两种模式没有stale项。构建发生在本机2CPU/3Gi、无网络容器，不含应用源码/私有模块/token，也不伪造setup-go仓库缓存命中。只导出新增275个hash缓存文件与脚本，不打包其他容器差异；额外压缩层18,578,348字节。候选固定镜像c1726fc1保留原6ace的DuckDB库和全部运行配置。
+
+自动验证：make verify完整通过（含35前端单测、14浏览器30.3秒）；候选真实驱动Testcontainers PASS35.509秒，新增标准库两模式有效性断言，原native SQL及Go1.26.4/race×2、JSON/ICU/Parquet全部通过，临时容器已清理。该工具层专项不冒称重跑完整k3s；控制面/执行协议未改，此前核心完整回归1653.055秒仍单独留证。尚未部署c172工具、未push业务bd3，原CI/发布/PG18继续待真实结果。

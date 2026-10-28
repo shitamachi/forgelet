@@ -360,3 +360,6 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 2026-10-28真实Rust验收：steam-cm 8e265947原rust-ci.yml在显式ubuntu-24.04 profile完成test、独立release构建、smoke和release内两个managed lifecycle测试，Checks成功；原普通push不触发远程publish，不扩展到真实Steam或自动部署。homelab使用自定义Rust1.97 Debian builder alias而非保证上游镜像字节一致；临时k3s与真实业务结果分别见status。
 
 原生依赖的CPU要求仍是执行镜像/worker契约，不能由YAML解析兼容保证。DuckDB2.0的默认amd64原生库在无AVX的N5105上会SIGILL；可选`tools/duckdb`镜像以同版本x86-64-v2共享库和官方`duckdb_use_lib` tag解决这一特定ABI/硬件组合，需管理员显式选用。默认profile不隐式改写应用依赖或workflow；构建、容器回归和实际Tasks验收分别记录于status。
+
+
+2026-10-28 实际验收范围调整：steam-tasks 的 owner 提交40af05d移除了MongoDB运行时/配置/依赖/测试；后续原reliability workflow的数据库选项仍为PostgreSQL18。验收跟随该原始源码，不再要求Mongo7或因此调整worker的AVX约束；当前测试同步修复不改workflow/golden。可选DuckDB2.0共享库的CPU/ABI边界保持上述限制，原CI、镜像及手动PG18的具体通过结果另见status，不能由源代码检查推定。

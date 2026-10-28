@@ -40,6 +40,12 @@ native, act and Rust images are unchanged. Do not silently apply this policy
 to a driver expecting a different native API version; rebuild and revalidate
 when upgrading DuckDB.
 
+After setting the link flags, the image rebuilds the public Go 1.26.4 standard
+library cache in normal and race modes. A cache prepared with different
+`CGO_LDFLAGS` leaves `runtime/cgo` and its dependents stale. Both cache modes are
+checked before running the driver regression. This contains no application
+source or private modules and does not report a repository Actions cache hit.
+
 The opt-in Testcontainers regression runs the real Go driver with race enabled,
 checks version and SQL results, and exercises JSON, ICU and Parquet without
 extension downloads. An amd64 container emulated on another host cannot prove

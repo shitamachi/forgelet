@@ -160,7 +160,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 
 ## 接下来
 
-阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；10.6d Rust原workflow与smoke/managed验收已完成，接下来完成10.6e的Tasks原流程/PG-Mongo和已接续业务CD的收尾；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
+阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；10.6d Rust原workflow与smoke/managed验收已完成，接下来完成10.6e的Tasks原流程/PG18（owner已移除MongoDB）和已接续业务CD的收尾；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。
@@ -202,3 +202,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 06:24追加：DuckDB同2.0.0/x86-64-v2可选工具镜像已构建，make verify和真实Go驱动Testcontainers PASS35.310秒；物理N5105原生SQL探针通过并清理。固定镜像6ace4272已只替换Ubuntu runner，资源/隔离策略保持；测试同步修复7c5d09a已真实push，原YAML的CI1b17a3c4/image221882fe正在运行，随后验收手动PG18/Mongo7，清单尚不勾选。
 
 2026-10-28 07:00追加：Tasks真实7c/1b原20分钟终态timed_out，但lake PASS1.073秒证实该原生初始化不再SIGILL；另有engine transcript事件处理时序失败。修复c836ca1保留golden/原YAML，race目标500轮与全包30轮通过，已推送独立分支，尚未推送remote main。自主旧image221明确cancelled，托管Actions恢复。Mongo7官方需要AVX；node2具备、node3缺少。已准备并dry-run将无状态windmill-app从node2迁到node3、再以500m/4CPU及4Gi完整预留在AVX2 worker运行Ubuntu CI的方案，涉及其他服务，等待owner确认，未部署。10.6e/10.7b保持未完成，不能把额外迁移方案或本地通过算成CI/PG-Mongo真实验收。
+
+
+2026-10-28 10:16追加：owner新main04f3dec/40af05d已移除MongoDB运行时代码、依赖和测试，本轮10.6e/10.7b的数据库验收改为原workflow的手动PG18输入，不再需要Mongo7/AVX或Windmill迁移。旧迁移方案未执行且已撤销；原Ubuntu worker/资源配置保持。最新owner原CI因queue测试取消时序失败，正在合并保留原断言的同步修复；原image继续运行，不取消owner push。原CI/镜像/Checks/PG18未全部验收，清单保持未完成。

@@ -29,4 +29,6 @@ COPY --from=duckdb-build /result/licenses/ /usr/share/forgelet/licenses/duckdb-t
 ENV GOFLAGS=-tags=duckdb_use_lib \
     CGO_LDFLAGS=-L/opt/forgelet/duckdb/lib
 RUN echo /opt/forgelet/duckdb/lib > /etc/ld.so.conf.d/forgelet-duckdb.conf && chmod 0644 /opt/forgelet/duckdb/lib/libduckdb.so /opt/forgelet/duckdb/provenance.json && chmod 0555 /opt/forgelet/duckdb/bin/duckdb-probe && ldconfig
+COPY tools/duckdb/warm-std.sh /opt/forgelet/duckdb/bin/warm-std.sh
+RUN sh /opt/forgelet/duckdb/bin/warm-std.sh
 USER 1000:1000

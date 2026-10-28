@@ -31,7 +31,7 @@ func TestPortableDuckDBTools(t *testing.T) {
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image: image, ImagePlatform: "linux/amd64", Entrypoint: []string{"sh", "-ec"},
-			Cmd: []string{"test \"$GOFLAGS\" = -tags=duckdb_use_lib; /opt/forgelet/duckdb/bin/duckdb-probe; export PATH=/opt/hostedtoolcache/go/1.26.4/x64/bin:$PATH; cd /tmp/probe; go test -mod=mod -race -count=2 -v ."},
+			Cmd: []string{"test \"$GOFLAGS\" = -tags=duckdb_use_lib; /opt/forgelet/duckdb/bin/duckdb-probe; export PATH=/opt/hostedtoolcache/go/1.26.4/x64/bin:$PATH; for mode in normal race; do if [ \"$mode\" = race ]; then stale=$(go list -race -f '{{if .Stale}}{{.ImportPath}}: {{.StaleReason}}{{end}}' std); else stale=$(go list -f '{{if .Stale}}{{.ImportPath}}: {{.StaleReason}}{{end}}' std); fi; test -z \"$stale\" || { printf '%s\\n' \"$stale\"; exit 1; }; done; echo 'Public Go normal/race standard library cache is ready'; cd /tmp/probe; go test -mod=mod -race -count=2 -v ."},
 			Env: map[string]string{"GOTOOLCHAIN": "local", "GOMAXPROCS": "2"},
 			Files: []testcontainers.ContainerFile{
 				{Reader: bytes.NewReader(mod), ContainerFilePath: "/tmp/probe/go.mod", FileMode: 0644},
