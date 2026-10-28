@@ -1,6 +1,6 @@
 # forgelet：homelab 设计
 
-更新：2026-10-27。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
+更新：2026-10-28。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
 暂停 spec 模式；设计随代码更新，不设审批或资源基线门禁。
 
 ## 当前结构
@@ -602,7 +602,7 @@ worker 通过 Docker bind mount 将该目录挂到 job 的同名绝对路径，�
 嵌套 Docker 的 bind source 在引擎文件系统解析，共享路径为 workspace 与 `/tmp`，不承诺 job 镜像内任意路径均可直接 bind。
 
 
-构建缓存可以显式配置 blobs.cache_object_bytes 与 act.cache_object_bytes（最大1GiB）；默认仍256MiB，artifact/object_bytes仍最大256MiB。
+构建缓存可以显式配置 blobs.cache_object_bytes 与 act.cache_object_bytes（最大2GiB）；默认仍256MiB，artifact/object_bytes仍最大256MiB。
 全局 Store 按种类预留对象预算，所有保留对象和并发上传仍受 blobs.total_bytes/objects 限制；不增加常驻缓存服务。
 job-local facade 的暂存累计预算为对象预算两倍；单块64MiB不变，1MiB BuildKit blocks 数按对象预算有界扩展。
 数据流式落盘/校验，只有 SDK 单块进入内存，较大缓存不会一次分配整个对象；重启/取消清理沿用既有语义。
@@ -624,7 +624,13 @@ act 的管理员环境准备单独限时15分钟，仅覆盖固定runner镜像�
 
 只有管理员显式选择的工具镜像设置`GOFLAGS=-tags=duckdb_use_lib`与`CGO_LDFLAGS`，走官方Go绑定的动态链接入口；该设置影响该工具镜像内的Go命令，不影响Dockerfile独立build stage，其他默认/native/Rust镜像不改。驱动升级必须同步核对C API版本并重新构建/测试，不能作为任意版本通用替代库。代价是一次本机构建和按需镜像层，不增加常驻服务；原workflow、单测和race门禁保留。可选Testcontainers用真实Go绑定核对版本、SQL、JSON、ICU与Parquet，物理N5105兼容性及原业务流程另行验收，不将模拟amd64容器结果当作真实CPU兼容证明。此段是新增实现设计，实际构建/测试/部署结果见status。
 
-CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不能替代Mongo7等镜像所需的AVX；完整此类workflow应由管理员将profile约束到已验证CPU特征的worker。Tasks在40af05d移除MongoDB后，本轮AVX2调度/资源腾挪方案已撤销且未实施；未来新增具有AVX要求的workflow仍需显式匹配实际硬件；不新增NFD常驻daemon、不改现有业务内存预留、不把重任务回落到etcd节点。
+CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不能替代Mongo7等镜像所需的AVX；完整此类workflow应由管理员将profile约束到已验证CPU特征的worker。Tasks在40af05d移除MongoDB后不再需要该AVX约束；后续因node3冷CI缓存收尾超时，按既有授权腾出node2容量并以hostname选择较快worker，没有新增AVX标签；未来新增具有AVX要求的workflow仍需显式匹配实际硬件；不新增NFD常驻daemon、不改现有业务内存预留、不把重任务回落到etcd节点。
 
 
 可选DuckDB工具层在设置CGO_LDFLAGS之后，用最终参数预编译Go1.26.4公共标准库的普通/race缓存，并验证两个模式均无stale项；提前用其他CGO参数构建的runtime/cgo缓存不能视为可用。只构建公共std，不放入私有模块/业务源码，不改变Actions对仓库缓存的实际命中结果。增加按需镜像层、无额外常驻进程，测试与部署证据见status。
+
+
+当前homelab配置追加（2026-10-28）：MongoDB不再是Tasks验收依赖；由于node3实测全测试通过后仍在缓存打包阶段触及20分钟，按owner既有容量迁移授权将无卷Windmill app滚动到node3，Ubuntu profile改为execution=true+hostname=node2、CPU500m/4和完整4Gi预留，supervisor与并发2/Rust保持。该节点选择是管理员环境配置，不是硬编码工作流解析规则，也不以不存在的Mongo测试要求约束兼容范围；实际验收见status。
+
+
+大缓存跨worker上传/恢复使用最多5分钟的HTTP期限，与原传输总体重试上限一致；artifact仍为2分钟。server在工作负载身份与请求类型验证后才延长读取期限，执行器父Context和workflow总期限始终优先。缓存仍流式落盘，SDK单块最大64MiB；对象预算2Gi不表示分配2Gi内存。暂存账目最多对象两倍，串行封装/分块拼装还可能短时增加一个对象的磁盘副本，管理员应预留相应执行节点临时空间；不增加常驻组件或放宽总存储配额。

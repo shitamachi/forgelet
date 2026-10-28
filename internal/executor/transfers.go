@@ -83,6 +83,9 @@ func (c *remoteClient) transferOnce(ctx context.Context, method, kind string, q 
 	req.Header.Set("Content-Type", "application/x-tar")
 	client := *c.client
 	client.Timeout = 2 * time.Minute
+	if kind == "cache" {
+		client.Timeout = blob.CacheTransferTimeout
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return entry, errRuntimeTransport

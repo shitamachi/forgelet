@@ -34,7 +34,7 @@ const ActEngineImage = "docker:28.5.1-dind"
 
 func (a ActProfile) Validate() error {
 	if a.CacheObjectBytes != 0 && (a.CacheObjectBytes < 2048 || a.CacheObjectBytes > blob.MaxCacheArchive) {
-		return fmt.Errorf("act cache_object_bytes must be 2048..1GiB (0 uses 256MiB)")
+		return fmt.Errorf("act cache_object_bytes must be 2048..2GiB (0 uses 256MiB)")
 	}
 	if err := (Profile{Image: ActEngineImage, CPURequest: a.CPURequest, MemoryRequest: a.MemoryRequest, CPULimit: a.CPULimit, MemoryLimit: a.MemoryLimit}).Validate(); err != nil {
 		return fmt.Errorf("act engine resources: %w", err)

@@ -17,7 +17,6 @@ import (
 var blobVersion = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 func (s *Server) runtimeBlob(w http.ResponseWriter, r *http.Request) {
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(2 * time.Minute))
 	job, _, err := s.authenticate(r)
 	if err != nil {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
@@ -38,6 +37,11 @@ func (s *Server) runtimeBlob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid blob key", http.StatusBadRequest)
 		return
 	}
+	timeout := 2 * time.Minute
+	if kind == "cache" {
+		timeout = blob.CacheTransferTimeout
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(timeout))
 	scope := blob.Scope{Repository: job.Plan.Repository, Kind: kind, Namespace: job.RunID}
 	ttl := 7 * 24 * time.Hour
 	if kind == "cache" {

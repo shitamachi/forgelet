@@ -44,6 +44,26 @@ func TestCacheObjectBudgetDoesNotExpandArtifacts(t *testing.T) {
 	}
 }
 
+func TestTwoGiBCacheBudgetValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		cache, artifact, total int64
+		invalid                bool
+	}{
+		{"explicit 2GiB cache", 2 << 30, MaxArchive, 4 << 30, false},
+		{"cache above maximum", (2 << 30) + 1, MaxArchive, 4 << 30, true},
+		{"total below reservation", 2 << 30, MaxArchive, (2 << 30) - 1, true},
+		{"artifact stays bounded", 2 << 30, MaxArchive + 1, 4 << 30, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := Limits{CacheObjectBytes: tc.cache, ObjectBytes: tc.artifact, TotalBytes: tc.total, Objects: 10}
+			if err := limits.Validate(); (err != nil) != tc.invalid {
+				t.Fatalf("validation error = %v, invalid = %v", err, tc.invalid)
+			}
+		})
+	}
+}
+
 func TestStoreAtomicImmutableScopedRetention(t *testing.T) {
 	ctx := t.Context()
 	dir := t.TempDir()

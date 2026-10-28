@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 最新业务提交已移除MongoDB；取消原AVX/Windmill迁移方案，继续原workflow及PG18验收，测试时序修复正在验证，最新完整自动回归已通过，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复自动回归中，随后验证热缓存和手动PG18，最新完整自动回归已通过，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -861,3 +861,25 @@ owner04f原image050d1da4最终timed_out且原image构建skipped；race还记录T
 独立断网镜像检查确认：工具层设置CGO_LDFLAGS后runtime/cgo出现build ID mismatch，依赖它的部分公共标准库缓存失效。新增tools/duckdb/warm-std.sh，在最终链接参数下只重建Go1.26.4公共std的普通/race缓存，并检查两种模式没有stale项。构建发生在本机2CPU/3Gi、无网络容器，不含应用源码/私有模块/token，也不伪造setup-go仓库缓存命中。只导出新增275个hash缓存文件与脚本，不打包其他容器差异；额外压缩层18,578,348字节。候选固定镜像c1726fc1保留原6ace的DuckDB库和全部运行配置。
 
 自动验证：make verify完整通过（含35前端单测、14浏览器30.3秒）；候选真实驱动Testcontainers PASS35.509秒，新增标准库两模式有效性断言，原native SQL及Go1.26.4/race×2、JSON/ICU/Parquet全部通过，临时容器已清理。该工具层专项不冒称重跑完整k3s；控制面/执行协议未改，此前核心完整回归1653.055秒仍单独留证。尚未部署c172工具、未push业务bd3，原CI/发布/PG18继续待真实结果。
+
+
+## 2026-10-28 11:33：node3 原测试通过但缓存收尾超时，执行已批准的容量迁移
+
+c172工具镜像已部署（只增加匹配CGO参数的公共std缓存），实际node3 job镜像ID40816453…与候选一致。业务bd3cdc3真实push触发原CI080dbb1d和image9a301746；CI原静态检查/构建8分54.286秒、Atlas68.728秒、迁移0.900秒、完整short/race8分9.962秒全部成功，engine3.120秒/queue5.505秒/lake1.150秒，原golden和测试断言不改。Codecov无私有仓库token，外部上传失败，按原fail_ci_if_error:false返回success13.495秒，不计外部覆盖率上传成功。然而原20分钟在setup-go post的Go缓存tar/zstd打包阶段到期，叶任务timed_out、整个CI failure，不能把测试通过称完整CI通过。自己的同批image9a30已明确cancelled避免再消耗已知紧张的冷路径；owner运行未取消。
+
+MongoDB移除后原AVX理由已撤销，但新实测证实N5105上的冷编译加缓存收尾仍超预算。因此沿用owner已明确批准的同一Windmill滚动迁移/容量方案，目的改为验证较快node2上的原workflow；未再次扩大操作范围、未放宽原20分钟、未减少检查或完整4Gi内存预留。Windmill app仅新增nodeSelector指定node3，保留原2Gi、无数据卷、maxUnavailable0/maxSurge1、镜像/env/其余spec完全相同；新实例拉取外网慢时旧实例一直Ready。经现有SSH管理账号，将node2缓存的同一镜像以15MiB/s上限流式导入node3的containerd，传输1,472,793,600字节，无额外Pod/hostPath/凭据/镜像地址修改。新旧imageID严格相同de85c0d6…，node3 Ready1，旧实例已退出；服务根路径HTTP200、api/version确认1.789.0。
+
+迁移后重新核对node2预留3300mCPU/5166Mi内存，allocatable4CPU/10032660Ki；执行Pod合计600m/4352Mi后3900m/9518Mi，满足当前准入。Ubuntu engine CPU request500m/limit4、内存request=limit4Gi、data24Gi，仅选择execution=true且hostname=node2；supervisor100m/256Mi、并发2保持。Rust、server/supervisor镜像、runner c172、镜像目录和其余配置逐项对比不变，没有新增AVX节点标签。node2 root空闲约67Gi，未把工作转移到控制面。Windmill只迁移已有常驻服务，没有新增空闲执行服务。
+
+同一bd3真实push的不可变计划已通过管理API重跑CI5865abfb/image7aaf3b92，保留原失败/取消及固定Action SHA；不是重新解析tag或伪造首轮通过。CI Pod ef5f66fc已实际调度node2并进入原workflow，最终CI、缓存、镜像、Checks和手动PG18仍待结果，10.6e/10.7b继续未完成。当前etcd无告警/leader1，P99 fsync30.4ms/commit53.2ms；Web HTTP200、Flux564223da及业务部署digest保持。所有本机镜像缓存准备容器已清理，owner lg-multiarch builder保留。
+
+
+## 2026-10-28 12:37：原始 CI/镜像已验收，大 Go 缓存需要提升有界对象上限
+
+同一bd3提交在node2重跑CI5865abfb/image7aaf3b92均success；静态检查6分13.901秒、Atlas59.774秒、迁移0.708秒、完整short/race6分26.866秒，缓存post1分14.364秒正常返回并收到终态ACK，首次明确完成原20分钟冷CI。原image callee及build-push全部成功，GitHub Checks completed/success；registry.shitamchi.com/steam-task的latest和sha-bd3cdc3与Action输出digest f557195fc3b0e28b8906b80515d148d121c378ca5dbef63b7f0ee406ff8a6a38一致。可复用调用的call_gate/call_result只有控制结果、没有shell step，验收脚本据此分别检查gate成功与叶任务完整真实step结果，不将其误判为缺失执行。
+
+仍未验收热缓存：实际Go归档超过当前1Gi对象上限，setup-go cache-save警告cache object size exceeded后按原定义成功返回。不能把这次CI成功当作缓存保存成功。原仓库YAML不改，正在把显式缓存对象上限改为2Gi，默认256Mi、artifact256Mi及全局总存储预算保持；v2 block上限按对象预算有界到2048，暂存主预算仍对象两倍。跨worker缓存传输与认证后读取期限使用5分钟，artifact保持2分钟、传输总体重试预算仍5分钟，父Context/原workflow deadline优先，取消仍立即生效；没有放宽原20分钟。此次暂停的仅是自己的验收读取脚本，避免在缓存修复前自动启动PG手动流程，没有取消已成功的原CI/镜像。
+
+自动验证：相关blob/kube/executor race通过1.805/1.997/33.016秒；加入HTTP期限、较短父Context、真实HTTP等待响应取消与认证前不延长期限的回归后，executor/server/blob race分别28.772/35.532/1.518秒通过。最新make verify完整PASS，35前端单测和14浏览器32.5秒。
+
+真实临时k3s扩大原BuildKit缓存用例为1120MiB不可压缩层，显式2Gi对象/4Gi全局测试预算，冷/热、实际RUN CACHED、原UID恢复、持久缓存重启、发布digest、失败阻断、取消/清理和脱敏均PASS；专项653.769秒，叶场景532.22秒。初次使用扩大的tmpfs PVC出现EOF并保留失败349.558秒：tmpfs数据计入写入容器的cgroup内存，与生产磁盘PVC不同。修正只将临时集群存储复制到其自身可回收磁盘后重启，保留安装清单的server512Mi上限；没有修改生产内存或跳过大数据断言。测试容器已清理。大数据专项对应上限/流式路径；后加入的5分钟策略由独立HTTP行为单测验证，包含二者的当前源码全量Testcontainers正在执行，不混称已经全量通过。缓存2Gi/新传输策略尚未部署，热缓存与PG18继续待实际结果，10.6e/10.7b仍未完成。

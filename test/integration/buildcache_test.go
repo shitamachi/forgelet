@@ -22,12 +22,12 @@ import (
 
 func testBuildxCache(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint, image string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
 	t.Run("independent BuildKit gha v2 cache cold warm restart failure and cancellation", func(t *testing.T) {
-		// This layer needs room for a persisted object and its upload copy.
-		// Keep that capacity for the remaining shared-PVC scenarios: shrinking
-		// below retained cache data plus the disk-resume watermark pauses later
-		// jobs. The earlier pressure test still uses 256 MiB; container cleanup
-		// removes this disposable filesystem after the complete suite.
-		clusterCommand(t, ctx, cluster, "mount", "-o", "remount,size=1536m", testStorageRoot)
+		// This incompressible 1120 MiB layer crosses the former 1 GiB cap.
+		// tmpfs charges its contents to the writer's cgroup, unlike reclaimable
+		// disk-backed page cache. Keep the installed 512 MiB server limit and
+		// move only this disposable cluster's PVC backing to its writable disk.
+		// The earlier pressure scenario still exercises the bounded 256 MiB fs.
+		useDiskBackedCacheStorage(t, ctx, cluster, client, httpClient, endpoint)
 		previousTimeout := httpClient.Timeout
 		httpClient.Timeout = 2 * time.Minute
 		defer func() { httpClient.Timeout = previousTimeout }()
@@ -51,9 +51,23 @@ func testBuildxCache(t *testing.T, ctx context.Context, cluster testcontainers.C
 			must(t, err)
 			restartServer(t, ctx, client, httpClient, endpoint)
 		}()
-		profile := fmt.Sprintf("profiles:\n  buildcache:\n    image: %s\n    memory_limit: 2Gi\n    act:\n      cache_object_bytes: 536870912\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n      image_mirrors:\n        moby/buildkit:buildx-stable-1: %s\n      buildkit_config: |\n        [registry.\"%s\"]\n          http = true\n", image, runner, builder, registry)
+		defer func() {
+			if !t.Failed() {
+				return
+			}
+			pods, _ := client.CoreV1().Pods("forgelet").List(ctx, metav1.ListOptions{LabelSelector: "app=forgelet"})
+			if pods != nil {
+				for _, pod := range pods.Items {
+					for _, c := range pod.Status.ContainerStatuses {
+						t.Logf("cache server %s/%s: restarts=%d state=%+v previous=%+v", pod.Name, c.Name, c.RestartCount, c.State, c.LastTerminationState)
+					}
+				}
+			}
+		}()
+		profile := fmt.Sprintf("profiles:\n  buildcache:\n    image: %s\n    memory_limit: 2Gi\n    act:\n      cache_object_bytes: 2147483648\n      runner_image: %s\n      registry_secret: forgelet-registry\n      insecure_registry: true\n      image_mirrors:\n        moby/buildkit:buildx-stable-1: %s\n      buildkit_config: |\n        [registry.\"%s\"]\n          http = true\n", image, runner, builder, registry)
 		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", profile, 1)
-		cm.Data["forgelet.yaml"] = strings.Replace(cm.Data["forgelet.yaml"], "blobs:\n", "blobs:\n  cache_object_bytes: 536870912\n", 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(cm.Data["forgelet.yaml"], "blobs:\n", "blobs:\n  cache_object_bytes: 2147483648\n", 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(cm.Data["forgelet.yaml"], "total_bytes: 2147483648", "total_bytes: 4294967296", 1)
 		_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
 		must(t, err)
 		restartServer(t, ctx, client, httpClient, endpoint)
@@ -87,7 +101,7 @@ jobs:
       - run: |
           test "$ACTIONS_CACHE_SERVICE_V2" = true
           case "$ACTIONS_RESULTS_URL" in http://127.*) exit 9;; esac
-          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 402653184 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
+          printf 'FROM %s\nRUN --mount=type=secret,id=TOKEN test "$(cat /run/secrets/TOKEN)" = cache-build-test-secret && head -c 1174405120 /dev/urandom > /proof-data && echo cache-proof-executed > /proof\n' > Dockerfile
           touch prepared
           while [ ! -f continue ]; do sleep 1; done
       - uses: docker/login-action@v3
@@ -123,7 +137,7 @@ jobs:
 		}
 		clusterCommand(t, ctx, cluster, "kubectl", "exec", "-n", "forgelet", active.PodName, "-c", "executor", "--", "touch", "/workspace/repository/continue")
 		finish := func(item run.Run) run.Run {
-			waitForTimeout(t, ctx, "buildcache terminal", 8*time.Minute, func() bool { return get(t, item.ID).State.Terminal() })
+			waitForTimeout(t, ctx, "buildcache terminal", 12*time.Minute, func() bool { return get(t, item.ID).State.Terminal() })
 			item = get(t, item.ID)
 			if item.State != run.Succeeded {
 				t.Fatal("buildcache failure", item, logs(item))
@@ -135,6 +149,8 @@ jobs:
 		if coldDigest == "" || !strings.HasSuffix(pinTestRegistryImage(t, ctx, cluster, target+":latest"), "@"+coldDigest) {
 			t.Fatal("cold publication digest mismatch", cold)
 		}
+		// Reload the persisted >1 GiB cache before a new job/engine restores it.
+		restartServer(t, ctx, client, httpClient, endpoint)
 		warm := finish(create(t, strings.Replace(source, "while [ ! -f continue ]; do sleep 1; done", "true", 1)))
 		if warm.Jobs[0].PodUID == uid {
 			t.Fatal("cache test reused original engine")
@@ -182,5 +198,33 @@ jobs:
 			return err == nil && len(pods.Items) == 0
 		})
 		t.Logf("independent BuildKit v0.20.2: cold=%s warm=%s originalUID=%s digest=%s; failed=%s cancelled=%s", cold.ID, warm.ID, uid, coldDigest, failed.ID, cancelled.ID)
+	})
+}
+
+// Preserve the shared database and blobs while switching the temporary node's
+// local-path directory. The finite cache fixture and store quota bound writes;
+// all files disappear with this disposable cluster, without a host bind mount.
+func useDiskBackedCacheStorage(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint string) {
+	t.Helper()
+	deployment, err := client.AppsV1().Deployments("forgelet").Get(ctx, "forgelet", metav1.GetOptions{})
+	must(t, err)
+	zero := int32(0)
+	deployment.Spec.Replicas = &zero
+	_, err = client.AppsV1().Deployments("forgelet").Update(ctx, deployment, metav1.UpdateOptions{})
+	must(t, err)
+	waitFor(t, ctx, "server stopped before storage copy", func() bool {
+		pods, err := client.CoreV1().Pods("forgelet").List(ctx, metav1.ListOptions{LabelSelector: "app=forgelet"})
+		return err == nil && len(pods.Items) == 0
+	})
+	clusterCommand(t, ctx, cluster, "sh", "-ec", `mkdir -p "$1"; cp -a "$2"/. "$1"/; mount --bind "$1" "$2"`, "cache-storage", "/var/lib/forgelet-cache-test-disk", testStorageRoot)
+	deployment, err = client.AppsV1().Deployments("forgelet").Get(ctx, "forgelet", metav1.GetOptions{})
+	must(t, err)
+	one := int32(1)
+	deployment.Spec.Replicas = &one
+	_, err = client.AppsV1().Deployments("forgelet").Update(ctx, deployment, metav1.UpdateOptions{})
+	must(t, err)
+	httpClient.CloseIdleConnections()
+	waitFor(t, ctx, "disk-backed cache server ready", func() bool {
+		return probeStatus(t, ctx, httpClient, endpoint+"/healthz") == http.StatusOK
 	})
 }

@@ -1,6 +1,6 @@
 # 实施计划
 
-更新：2026-10-27。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
+更新：2026-10-28。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
 不使用 spec/accepted 审批，不安排独立基线、资源测量或审核阶段。
 用单测、集成测试、Testcontainers 随实现验证，完成后更新本页和 [status.md](status.md)。
 
@@ -205,3 +205,9 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-28 10:16追加：owner新main04f3dec/40af05d已移除MongoDB运行时代码、依赖和测试，本轮10.6e/10.7b的数据库验收改为原workflow的手动PG18输入，不再需要Mongo7/AVX或Windmill迁移。旧迁移方案未执行且已撤销；原Ubuntu worker/资源配置保持。最新owner原CI因queue测试取消时序失败，正在合并保留原断言的同步修复；原image继续运行，不取消owner push。原CI/镜像/Checks/PG18未全部验收，清单保持未完成。
+
+
+2026-10-28 11:33追加：bd3原node3 CI完整测试/race通过，setup-go缓存tar阶段到原20分钟timed_out，整个CI仍failure；Codecov上传无token并非成功上传。为解决已实测的冷路径预算，执行owner已批准的Windmill原镜像/资源不变滚动迁移（node3 Ready/HTTP/version与imageID核对通过），Ubuntu按原批准500m/4CPU、完整4Gi及24Gi临时空间安排node2；不新增AVX标签、并发2与Rust不变。同原push快照CI5865/image7aaf重跑中，失败历史保留，PG18继续按原workflow显式输入验收，10.6e/10.7b仍未完成。
+
+
+2026-10-28 12:37追加：Tasks bd3在node2原CI5865和image7aaf、GitHub Checks及registry f557摘要全部验收成功，原YAML/20分钟保留；实际Go缓存包超过旧1Gi，保存只有警告，因此热缓存/PG18尚不算通过。显式对象上限2Gi与跨worker缓存5分钟有界传输已实现，artifact256Mi/2分钟、默认缓存256Mi、全局总预算不变，补齐父Context/取消/认证回归；make verify通过，真实1120MiB BuildKit大对象专项653.769秒通过并清理，当前源码全量Testcontainers进行中。待部署后保存/恢复真实Go大缓存，再运行原手动PG18；10.6e/10.7b继续未勾选。

@@ -1,6 +1,6 @@
 # GitHub Actions 兼容范围
 
-更新：2026-10-27。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
+更新：2026-10-28。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
 forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为，不提供完整 GitHub Actions 云服务。
 
 专用生产形态测试仓库的 act/Docker 实验单独记录在 [test/productionlike](../test/productionlike/README.md)。
@@ -351,7 +351,7 @@ job `/tmp` 与同 attempt 的 Docker 引擎共享有界目录（计入 act.data_
 
 act 的 Docker/Buildx 资源约束要求 Linux cgroup v2 和配套升级后的 supervisor，正常容器及显式 /docker/buildx 父组均保留在引擎资源祖先下。
 job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动并发数；不足1核时逻辑值为1，精确总配额继续由引擎祖先约束。现存 attempt 不回写。
-默认缓存对象256MiB不变；管理员可显式将 opaque Actions/BuildKit cache 对象提高至1GiB，artifact仍最大256MiB。
+默认缓存对象256MiB不变；管理员可显式将 opaque Actions/BuildKit cache 对象提高至2GiB，artifact仍最大256MiB。
 单块64MiB、全局保留/并发上传预留、每attempt有界暂存、错误/ACK/取消语义继续保留；未获配置的超限不会静默成功。
 分块清单XML的字节上限随允许的block数量增长（每block预留128字节、整体1KiB格式开销）；支持最长64字节的base64 block ID，不再用固定32KiB截断合法的大对象清单。block数量、payload与对象额度分别继续校验。
 
@@ -363,3 +363,6 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 
 
 2026-10-28 实际验收范围调整：steam-tasks 的 owner 提交40af05d移除了MongoDB运行时/配置/依赖/测试；后续原reliability workflow的数据库选项仍为PostgreSQL18。验收跟随该原始源码，不再要求Mongo7或因此调整worker的AVX约束；当前测试同步修复不改workflow/golden。可选DuckDB2.0共享库的CPU/ABI边界保持上述限制，原CI、镜像及手动PG18的具体通过结果另见status，不能由源代码检查推定。
+
+
+显式2Gi缓存对象对应的大对象传输期限为最多5分钟，artifact仍2分钟，父任务取消/超时不会被延长。Go SDK与BuildKit缓存继续使用原作用域、immutable key、摘要与ACK；实际归档超出配置时保持明确警告/失败语义，CI自身success不代表缓存已保存，实际冷热命中需单独核对。

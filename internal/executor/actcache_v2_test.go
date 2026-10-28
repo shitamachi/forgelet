@@ -18,7 +18,7 @@ import (
 )
 
 func TestActCacheV2LargeBlockLists(t *testing.T) {
-	for _, budget := range []int64{blob.MaxArchive, 512 << 20, blob.MaxCacheArchive} {
+	for _, budget := range []int64{blob.MaxArchive, 512 << 20, 1 << 30, blob.MaxCacheArchive} {
 		t.Run(fmt.Sprint(budget), func(t *testing.T) {
 			c, err := startActCacheAt(t.Context(), &localServices{}, "127.0.0.1", budget)
 			if err != nil {
@@ -67,7 +67,7 @@ func TestActCacheExplicitLargerObjectKeepsSeparateLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if c.stageLimit() != 2*blob.MaxCacheArchive || c.blockLimit() != 1024 {
+	if c.stageLimit() != 2*blob.MaxCacheArchive || c.blockLimit() != 2048 {
 		t.Fatal("larger cache has no bounded staging/block budget")
 	}
 	u := &cacheUpload{File: filepath.Join(c.dir, "large"), Staged: blob.MaxArchive, Blocks: map[string]string{}, BlockDigests: map[string][32]byte{}}

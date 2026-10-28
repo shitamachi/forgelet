@@ -128,6 +128,8 @@ func TestActEngineResourceAdmission(t *testing.T) {
 		cpus    string
 	}{
 		{name: "defaults", cpus: "3"},
+		{name: "explicit 2GiB cache", act: ActProfile{CacheObjectBytes: 2 << 30}, cpus: "3"},
+		{name: "cache above 2GiB", act: ActProfile{CacheObjectBytes: (2 << 30) + 1}, invalid: true},
 		{name: "bounded worker", act: ActProfile{CPURequest: "1", CPULimit: "1", MemoryRequest: "4Gi", MemoryLimit: "4Gi"}, cpus: "1"},
 		{name: "sub CPU budget", act: ActProfile{CPULimit: "250m", MemoryLimit: "2Gi"}, cpus: "1"},
 		{name: "fractional CPU budget", act: ActProfile{CPULimit: "1500m", MemoryLimit: "2Gi"}, cpus: "2"},

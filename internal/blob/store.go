@@ -22,7 +22,10 @@ var ErrConflict = errors.New("immutable blob conflict")
 var ErrLimit = errors.New("blob quota exceeded")
 
 const MaxArchive = 256 << 20
-const MaxCacheArchive = 1 << 30
+const MaxCacheArchive = 2 << 30
+
+// CacheTransferTimeout bounds cross-worker transfers of large opaque archives.
+const CacheTransferTimeout = 5 * time.Minute
 
 type Limits struct {
 	CacheObjectBytes int64 `yaml:"cache_object_bytes,omitempty"`
@@ -36,7 +39,7 @@ func DefaultLimits() Limits {
 }
 func (l Limits) Validate() error {
 	if l.ObjectBytes < 1 || l.ObjectBytes > MaxArchive || l.CacheObjectBytes < 0 || l.CacheObjectBytes > MaxCacheArchive || l.TotalBytes < max(l.ObjectBytes, l.CacheObjectBytes) || l.TotalBytes > 1<<40 || l.Objects < 1 || l.Objects > 100000 {
-		return fmt.Errorf("invalid blob limits: artifact/object 1..256MiB, optional cache object 1..1GiB, total >= largest object and <=1TiB, objects 1..100000")
+		return fmt.Errorf("invalid blob limits: artifact/object 1..256MiB, optional cache object 1..2GiB, total >= largest object and <=1TiB, objects 1..100000")
 	}
 	return nil
 }
