@@ -466,6 +466,11 @@ homelab 的 Ubuntu 工具镜像可通过 `tools/reaper` 配方显式设置
 不关闭 Ryuk；fixture 显式清理与整个 Pod/引擎回收保持，异常断连后的自动清理宽限相应增加。
 这属于工具镜像策略，不改变 native/Rust profile 或 workflow timeout。
 
+应用发布可使用现有 Zot 的私有 `forgelet/apps/<image>` 路径。Tasks 的 workflow
+使用专用仓库 Secrets 和 exact-path read/create/update 账号；不给执行任务管理员或删除权限。
+catch-all 默认空，显式保留现有账号权限；不能用空用户 actions 覆盖宽泛的 defaultPolicy。
+无凭据 policy 示例和真实 Zot 授权回归见 `tools/zot`。镜像发布目标变更与生产部署、回滚地址分别管理。
+
 日志保留原 HTTP/SQLite 协议。同 step 的未发送小写入合并为最多 8 KiB、每 200ms 刷新的块，
 大写入同步发送保留背压，待确认数据仍限制在 1 MiB。每块使用连续 seq，第一次尝试后内容不可再合并，
 即便服务端提交成功但 ACK 丢失也以相同字节重试。处理 Unicode/脱敏尾部时保留完整字符，

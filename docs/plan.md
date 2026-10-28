@@ -233,3 +233,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-28 17:31追加：旧72原PG18完整执行13m1.231s，唯一失败是时间ns与PG微秒精度的严格断言不匹配，实际观测154个PG18容器；生产upsert未改first_seen。微秒对齐测试输入、保留原严格断言并新增observed_at前进断言，真实PG18/race5轮48.989s通过；测试-only cfd已真实push。只取消自己的旧72待构建重跑451，旧PG完整失败证据保留；新CI354/image617与原PG18手动0b52继续验收，20分钟与全部测试保持，清单不提前勾选。
+
+
+2026-10-28 19:38追加：owner授权应用镜像发布迁Zot，Tasks f6f4105已真实push，目标forgelet/apps/steam-task及专用exact-path账号完成部署；真实Zot ACL正/负验证、可选Testcontainers9.513秒和make verify通过。缓存cfd镜像OCI全hash/长度核对及非root只读断网Atlas/迁移smoke通过。CI6a95/imagea142仍在运行，等待完整自动发布及标签/Action/Checks核对。Ryuk2m原PG18 eec5仍interrupted，原失败保留，不能将独立生命周期用例当成完整手动workflow验收；10.6e/10.7b/第三批保持未完成。

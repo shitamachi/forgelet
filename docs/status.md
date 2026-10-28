@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，Atlas已按owner授权固定版本迁入Zot，CI/运行镜像两处安装及容器专项通过；实际1.48GiB Go缓存保存/重启热命中通过，PG18时间精度fixture修复cfd已push，最新CI354成功；镜像617最终latest PUT EOF失败、手动PG18 0b52因Ryuk等待后超时，已部署仅ENV变化的Ryuk宽限工具镜像，原PG18重跑eec5验收中，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，Atlas已按owner授权固定版本迁入Zot，CI/运行镜像两处安装及容器专项通过；实际1.48GiB Go缓存保存/重启热命中通过，PG18时间精度fixture修复cfd已push，最新CI354成功；镜像617最终latest PUT EOF失败、手动PG18 0b52因Ryuk等待后超时，已部署仅ENV变化的Ryuk宽限工具镜像，但原PG18重跑eec5仍interrupted；owner已授权应用发布迁Zot，专用权限及真实ACL验证已完成，新f6f4105真实push CI6a95/imagea142验收中，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -959,3 +959,16 @@ owner补充授权：需要下载的镜像可直接缓存在集群现有Zot。继
 cfd原手动PG18 0b52b754的时间精度修复已验证：原失败包handlers/steam_detail成功20.776秒。但另一个包出现复用Ryuk时等待端口60秒超时，后续容器重新创建成功；整体最终到原20分钟timed_out，保持失败。独立Go Testcontainers v0.44.0双进程/同父session对照：间隔15秒，默认10秒宽限创建新Ryuk，工具镜像2分钟宽限复用同一Ryuk，真实Testcontainers PASS80.757秒，容器与跟踪到的Ryuk均回收；这验证生命周期策略，不冒称已精确重现所有业务失败时序。新增tools/reaper配方与可选回归，Ryuk保持启用，fixture显式清理及Pod结束/取消清理保持；异常断连自动清理可能多等待至2分钟，无额外常驻进程。
 
 make verify通过（35前端单测、14浏览器32.1秒，Go race/集成、构建/lint/generate），之后集成build-tag lint单独执行0 issues；首次与make verify并发时embed dist被生成过程暂时清空导致typecheck失败，生成完成后重新检查通过，不改源代码掩盖错误。Ubuntu新镜像90ad0dc507bf64c1e3bc81b3ea09512dfcd41fe9047e71ff0671c2dcee5f761e已经部署：与c172逐项核对rootfs相同，只有RYUK_RECONNECTION_TIMEOUT=2m ENV变化；配置只改Ubuntu act.runner_image，server/supervisor/资源/并发/Rust/镜像映射保持。空闲时rollout成功，原cfd/固定计划及postgres:true重跑eec5d4f46055b163faef1480c467aa27，真实PG18验收继续。核心Go运行时代码未变，完整2360.406秒回归、新Atlas15.207秒与新Ryuk80.757秒分别记录，不能混称后两者参加过早前全量回归。
+
+
+## 2026-10-28 19:38：按 owner 授权，将 Tasks 应用镜像发布迁至 Zot
+
+owner明确选择应用镜像发布也迁到Zot。本次先迁正在排查的Tasks原镜像workflow；其他已验收仓库和现有业务Web CD的地址不批量替换。业务提交f6f4105734acfe848907bbdca2f7ba99dd1f9f31已push main：docker/login-action目标改为zot.k.mygo.rocks，metadata镜像路径forgelet/apps/steam-task，改用ZOT_USERNAME/ZOT_PASSWORD仓库Secrets；原reliability依赖、Action版本、tags规则、构建/迁移/测试步骤与20分钟保持。生产和回滚清单继续保留各自历史digest，未自动部署Tasks生产服务。
+
+新增专用forgelet-steam-tasks-push账号，仅exact image repository read/create/update，无delete或其他私有仓库权限；公共上游只读、业务镜像匿名拒绝。密码只写本机私有文件、Zot bcrypt Secret以及Forgelet加密/GitHub仓库Secrets，workflow不接收管理员凭据。Zot现有镜像/资源/PVC不变，Recreate rollout成功，旧admin权限保留。最初候选ACL的空用户actions会回退宽泛defaultPolicy，被真实Testcontainers负例发现（其他仓库写入202），未应用到集群；修正为catch-all默认空、显式保留已有唯一admin用户权限、目标exact path单独授权后才上线。
+
+新增可选TestZotScopedPublisher使用真实Zot v2.1.22与隔离测试环境的专用fixture密码，不读取生产凭据；候选实际ACL版本PASS8.162秒，仓库中无密码/哈希的同等policy版本PASS9.513秒，均验证创建/更新latest与digest、读取、admin保留、上游匿名读、跨仓库写/删除/业务匿名读拒绝。早期用仅TCP端口等待过早请求EOF、以及只等/v2/401的错误就绪假设失败保留，改为实际HTTP200/401就绪再验证授权。真实集群重复ACL正/负验证也通过；测试registry容器已清理。make verify最终通过（Go race/集成、构建/lint/generate、35前端单测、14浏览器28.3秒）；首次新fixture未检查Close错误被lint阻断，修正后通过。核心Go运行时代码未变，完整2360.406秒核心Testcontainers与新增专项分别记录。
+
+此前cfd实际业务镜像已完整下载，所有OCI config/layer长度和SHA逐项通过，缓存到私有forgelet/mirrors/steam-task-cfd，保持原digest5c2b000e03dbd2ee22d74bba2d1f2bbc4a632fbdc41a5a204ab291067031bdf1；本机先完整校验再LAN上传通过，未提高Zot超时/资源。对该实际发布镜像以原appuser、read-only、network=none、256Mi/1CPU smoke通过：Atlas完整SHA及v1.3.0，两套迁移校验全部通过。该镜像的外部latest来源仍是操作员补写，不能把旧image617失败改称自动成功。
+
+Ryuk2m原PG18 eec5重跑最终interrupted，缺少最终ACK，不能记作修复通过；观察到136个实际PG18容器及同一个Ryuk，原精度修复和生命周期专项不等于完整PG验收。最后日志停在short/race完成之后；Pod最终回收，需继续收集完整终止原因，不推断为已确认的新业务错误或OOM。10.6e/10.7b与第三批仍未完成。新Zot真实push CI6a95126d/imagea142a862目前执行中，需完整终态/实际registry与Action摘要及精确job Checks核对后才记自动发布成功。

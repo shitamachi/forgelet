@@ -1,0 +1,73 @@
+{
+  "http": {
+    "accessControl": {
+      "metrics": {
+        "anonymousPolicy": [
+          "read"
+        ]
+      },
+      "repositories": {
+        "**": {
+          "anonymousPolicy": [],
+          "defaultPolicy": [],
+          "policies": [
+            {
+              "users": [
+                "admin"
+              ],
+              "actions": [
+                "read",
+                "create",
+                "update",
+                "delete"
+              ]
+            }
+          ]
+        },
+        "forgelet/dockerhub/**": {
+          "anonymousPolicy": [
+            "read"
+          ],
+          "defaultPolicy": [],
+          "policies": [
+            {
+              "users": [
+                "forgelet-steam-tasks-push"
+              ],
+              "actions": [
+                "read"
+              ]
+            }
+          ]
+        },
+        "forgelet/apps/steam-task": {
+          "policies": [
+            {
+              "users": [
+                "forgelet-steam-tasks-push"
+              ],
+              "actions": [
+                "read",
+                "create",
+                "update"
+              ]
+            }
+          ],
+          "defaultPolicy": [],
+          "anonymousPolicy": []
+        }
+      },
+      "adminPolicy": {
+        "users": [
+          "admin"
+        ],
+        "actions": [
+          "read",
+          "create",
+          "update",
+          "delete"
+        ]
+      }
+    }
+  }
+}
