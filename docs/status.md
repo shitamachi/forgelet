@@ -921,10 +921,28 @@ Tasks业务提交f5cff55已真实push到main：明确授权修改的是Atlas安�
 
 ## 2026-10-28 16:20：真实 1.48GiB 缓存与重启通过，修复 runtime Atlas 的失效镜像依赖
 
-f5原image入口的reliability/c9bcc842成功，Atlas冷安装4.141秒、迁移0.351秒；实际Go cache归档1,592,818,688字节（约1.48GiB）由该成功叶任务保存，没有size exceeded/Failed to save警告。CI c6198848在独立新Pod上setup-go和Atlas cache均true，完整成功；之后server实际重启并Ready，缓存id/digest/size保持一致。完整元数据及cold owner证明已保存，不将工具cache-hit误报为Go cache-hit。
+f5原image入口的reliability/c9bcc842成功，Atlas冷安装4.141秒、迁移0.351秒；实际Go cache存储对象1,592,818,688字节（约1.48GiB）由该成功叶任务保存，没有size exceeded/Failed to save警告。CI c6198848在独立新Pod上setup-go和Atlas cache均true，完整成功；之后server实际重启并Ready，缓存id/digest/size保持一致。完整元数据及cold owner证明已保存，不将工具cache-hit误报为Go cache-hit。
 
 同一f5镜像build-push/f589812d失败原因独立：Dockerfile的atlas-runtime引用registry.shitamchi.com/steam-task@0f79b128…，registry返回not found。该失败留存，PG18尚未启动；不伪造完整镜像验收。按本次owner将Atlas改用Zot的授权，同步将runtime工具stage改为scratch + ADD --checksum --chmod=755，使用与CI相同的固定Zot二进制；其余builder/runtime配置、业务代码及原workflow测试/20分钟不改。
 
 实际BuildKit导出目标stage通过（原CLI SHA、mode755一致）；新增Testcontainers构建实际Dockerfile的target并读回SHA，故意错误digest必须明确拒绝。初次fixture错误使用classic build API、以及负例错误文本匹配过窄的失败均保留；改为明确BuildKit模式及要求digest mismatch同时含实际/预期hash后，安装器+Dockerfile两个专项最终PASS15.207秒，临时容器/fixture镜像已清理。最后lint0 issues；运行时Go代码仍不变，既有make verify/完整回归保持适用，不混称新版fixture曾在早前完整回归运行。
 
 业务新72bd3ba已提交并真实push，原两个入口重跑后再验收镜像/Checks及原手动PG18；cached Go和Atlas可跨此Dockerfile-only提交复用，完整任务仍待终态。f5失败、bd3成功与新提交结果分别保留，不覆盖历史。
+
+
+## 2026-10-28 17:02：Zot 两处安装均通过，原镜像发布遭遇 registry manifest EOF
+
+72bd新CI3891c1dd完整success，控制面重启后的新Pod实际恢复Go归档约1519MB（metadata对象1,592,818,688B）、Go与Atlas cache-hit均true；静态检查/构建40.008秒、short/race52.865秒、Atlas安装2.448秒。镜像入口2d237的reliability同样全部成功（race52.228秒、Atlas缓存安装2.725秒）。
+
+build-push50264714完成真实构建：Atlas固定Zot ADD/checksum约1.8秒，主程序194.3秒、其他三个二进制3.3/1.0/0.9秒；APT下载曾慢但随后正常完成，没有变更源或跳过运行层步骤。sha-72bd3ba已经发布，registry实际digest5a6c8ecce45f7a927ff275e7a8e03c7ce3bf60b68fe8f40eea21a41aa1e2af5a；随后PUT /v2/steam-task/manifests/latest返回EOF，整个原workflow仍failure，latest仍旧f557，不计完整发布成功。这不是Atlas镜像/应用编译失败，也未手工改写失败状态或latest掩盖结果。
+
+同一不可变原始计划重跑451a713e，保留72bd源码/Action SHA及完整门禁；原失败留存，没有为这次网络EOF改源码、预算或公共代理规则。数据库验收与远端发布独立：已按原workflow_dispatch、postgres:true创建唯一手动f7460c7e，真实PG容器observer已启动；当前先运行重跑的reliability，手动任务等node2容量。尚未宣布PG18或完整发布成功，10.6e/10.7b保持未完成。最终release只读/断网/非root的Atlas smoke将在实际成功发布后按digest运行。
+
+
+## 2026-10-28 17:31：真实 PG18 找到严格时间断言精度错误，保留断言后修复
+
+72bd原手动f7460c7e最终普通failure、非timed_out；Optional PostgreSQL integration完整执行13分1.231秒，实际观测154个postgres:18-alpine实例及Ryuk，唯一失败为TestRecordShortfallsUpsertsAndSchedulesRecheck，first_seen_at必须保留的严格相等断言。其余包继续执行完成，无第二个失败。没有在失败后改状态或将其称数据库验收通过。
+
+生产upsert明确不更新first_seen_at。真实本机PG18复现用带额外123ns的输入，读回时间恰少123ns，证明差异来自PostgreSQL timestamptz的微秒分辨率（[官方PG18类型说明](https://www.postgresql.org/docs/18/datatype-datetime.html)），不是upsert覆盖。测试输入改为Truncate(time.Microsecond)，原first_seen_at严格相等/attempts/重查安排/成功清除断言保留，新增observed_at严格前进一分钟断言；生产逻辑、SQL、workflow、timeout均不改。真实PG18/race重复5轮PASS48.989秒，复现前失败8.868秒也完整留证。业务测试修复cfd1ca0已push main。
+
+只取消了我们自己尚未开始构建、等待容量的72旧镜像验收重跑451a713e，保留已通过的reliability与原registry EOF失败，没有取消owner任务或正在收集完整PG结果的f746。cfd真实push CI35423f4b/image6178be2b已接收，托管Actions恢复true；旧PG运行/终态/服务容器证据单独归档后，按同一原workflow、postgres:true创建新0b52b754，不复用旧失败为成功。新CI/镜像/PG18及最终发布镜像Atlas smoke继续待终态，10.6e/10.7b仍未提前勾选。

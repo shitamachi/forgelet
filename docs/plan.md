@@ -225,3 +225,9 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-28 16:20追加：f5冷reliability保存实际Go cache1,592,818,688B，CI c619新Pod的Go/Atlas均true且成功，server重启后同一cache元数据保持。镜像build因旧应用base 0f79不存在而失败；按同一Zot授权将Atlas Dockerfile stage改为scratch+固定摘要ADD/checksum/755，真实BuildKit及Testcontainers正/负例通过，安装器+Dockerfile最终15.207秒，lint0。新72bd3ba真实push继续原入口、镜像与PG18验收，尚不勾选最终完成。
+
+
+2026-10-28 17:02追加：72bdCI及原image的reliability/两类cache/迁移/race通过，实际Dockerfile Atlas ADD仅1.8秒，应用四个程序构建通过；原image2d237在已发布sha标签后，最终latest manifest PUT发生EOF，仍记failure，不以已构建或单tag冒充成功。固定原计划重跑451a713e，同时独立创建原PG18手动f7460c7e，等待node2容量；最终发布/PG18未完成，清单仍不勾选。
+
+
+2026-10-28 17:31追加：旧72原PG18完整执行13m1.231s，唯一失败是时间ns与PG微秒精度的严格断言不匹配，实际观测154个PG18容器；生产upsert未改first_seen。微秒对齐测试输入、保留原严格断言并新增observed_at前进断言，真实PG18/race5轮48.989s通过；测试-only cfd已真实push。只取消自己的旧72待构建重跑451，旧PG完整失败证据保留；新CI354/image617与原PG18手动0b52继续验收，20分钟与全部测试保持，清单不提前勾选。
