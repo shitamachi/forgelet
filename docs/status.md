@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，真实热缓存补验因原Atlas公网下载超时而停止，手动PG18尚未启动，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，原Atlas公网下载超时已按owner授权改为固定版本Zot工具，单测/容器专项通过；新f5真实CI/镜像在执行，随后验收真实热缓存与手动PG18，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -917,3 +917,14 @@ owner明确接受改用内网Zot。一次性获取官方标准版Atlas v1.3.0/Li
 Tasks业务提交f5cff55已真实push到main：明确授权修改的是Atlas安装及新增actions/cache@v4工具缓存，其他原CI/镜像入口、迁移校验、全部业务测试和20分钟不变；不再声称reliability.yml与旧版字节完全相同。安装从固定Zot blob摘要获取且独立SHA校验，损坏缓存重新获取，下载失败/错误hash/截断均不覆盖已有安装，临时文件回收，成功原子替换，无公网回退。新增脚本HTTP行为/race20轮PASS10.322秒；root make verify PASS（35前端、14浏览器31.5秒）。新Testcontainers专项PASS11.170秒，使用与生产相同的c172工具image配置40816453，在真实Linux二进制下验证两套业务迁移、断网热缓存、损坏缓存重取以及修改迁移后的真实checksum拒绝，容器已清理。控制面/执行器代码未变，既有完整2360.406秒回归与本次新增专项分别记录。
 
 真实push初期GitHub installation token发生临时transport错误，事件持久化后自动重试，随后CI c6198848与image d1ea2769均创建；原托管Actions已恢复enabled=true。同一server的无凭据网络探针随后默认HTTP2 GET200/POST401正常，HTTP1出现EOF；没有把HTTP1强加给控制面或改网络/代理规则，临时探针已删除。image的reliability先获得node2，CI等待容量；验收脚本据真实成功叶任务核对>1Gi缓存归属，不假设两个workflow的执行顺序，也不取消任务。完整CI/镜像、真实Go缓存保存/重启命中、手动PG18仍待终态，10.6e/10.7b保持未完成。
+
+
+## 2026-10-28 16:20：真实 1.48GiB 缓存与重启通过，修复 runtime Atlas 的失效镜像依赖
+
+f5原image入口的reliability/c9bcc842成功，Atlas冷安装4.141秒、迁移0.351秒；实际Go cache归档1,592,818,688字节（约1.48GiB）由该成功叶任务保存，没有size exceeded/Failed to save警告。CI c6198848在独立新Pod上setup-go和Atlas cache均true，完整成功；之后server实际重启并Ready，缓存id/digest/size保持一致。完整元数据及cold owner证明已保存，不将工具cache-hit误报为Go cache-hit。
+
+同一f5镜像build-push/f589812d失败原因独立：Dockerfile的atlas-runtime引用registry.shitamchi.com/steam-task@0f79b128…，registry返回not found。该失败留存，PG18尚未启动；不伪造完整镜像验收。按本次owner将Atlas改用Zot的授权，同步将runtime工具stage改为scratch + ADD --checksum --chmod=755，使用与CI相同的固定Zot二进制；其余builder/runtime配置、业务代码及原workflow测试/20分钟不改。
+
+实际BuildKit导出目标stage通过（原CLI SHA、mode755一致）；新增Testcontainers构建实际Dockerfile的target并读回SHA，故意错误digest必须明确拒绝。初次fixture错误使用classic build API、以及负例错误文本匹配过窄的失败均保留；改为明确BuildKit模式及要求digest mismatch同时含实际/预期hash后，安装器+Dockerfile两个专项最终PASS15.207秒，临时容器/fixture镜像已清理。最后lint0 issues；运行时Go代码仍不变，既有make verify/完整回归保持适用，不混称新版fixture曾在早前完整回归运行。
+
+业务新72bd3ba已提交并真实push，原两个入口重跑后再验收镜像/Checks及原手动PG18；cached Go和Atlas可跨此Dockerfile-only提交复用，完整任务仍待终态。f5失败、bd3成功与新提交结果分别保留，不覆盖历史。

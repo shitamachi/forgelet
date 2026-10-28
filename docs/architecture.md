@@ -638,4 +638,4 @@ CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不�
 
 ### 按摘要分发公共 CLI 工具
 
-Tasks 的 Atlas 安装按 owner 授权改用现有 Zot 的公开上游命名空间。一次性运维脚本先核对官方固定版本二进制 SHA256，再将原始二进制作为 OCI artifact layer 发布；OCI manifest 保留该 layer 引用，避免仅上传无引用 blob 被 GC。workflow 使用固定 blob 摘要 URL，安装前独立校验，使用普通 Actions cache 复用；损坏缓存重新获取，失败不覆盖现有安装。不放宽 Zot ACL，不把 registry 写凭据交给任务，不新增常驻服务、PVC 或工具下载网关。代价是 Zot 与已有有界 cache 中各约120MiB的公共二进制存储；无公网回退，镜像失效必须明确失败。该方式是仓库授权修改的工具安装策略，不属于通用 GitHub Actions 下载代理，也不声称保持旧 YAML 字节不变。版本/平台、发布与实际流程验收见 tools/atlas 和 status。
+Tasks 的 Atlas 安装按 owner 授权改用现有 Zot 的公开上游命名空间。一次性运维脚本先核对官方固定版本二进制 SHA256，再将原始二进制作为 OCI artifact layer 发布；OCI manifest 保留该 layer 引用，避免仅上传无引用 blob 被 GC。workflow 使用固定 blob 摘要 URL，安装前独立校验，使用普通 Actions cache 复用；损坏缓存重新获取，失败不覆盖现有安装。不放宽 Zot ACL，不把 registry 写凭据交给任务，不新增常驻服务、PVC 或工具下载网关。runtime Dockerfile 的 scratch 工具stage同样使用固定blob的ADD --checksum/--chmod，避免依赖旧业务镜像留存。代价是 Zot 中约120MiB的公共二进制及有界cache中的实际压缩归档；无公网回退，镜像失效必须明确失败。该方式是仓库授权修改的工具安装策略，不属于通用 GitHub Actions 下载代理，也不声称保持旧 YAML 字节不变。版本/平台、发布与实际流程验收见 tools/atlas 和 status。

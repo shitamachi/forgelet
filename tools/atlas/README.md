@@ -34,13 +34,18 @@ To verify the actual binary, business installer and both migration directories:
 FORGELET_TEST_ATLAS_SOURCE_DIR=/path/to/steam-tasks \
 FORGELET_TEST_ATLAS_IMAGE=your-current-linux-amd64-tools-image \
   go test -tags=integration ./test/integration \
-  -run '^TestMirroredAtlasInstaller$' -count=1 -v -timeout=10m
+  -run '^TestMirroredAtlas' -count=1 -v -timeout=10m
 ```
 
 This opt-in Testcontainers case runs the real binary, validates both migration
 directories, checks a warm installation with an unusable network proxy, repairs
 a corrupt cache and confirms a modified migration is rejected. It does not
 replace the separate real push, Go cache restart or PostgreSQL 18 acceptance.
+The companion Dockerfile-stage case builds the actual scratch tool stage with
+BuildKit, reads back the binary hash, and requires a digest-mismatch error when
+the expected checksum is deliberately wrong. Application images fetch the same
+Zot blob with Dockerfile `ADD --checksum --chmod=755`; they do not depend on an
+older application image remaining in its registry.
 
 Upstream: [standard distribution](https://www.atlasgo.io/community-edition),
 [versioned binary checksum](https://atlasbinaries.com/atlas/atlas-linux-amd64-v1.3.0.sha256).

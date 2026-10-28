@@ -222,3 +222,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-28 15:04追加：owner授权Atlas切换Zot，官方v1.3.0完整SHA验证后已发布只读工具artifact，无新常驻服务。Tasks f5cff55仅修改安装与工具cache，迁移/全部测试/20分钟保留；行为race20轮、make verify及真实Linux安装/两套迁移/断网缓存/损坏修复Testcontainers11.170秒通过。真实push CI c619/image d1ea均已接收、托管Actions恢复；先运行image的reliability，后续按实际缓存owner验证大Go缓存，再重启/手动PG18，不能提前勾选。
+
+
+2026-10-28 16:20追加：f5冷reliability保存实际Go cache1,592,818,688B，CI c619新Pod的Go/Atlas均true且成功，server重启后同一cache元数据保持。镜像build因旧应用base 0f79不存在而失败；按同一Zot授权将Atlas Dockerfile stage改为scratch+固定摘要ADD/checksum/755，真实BuildKit及Testcontainers正/负例通过，安装器+Dockerfile最终15.207秒，lint0。新72bd3ba真实push继续原入口、镜像与PG18验收，尚不勾选最终完成。

@@ -4,13 +4,18 @@ package integration_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	dockerbuild "github.com/moby/moby/api/types/build"
 	dockercontainer "github.com/moby/moby/api/types/container"
+	dockerclient "github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -86,5 +91,59 @@ echo 'Atlas cold download, offline warm cache, corrupt cache repair and real mig
 	must(t, err)
 	if state.ExitCode != 0 {
 		t.Fatalf("mirrored Atlas fixture exit=%d", state.ExitCode)
+	}
+}
+
+func TestMirroredAtlasDockerfileStage(t *testing.T) {
+	root := os.Getenv("FORGELET_TEST_ATLAS_SOURCE_DIR")
+	if root == "" {
+		t.Skip("set FORGELET_TEST_ATLAS_SOURCE_DIR for the business Atlas Dockerfile stage")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	source, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
+	must(t, err)
+	expected := "cfc773e5b4e845bc01d680390c174648938a7f88bf30e5a2c83ae85217c21587"
+	for _, corrupt := range []bool{false, true} {
+		t.Run(fmt.Sprint("bad-checksum=", corrupt), func(t *testing.T) {
+			directory := t.TempDir()
+			dockerfile := string(source)
+			if corrupt {
+				dockerfile = strings.Replace(dockerfile, "--checksum=sha256:"+expected, "--checksum=sha256:"+strings.Repeat("0", 64), 1)
+			}
+			must(t, os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte(dockerfile), 0600))
+			c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+				ContainerRequest: testcontainers.ContainerRequest{
+					FromDockerfile: testcontainers.FromDockerfile{
+						Context: directory, BuildLogWriter: os.Stdout,
+						BuildOptionsModifier: func(options *dockerclient.ImageBuildOptions) {
+							options.Target = "atlas-runtime"
+							options.Version = dockerbuild.BuilderBuildKit
+						},
+					},
+					Cmd: []string{"/usr/local/bin/atlas", "version"},
+				},
+				Started: false,
+			})
+			if c != nil {
+				testcontainers.CleanupContainer(t, c)
+			}
+			if corrupt {
+				if err == nil || !strings.Contains(strings.ToLower(err.Error()), "digest mismatch") || !strings.Contains(err.Error(), expected) || !strings.Contains(err.Error(), strings.Repeat("0", 64)) {
+					t.Fatalf("expected checksum rejection, got %v", err)
+				}
+				return
+			}
+			must(t, err)
+			file, err := c.CopyFileFromContainer(ctx, "/usr/local/bin/atlas")
+			must(t, err)
+			hash := sha256.New()
+			_, err = io.Copy(hash, file)
+			_ = file.Close()
+			must(t, err)
+			if actual := fmt.Sprintf("%x", hash.Sum(nil)); actual != expected {
+				t.Fatalf("Dockerfile binary SHA256=%s want=%s", actual, expected)
+			}
+		})
 	}
 }

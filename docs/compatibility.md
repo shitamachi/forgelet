@@ -366,3 +366,6 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 
 
 显式2Gi缓存对象对应的大对象传输期限为最多5分钟，artifact仍2分钟，父任务取消/超时不会被延长。Go SDK与BuildKit缓存继续使用原作用域、immutable key、摘要与ACK；实际归档超出配置时保持明确警告/失败语义，CI自身success不代表缓存已保存，实际冷热命中需单独核对。
+
+
+2026-10-28 Atlas安装按owner授权切换：Tasks workflow明确固定官方v1.3.0/Linux amd64/SHA256，通过现有Zot OCI artifact blob下载并使用actions/cache@v4；runtime Dockerfile使用相同blob的ADD --checksum/--chmod，不再引用已失效的旧业务image digest。迁移校验、原业务测试、PG18输入和20分钟保持，但安装/cache/Dockerfile是显式仓库修改，不再声称YAML与旧样本字节相同。此CLI镜像策略不是Forgelet对所有公共二进制下载的透明代理，未新增解析能力；cold/warm、错误hash、截断、损坏cache、真实迁移及BuildKit正负例已独立验证，具体CI/镜像/PG结果见status。
