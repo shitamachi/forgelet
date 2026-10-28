@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，原Atlas公网下载超时已按owner授权改为固定版本Zot工具，单测/容器专项通过；新f5真实CI/镜像在执行，随后验收真实热缓存与手动PG18，尚未全部完成。**
+更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，Atlas已按owner授权固定版本迁入Zot，CI/运行镜像两处安装及容器专项通过；实际1.48GiB Go缓存保存/重启热命中通过，PG18时间精度fixture修复cfd已push，最新CI354成功；镜像617最终latest PUT EOF失败、手动PG18 0b52因Ryuk等待后超时，已部署仅ENV变化的Ryuk宽限工具镜像，原PG18重跑eec5验收中，尚未全部完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -946,3 +946,16 @@ build-push50264714完成真实构建：Atlas固定Zot ADD/checksum约1.8秒，�
 生产upsert明确不更新first_seen_at。真实本机PG18复现用带额外123ns的输入，读回时间恰少123ns，证明差异来自PostgreSQL timestamptz的微秒分辨率（[官方PG18类型说明](https://www.postgresql.org/docs/18/datatype-datetime.html)），不是upsert覆盖。测试输入改为Truncate(time.Microsecond)，原first_seen_at严格相等/attempts/重查安排/成功清除断言保留，新增observed_at严格前进一分钟断言；生产逻辑、SQL、workflow、timeout均不改。真实PG18/race重复5轮PASS48.989秒，复现前失败8.868秒也完整留证。业务测试修复cfd1ca0已push main。
 
 只取消了我们自己尚未开始构建、等待容量的72旧镜像验收重跑451a713e，保留已通过的reliability与原registry EOF失败，没有取消owner任务或正在收集完整PG结果的f746。cfd真实push CI35423f4b/image6178be2b已接收，托管Actions恢复true；旧PG运行/终态/服务容器证据单独归档后，按同一原workflow、postgres:true创建新0b52b754，不复用旧失败为成功。新CI/镜像/PG18及最终发布镜像Atlas smoke继续待终态，10.6e/10.7b仍未提前勾选。
+
+
+## 2026-10-28 18:47：Zot 镜像缓存与 Ryuk 生命周期对照
+
+owner补充授权：需要下载的镜像可直接缓存在集群现有Zot。继续使用固定digest及显式profile镜像映射；公共上游镜像与私有业务镜像分开命名空间，复用现有权限，不新增常驻代理或Docker服务。Atlas固定二进制已通过Zot获取，现有引擎/Ubuntu工具及Alpine等依赖也使用Zot。此次Ubuntu工具镜像只变更ENV，直接复用Zot中所有现存layers，避免重新下载/上传大工具层。
+
+最新cfd原CI35423f4b完整success；镜像6178be2b的reliability及实际构建通过，但最终PUT latest仍EOF，sha-cfd1ca0已发布，digest5c2b000e03dbd2ee22d74bba2d1f2bbc4a632fbdc41a5a204ab291067031bdf1。使用相同凭据的独立小镜像crane、Docker29、Docker28.5.1以及集群内Docker28.5.1多标签对照全部通过；不能认定Docker版本或基础权限是唯一原因。18:22操作员仅重试该已存在digest的最终manifest写入成功，latest与sha标签一致；原workflow仍failure，不计自动发布通过，也不据此勾选阶段。尚未擅自将业务发布目标从外部registry改成Zot。
+
+将该私有业务镜像缓存进Zot时，远端到Zot的流式copy遇到Zot现有60秒请求读取超时，日志证明请求体读取过慢，Zot无重启/告警；改为先本机完整下载和校验，再通过内网上传，保留Zot超时/预算。下载尚在执行，不宣称已缓存成功。集群诊断Pod、临时Docker引擎与port-forward已回收。
+
+cfd原手动PG18 0b52b754的时间精度修复已验证：原失败包handlers/steam_detail成功20.776秒。但另一个包出现复用Ryuk时等待端口60秒超时，后续容器重新创建成功；整体最终到原20分钟timed_out，保持失败。独立Go Testcontainers v0.44.0双进程/同父session对照：间隔15秒，默认10秒宽限创建新Ryuk，工具镜像2分钟宽限复用同一Ryuk，真实Testcontainers PASS80.757秒，容器与跟踪到的Ryuk均回收；这验证生命周期策略，不冒称已精确重现所有业务失败时序。新增tools/reaper配方与可选回归，Ryuk保持启用，fixture显式清理及Pod结束/取消清理保持；异常断连自动清理可能多等待至2分钟，无额外常驻进程。
+
+make verify通过（35前端单测、14浏览器32.1秒，Go race/集成、构建/lint/generate），之后集成build-tag lint单独执行0 issues；首次与make verify并发时embed dist被生成过程暂时清空导致typecheck失败，生成完成后重新检查通过，不改源代码掩盖错误。Ubuntu新镜像90ad0dc507bf64c1e3bc81b3ea09512dfcd41fe9047e71ff0671c2dcee5f761e已经部署：与c172逐项核对rootfs相同，只有RYUK_RECONNECTION_TIMEOUT=2m ENV变化；配置只改Ubuntu act.runner_image，server/supervisor/资源/并发/Rust/镜像映射保持。空闲时rollout成功，原cfd/固定计划及postgres:true重跑eec5d4f46055b163faef1480c467aa27，真实PG18验收继续。核心Go运行时代码未变，完整2360.406秒回归、新Atlas15.207秒与新Ryuk80.757秒分别记录，不能混称后两者参加过早前全量回归。

@@ -156,6 +156,8 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 - [x] **10.7a 第一批自动验证**：make verify、单测/真实 HTTP/SQLite/执行器、23 个全量 Testcontainers 叶子场景通过（1117.652 秒）；最新整对象诊断追加 2 场景专项通过（217.507 秒）。覆盖嵌套/括号 typed inputs/secret 作用域/outputs、失败/跳过/取消、rerun、并发、真实重启和原 CI/CD；workflow 88.2%，调度/调用核心细项见 status。修复真实 Pod 发现的领取→凭据阶段取消竞态。
 - [ ] **10.7b 完整业务与实际环境验证**：后续每批继续单测/集成/Testcontainers；独立记录 steam-tasks 完整 workflow 与 homelab 实际部署、GitOps/Flux 结果，解析样本或独立 fixture 不能代替业务运行。
 
+2026-10-28 18:47追加：Tasks cfd原CI成功，原镜像自动发布最终latest PUT EOF失败，操作员补写成功与自动workflow失败分开记录。PG18时间精度fixture修复已生效，但原手动0b52遇Ryuk等待并最终超时。新增Ryuk跨包生命周期真实Testcontainers对照PASS80.757秒，make verify与集成lint通过；仅ENV变化的Ubuntu工具镜像90ad已部署，原PG18 eec5重跑中。按owner要求继续将下载依赖缓存在Zot，Atlas已完成，私有业务镜像本机分段下载待完成后校验上传；不因此改变原发布目标或勾选10.6e/10.7b。
+
 10.6 后续每批随功能验证：单测覆盖 ref 固定/错误诊断、权限与 shell 退出/取消；HTTP/SQLite 覆盖持久化与重跑不漂移；Testcontainers 使用临时 k3s 验证真实 Go/Node/Buf/pnpm/Chromium/Rust、缓存冷/热与失败隔离、BuildKit 发布和取消/重启。随后独立记录真实仓库固定 SHA 的运行、Checks、镜像 digest 及需要部署时的 Flux/健康/回滚。保持低常驻资源，不引入 spec、独立审核或性能基线门禁。
 
 ## 接下来

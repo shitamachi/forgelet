@@ -461,6 +461,11 @@ act profile 的 `image_mirrors` 为管理员维护的有限目录（最多 16 �
 不在此目录覆盖承诺内。更新目录时先按目标架构同步原始 manifest/blob、校验 digest，再更新 profile。
 引擎可使用相同版本的固定 digest 镜像，startup probe 检查实际 Docker 28.5.1；默认仍为原版本 tag。
 
+homelab 的 Ubuntu 工具镜像可通过 `tools/reaper` 配方显式设置
+`RYUK_RECONNECTION_TIMEOUT=2m`，缓解 Go Testcontainers 包进程间的清理器退出竞态。
+不关闭 Ryuk；fixture 显式清理与整个 Pod/引擎回收保持，异常断连后的自动清理宽限相应增加。
+这属于工具镜像策略，不改变 native/Rust profile 或 workflow timeout。
+
 日志保留原 HTTP/SQLite 协议。同 step 的未发送小写入合并为最多 8 KiB、每 200ms 刷新的块，
 大写入同步发送保留背压，待确认数据仍限制在 1 MiB。每块使用连续 seq，第一次尝试后内容不可再合并，
 即便服务端提交成功但 ACK 丢失也以相同字节重试。处理 Unicode/脱敏尾部时保留完整字符，
