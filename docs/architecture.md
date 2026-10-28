@@ -634,3 +634,8 @@ CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不�
 
 
 大缓存跨worker上传/恢复使用最多5分钟的HTTP期限，与原传输总体重试上限一致；artifact仍为2分钟。server在工作负载身份与请求类型验证后才延长读取期限，执行器父Context和workflow总期限始终优先。缓存仍流式落盘，SDK单块最大64MiB；对象预算2Gi不表示分配2Gi内存。暂存账目最多对象两倍，串行封装/分块拼装还可能短时增加一个对象的磁盘副本，管理员应预留相应执行节点临时空间；不增加常驻组件或放宽总存储配额。
+
+
+### 按摘要分发公共 CLI 工具
+
+Tasks 的 Atlas 安装按 owner 授权改用现有 Zot 的公开上游命名空间。一次性运维脚本先核对官方固定版本二进制 SHA256，再将原始二进制作为 OCI artifact layer 发布；OCI manifest 保留该 layer 引用，避免仅上传无引用 blob 被 GC。workflow 使用固定 blob 摘要 URL，安装前独立校验，使用普通 Actions cache 复用；损坏缓存重新获取，失败不覆盖现有安装。不放宽 Zot ACL，不把 registry 写凭据交给任务，不新增常驻服务、PVC 或工具下载网关。代价是 Zot 与已有有界 cache 中各约120MiB的公共二进制存储；无公网回退，镜像失效必须明确失败。该方式是仓库授权修改的工具安装策略，不属于通用 GitHub Actions 下载代理，也不声称保持旧 YAML 字节不变。版本/平台、发布与实际流程验收见 tools/atlas 和 status。

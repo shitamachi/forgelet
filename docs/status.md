@@ -908,3 +908,12 @@ a5888f0a最终failure，执行叶10764894明确timed_out：静态检查/构建6�
 13:16最终健康复查：业务Web HTTP200、Deployment ready1、Flux仍564223da；etcd无告警、leader1，P99 fsync15.4ms/commit26.5ms。已无本批executor Pod或Testcontainers容器；Windmill app Ready1/1，原镜像和2Gi预算保持。
 
 13:18在所有业务attempt已终态、无executor Pod时，正常重启控制面以应用Mongo预取清理；rollout成功，管理API可读，仍为a28ffec4/ff812b00与原预算。这次空闲重启只确认配置生效/控制面就绪，不作为尚未保存的大Go缓存重启验收。Atlas优化选项仍待owner选择，原业务workflow保持。
+
+
+## 2026-10-28 15:04：按 owner 授权，将 Atlas 固定工具迁至内网 Zot
+
+owner明确接受改用内网Zot。一次性获取官方标准版Atlas v1.3.0/Linux amd64，125,569,080字节，核对官方SHA256 cfc773e5b4e845bc01d680390c174648938a7f88bf30e5a2c83ae85217c21587；作为OCI artifact原始二进制层发布到已有公开上游命名空间forgelet/dockerhub/arigaio/atlas-cli，manifest 9f00de5842f4ce5be9a8d3f9700c79045442fb7d10b149a2adb09c54de6836d1。匿名流式下载后再次校验完整SHA，匿名写入401；不扩展ACL或给workflow写凭据，不新增服务/PVC。官方公网首次分片下载曾有TLS错误，仅在校验最终官方完整SHA后才发布；不以半成品替代。发布脚本、固定source与说明保存在tools/atlas。
+
+Tasks业务提交f5cff55已真实push到main：明确授权修改的是Atlas安装及新增actions/cache@v4工具缓存，其他原CI/镜像入口、迁移校验、全部业务测试和20分钟不变；不再声称reliability.yml与旧版字节完全相同。安装从固定Zot blob摘要获取且独立SHA校验，损坏缓存重新获取，下载失败/错误hash/截断均不覆盖已有安装，临时文件回收，成功原子替换，无公网回退。新增脚本HTTP行为/race20轮PASS10.322秒；root make verify PASS（35前端、14浏览器31.5秒）。新Testcontainers专项PASS11.170秒，使用与生产相同的c172工具image配置40816453，在真实Linux二进制下验证两套业务迁移、断网热缓存、损坏缓存重取以及修改迁移后的真实checksum拒绝，容器已清理。控制面/执行器代码未变，既有完整2360.406秒回归与本次新增专项分别记录。
+
+真实push初期GitHub installation token发生临时transport错误，事件持久化后自动重试，随后CI c6198848与image d1ea2769均创建；原托管Actions已恢复enabled=true。同一server的无凭据网络探针随后默认HTTP2 GET200/POST401正常，HTTP1出现EOF；没有把HTTP1强加给控制面或改网络/代理规则，临时探针已删除。image的reliability先获得node2，CI等待容量；验收脚本据真实成功叶任务核对>1Gi缓存归属，不假设两个workflow的执行顺序，也不取消任务。完整CI/镜像、真实Go缓存保存/重启命中、手动PG18仍待终态，10.6e/10.7b保持未完成。

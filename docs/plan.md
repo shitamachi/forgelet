@@ -219,3 +219,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-28 13:16追加：a588真实缓存补验在原Atlas下载阶段到20分钟timed_out，Pod已清理，setup-go post未执行；验收脚本停止，未启动PG18，也未重启server。多个地址/现有代理有界对照未找到足够快的下载路径；不改原超时、不跳过检查。已询问owner是否接受固定Atlas版本/校验和与工具缓存，业务YAML尚未修改；真实热缓存与PG18保持未完成。
 
 13:18：空闲时正常重启已应用Mongo预取清理，rollout/API就绪；不将此重启算作大Go缓存持久性通过。
+
+
+2026-10-28 15:04追加：owner授权Atlas切换Zot，官方v1.3.0完整SHA验证后已发布只读工具artifact，无新常驻服务。Tasks f5cff55仅修改安装与工具cache，迁移/全部测试/20分钟保留；行为race20轮、make verify及真实Linux安装/两套迁移/断网缓存/损坏修复Testcontainers11.170秒通过。真实push CI c619/image d1ea均已接收、托管Actions恢复；先运行image的reliability，后续按实际缓存owner验证大Go缓存，再重启/手动PG18，不能提前勾选。

@@ -1,0 +1,8 @@
+{
+  "version": "v1.3.0",
+  "platform": "linux/amd64",
+  "url": "https://atlasbinaries.com/atlas/atlas-linux-amd64-v1.3.0",
+  "checksum_url": "https://atlasbinaries.com/atlas/atlas-linux-amd64-v1.3.0.sha256",
+  "sha256": "cfc773e5b4e845bc01d680390c174648938a7f88bf30e5a2c83ae85217c21587",
+  "size": 125569080
+}
