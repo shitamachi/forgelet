@@ -1,6 +1,6 @@
 # GitHub Actions 兼容范围
 
-更新：2026-10-28。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
+更新：2026-10-29。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
 forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为，不提供完整 GitHub Actions 云服务。
 
 专用生产形态测试仓库的 act/Docker 实验单独记录在 [test/productionlike](../test/productionlike/README.md)。
@@ -234,6 +234,8 @@ schedule、services、job.container 后续按需求安排；真实 homelab 接�
   包含远程 Composite 的远程依赖锁；精确 tag 优先于同名 branch，annotated tag 有界解引用。
   保留原 uses 供诊断，重跑与恢复使用原 SHA；缺失版本/metadata/依赖锁或 Node runtime 不支持时明确失败。
   原生 profile 和无锁旧计划继续使用 `internal/action/source.go` 的固定版本，不把通用引用当原生执行兼容。
+- 可选 supervisor 镜像可以预置固定 SHA 的公共 Action 归档（`tools/actions`），运行前验证归档 SHA256、GitHub commit header 和提取边界；命中后不下载源码，损坏不回退，缺少的新 SHA 保留原下载路径。
+  本批七个实际公共 Action 已验证；不改原 Action JS 或 workflow 输入，不代表 Action 内部工具、源仓库 checkout 和外部服务离线可用。
 - setup-go 的下载、toolcache、真实 Node、Go 与 cache 行为来自原 Action；不再在 YAML parser 中禁用标准输入。
   管理员负责配置 runner 工具；不承诺等同 GitHub ubuntu-latest 镜像。
   内层 root job 共享 supervisor 创建的 workspace；镜像仅信任固定 `/workspace/repository` Git 路径，

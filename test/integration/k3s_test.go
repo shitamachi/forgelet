@@ -49,7 +49,9 @@ const token = "test-only-admin-token-not-for-production"
 
 // TestK3sConcurrentExecution starts a disposable cluster; it never reads the user's kubeconfig.
 func TestK3sConcurrentExecution(t *testing.T) {
-	timeout := 55 * time.Minute
+	// The real >1 GiB cache case can consume 24 minutes by itself. Keep each
+	// functional/job deadline unchanged while allowing the entire suite to finish.
+	timeout := 80 * time.Minute
 	if os.Getenv("FORGELET_TEST_BUILD_BUSINESS_DIR") != "" {
 		timeout = 90 * time.Minute
 	}
@@ -94,6 +96,38 @@ func TestK3sConcurrentExecution(t *testing.T) {
 	must(t, err)
 	client, err := kubernetes.NewForConfig(restConfig)
 	must(t, err)
+	t.Cleanup(func() {
+		if t.Failed() {
+			diagnosticCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			nodes, _ := client.CoreV1().Nodes().List(diagnosticCtx, metav1.ListOptions{})
+			if nodes != nil {
+				for _, node := range nodes.Items {
+					t.Logf("node %s conditions=%v taints=%v", node.Name, node.Status.Conditions, node.Spec.Taints)
+				}
+			}
+			systemPods, _ := client.CoreV1().Pods("kube-system").List(diagnosticCtx, metav1.ListOptions{})
+			if systemPods != nil {
+				for _, pod := range systemPods.Items {
+					t.Logf("system pod %s phase=%s containers=%v", pod.Name, pod.Status.Phase, pod.Status.ContainerStatuses)
+				}
+			}
+			events, _ := client.CoreV1().Events("").List(diagnosticCtx, metav1.ListOptions{Limit: 100})
+			if events != nil {
+				for _, event := range events.Items {
+					t.Logf("event %s/%s %s: %s", event.Namespace, event.InvolvedObject.Name, event.Reason, event.Message)
+				}
+			}
+			pods, _ := client.CoreV1().Pods("forgelet").List(diagnosticCtx, metav1.ListOptions{})
+			if pods != nil {
+				for _, p := range pods.Items {
+					t.Logf("pod %s: phase=%s conditions=%v", p.Name, p.Status.Phase, p.Status.Conditions)
+					data, err := client.CoreV1().Pods("forgelet").GetLogs(p.Name, &corev1.PodLogOptions{Container: p.Spec.Containers[0].Name}).DoRaw(diagnosticCtx)
+					t.Logf("logs %s: %s (%v)", p.Name, data, err)
+				}
+			}
+		}
+	})
 	// Kubelet may have started a slow external pull before LoadImages finished.
 	// Recreate only unready system Pods whose exact images were preloaded.
 	preloaded := map[string]bool{}
@@ -139,38 +173,7 @@ func TestK3sConcurrentExecution(t *testing.T) {
 	install(t, ctx, client, filepath.Join(root, "deploy/install.yaml"), image, cert, key)
 	endpoint, err := cluster.PortEndpoint(ctx, "30080/tcp", "https")
 	must(t, err)
-	t.Cleanup(func() {
-		if t.Failed() {
-			diagnosticCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			defer cancel()
-			nodes, _ := client.CoreV1().Nodes().List(diagnosticCtx, metav1.ListOptions{})
-			if nodes != nil {
-				for _, node := range nodes.Items {
-					t.Logf("node %s conditions=%v taints=%v", node.Name, node.Status.Conditions, node.Spec.Taints)
-				}
-			}
-			systemPods, _ := client.CoreV1().Pods("kube-system").List(diagnosticCtx, metav1.ListOptions{})
-			if systemPods != nil {
-				for _, pod := range systemPods.Items {
-					t.Logf("system pod %s phase=%s containers=%v", pod.Name, pod.Status.Phase, pod.Status.ContainerStatuses)
-				}
-			}
-			events, _ := client.CoreV1().Events("").List(diagnosticCtx, metav1.ListOptions{Limit: 100})
-			if events != nil {
-				for _, event := range events.Items {
-					t.Logf("event %s/%s %s: %s", event.Namespace, event.InvolvedObject.Name, event.Reason, event.Message)
-				}
-			}
-			pods, _ := client.CoreV1().Pods("forgelet").List(diagnosticCtx, metav1.ListOptions{})
-			if pods != nil {
-				for _, p := range pods.Items {
-					t.Logf("pod %s: phase=%s conditions=%v", p.Name, p.Status.Phase, p.Status.Conditions)
-					data, err := client.CoreV1().Pods("forgelet").GetLogs(p.Name, &corev1.PodLogOptions{Container: p.Spec.Containers[0].Name}).DoRaw(diagnosticCtx)
-					t.Logf("logs %s: %s (%v)", p.Name, data, err)
-				}
-			}
-		}
-	})
+
 	waitForTimeout(t, ctx, "server readiness", 10*time.Minute, func() bool {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/healthz", nil)
 		must(t, err)

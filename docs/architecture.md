@@ -1,6 +1,6 @@
 # forgelet：homelab 设计
 
-更新：2026-10-28。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
+更新：2026-10-29。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
 暂停 spec 模式；设计随代码更新，不设审批或资源基线门禁。
 
 ## 当前结构
@@ -470,6 +470,13 @@ homelab 的 Ubuntu 工具镜像可通过 `tools/reaper` 配方显式设置
 使用专用仓库 Secrets 和 exact-path read/create/update 账号；不给执行任务管理员或删除权限。
 catch-all 默认空，显式保留现有账号权限；不能用空用户 actions 覆盖宽泛的 defaultPolicy。
 无凭据 policy 示例和真实 Zot 授权回归见 `tools/zot`。镜像发布目标变更与生产部署、回滚地址分别管理。
+
+公共 Action 源码还可随 supervisor 镜像预置在 `/opt/forgelet/action-sources`，不增加常驻服务或数据 PVC。
+按 repository/完整 SHA 查找，先核对压缩归档 SHA256、GitHub commit header 及既有大小/路径限制，再发布到该 job 的临时源码目录。
+声明的 bundle 损坏时明确失败；未预置的新 SHA 保留原公共下载行为。workflow 不能指定该目录或校验清单。
+`tools/actions` 记录七个实际公共 Action 的锁与可选构建配方，压缩资产约15MiB；原 JS、Node、Composite/post 执行逻辑保持。
+这只缓存源码归档，不能等同仓库 checkout、Action 内工具下载或外部 API 离线可用。
+
 
 日志保留原 HTTP/SQLite 协议。同 step 的未发送小写入合并为最多 8 KiB、每 200ms 刷新的块，
 大写入同步发送保留背压，待确认数据仍限制在 1 MiB。每块使用连续 seq，第一次尝试后内容不可再合并，

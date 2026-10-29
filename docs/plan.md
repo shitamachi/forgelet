@@ -1,6 +1,6 @@
 # 实施计划
 
-更新：2026-10-28。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
+更新：2026-10-29。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
 不使用 spec/accepted 审批，不安排独立基线、资源测量或审核阶段。
 用单测、集成测试、Testcontainers 随实现验证，完成后更新本页和 [status.md](status.md)。
 
@@ -153,6 +153,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
     - [x] steam-platform-web 原 check 冷热两次与各自 needs:image 完整通过：在 Forgelet 外确认并修复业务 hydration 竞态，保留原 workflow/E2E/Dockerfile 字节；显式源码补丁与标准工具 profile 下，共 28 个原主步骤、56 Playwright、pnpm false→true、新 builder RUN 层 CACHED 及 latest/SHA 标签 digest 核对通过。默认 129 MiB 实际 SDK 分块、重启/失败/取消专项及 make verify 通过；单对象与暂存字节预算不变。steam-api 本批仍为原 YAML 编译样本，真实业务测试问题留在 10.6e。
   - [x] **10.6d Rust 执行环境**：steam-cm 原 rust-ci.yml 使用 ubuntu-24.04、Rust 1.97/rustup、pwsh、Python3 和 Docker smoke/managed tests；补齐显式 profile、shell 行为及取消/退出码测试。保持 publish=false 默认，不把普通 push 改成发布，更不绕过容器安全/生命周期验收。工具与引擎均随 job 按需运行，不新增常驻服务。
   - [ ] **10.6e 业务修正与 CD 接续**：steam-tasks 的 SDK priceregion 与独立 Docker context 已修正并提交，尚需事故后的原 workflow 与 PostgreSQL 实际验收；steam-api 原 SHA 的本地测试及事故后原 workflow 测试/镜像/Checks和标签digest均已验收成功（b8f4702/8ca9acc3）；steam-platform-web 比较竞态已修复并完成原 workflow 冷/热与镜像发布专项，相关修复已提交/推送，执行环境已部署，真实 push 冷/热 CI 与镜像发布通过；业务 CD 接续继续单独交付。分别记录业务失败与平台失败，修正需保留真实测试语义。SDK 当前公开，不将其误报为已确认的私有授权阻塞。为实际需要部署的仓库明确镜像 digest、GitOps repo/path、环境与健康检查，接上现有 native CD → Flux；逐库记录 CI、镜像发布、部署、失败阻断、回滚/恢复，不能将原 workflow 的镜像 push 当成 CD 完成。跨仓库短期 token 仅在真实私有依赖需要时按管理员显式范围扩展。
+- [x] **10.6f 执行镜像内公共 Action 源码缓存**：完整 SHA/归档校验和与commit header验证、未预置回退/损坏拒绝、原Node/act行为保持。单测/HTTP、实际七份归档断网镜像Testcontainers、完整临时k3s回归1830.233秒通过；Ubuntu d7已部署，Tasks f6原始快照重跑eb0完成Zot发布、双标签/Action摘要/Checks和非root只读断网smoke。PG18整体验收与10.6e/10.7b仍未完成。
 - [x] **10.7a 第一批自动验证**：make verify、单测/真实 HTTP/SQLite/执行器、23 个全量 Testcontainers 叶子场景通过（1117.652 秒）；最新整对象诊断追加 2 场景专项通过（217.507 秒）。覆盖嵌套/括号 typed inputs/secret 作用域/outputs、失败/跳过/取消、rerun、并发、真实重启和原 CI/CD；workflow 88.2%，调度/调用核心细项见 status。修复真实 Pod 发现的领取→凭据阶段取消竞态。
 - [ ] **10.7b 完整业务与实际环境验证**：后续每批继续单测/集成/Testcontainers；独立记录 steam-tasks 完整 workflow 与 homelab 实际部署、GitOps/Flux 结果，解析样本或独立 fixture 不能代替业务运行。
 
@@ -236,3 +237,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-28 19:38追加：owner授权应用镜像发布迁Zot，Tasks f6f4105已真实push，目标forgelet/apps/steam-task及专用exact-path账号完成部署；真实Zot ACL正/负验证、可选Testcontainers9.513秒和make verify通过。缓存cfd镜像OCI全hash/长度核对及非root只读断网Atlas/迁移smoke通过。CI6a95/imagea142仍在运行，等待完整自动发布及标签/Action/Checks核对。Ryuk2m原PG18 eec5仍interrupted，原失败保留，不能将独立生命周期用例当成完整手动workflow验收；10.6e/10.7b/第三批保持未完成。
+
+
+2026-10-29 09:00收尾：包含当前源码与七份Action实际镜像的完整Testcontainers PASS1830.233秒，Rust/SDK/Web/登录/保留清理均已实际执行通过；私有业务目录的两项可选fixture未配置，真实仓库验收另列。今日make verify通过（35前端、14浏览器29.6秒）。Tasks新Zot发布与隔离smoke已完成，10.6f完成；6752原PG18二十分钟timed_out且最终ACK正常，10.6e/10.7b/第三批保持未完成，后续需优化完整PG流程开销并再验收。

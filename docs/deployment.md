@@ -703,6 +703,12 @@ ConfigMap 和 Deployment；快照不包含 artifact/cache 文件。
 act 镜像也使用对应 GOPROXY 环境默认值，workflow 可以覆盖。未关闭 go.sum、CA 或 Debian 签名校验。
 容器测试可用 FORGELET_TEST_IMAGES 预载相同版本的 k3s 系统镜像、docker:28.5.1-dind；
 预载后重建仍在等待外部拉取的临时系统 Pod，不改变安装清单或跳过功能检查。
+真实SDK用例可用 `FORGELET_TEST_TOOLCHAINS_DIR` 指向已下载的官方归档目录，仍逐个按
+`test/fixtures/toolchains.sha256` 校验并运行原 setup Action 和真实二进制，不计公网 SDK 下载。
+完整 Rust 用例需 `FORGELET_TEST_RUST_IMAGE` 指向本机已载入的生产 Rust profile；未设置时明确 SKIP。
+包含1120MiB随机层的完整套件总context为80分钟，单个功能等待和业务job期限保持，Go test外层95分钟。
+在homelab复验时应完整记录以上参数与SKIP项，不能把缺少预载导致的准备失败计作功能通过。
+
 公开 Actions 源码采用三次有界下载重试、完整临时目录原子发布，失败不会留下可被误认成完整源码的缓存。
 
 10.6b 的新 act 运行在控制面解析公共 Action tag/branch 到 commit，保存完整依赖锁再调度；

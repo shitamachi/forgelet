@@ -128,7 +128,11 @@ func Download(ctx context.Context, client *http.Client, base string, a run.Actio
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("download action source: HTTP %d", resp.StatusCode)
 	}
-	compressed := &io.LimitedReader{R: resp.Body, N: 32 << 20}
+	return extractArchive(ctx, resp.Body, destination)
+}
+
+func extractArchive(ctx context.Context, input io.Reader, destination string) error {
+	compressed := &io.LimitedReader{R: input, N: 32 << 20}
 	gz, err := gzip.NewReader(compressed)
 	if err != nil {
 		return fmt.Errorf("open action archive: %w", err)

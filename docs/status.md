@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-28（Asia/Shanghai）。当前：**按顺序恢复真实仓库接入、业务 CD 与 Rust 验收；Go/Node 首批、Web Flux 发布/回滚及 Login/Admin/ETL 已通过。新增嵌套引擎 cgroup 与大缓存修复已部署，API 与 Rust 原流程已通过，Tasks 已移除MongoDB，node2原CI/镜像/Checks已通过；真实Go缓存超过旧1Gi上限，2Gi与跨worker传输修复已部署且完整自动回归通过，Atlas已按owner授权固定版本迁入Zot，CI/运行镜像两处安装及容器专项通过；实际1.48GiB Go缓存保存/重启热命中通过，PG18时间精度fixture修复cfd已push，最新CI354成功；镜像617最终latest PUT EOF失败、手动PG18 0b52因Ryuk等待后超时，已部署仅ENV变化的Ryuk宽限工具镜像，但原PG18重跑eec5仍interrupted；owner已授权应用发布迁Zot，专用权限及真实ACL验证已完成，新f6f4105真实push CI6a95/imagea142验收中，尚未全部完成。**
+更新：2026-10-29（Asia/Shanghai）。当前：**首批真实仓库 CI、Web Flux 发布/回滚及 Rust 已验收；Tasks f6f4105 完整 CI 与 Zot 自动发布、标签/Action digest/精确 Checks及断网镜像 smoke 已通过。七个固定 SHA 公共 Action 已预置进 Zot 执行镜像，当前完整自动回归已PASS1830.233秒，原手动 PG18 6752 已明确 timed_out 并收到最终 ACK，10.6e/10.7b/第三批尚未完成。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-28，仍在进行）
@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | bd3cdc3；原CI5865abfb / image7aaf3b92；旧失败保留 | 原CI、镜像workflow和Checks成功，原YAML/20分钟不变；2Gi缓存保存、重启热命中及手动PG18继续验收，MongoDB已移除 | digestf557195f…，latest/sha-bd3cdc3/Action一致 | 非本批部署目标 |
+| steam-tasks | f6f4105；CI6a95126d / image同快照重跑eb0e06f3；旧失败保留 | CI、原reliability/构建与精确7个Checks成功；实际1.48GiB Go缓存保存/重启热命中通过；原PG18仍待6752验收，MongoDB已移除 | Zot forgelet/apps/steam-task digest4e9f5830…，latest/sha-f6f4105/Action一致；非root只读断网Atlas/迁移smoke通过 | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -972,3 +972,40 @@ owner明确选择应用镜像发布也迁到Zot。本次先迁正在排查的Tas
 此前cfd实际业务镜像已完整下载，所有OCI config/layer长度和SHA逐项通过，缓存到私有forgelet/mirrors/steam-task-cfd，保持原digest5c2b000e03dbd2ee22d74bba2d1f2bbc4a632fbdc41a5a204ab291067031bdf1；本机先完整校验再LAN上传通过，未提高Zot超时/资源。对该实际发布镜像以原appuser、read-only、network=none、256Mi/1CPU smoke通过：Atlas完整SHA及v1.3.0，两套迁移校验全部通过。该镜像的外部latest来源仍是操作员补写，不能把旧image617失败改称自动成功。
 
 Ryuk2m原PG18 eec5重跑最终interrupted，缺少最终ACK，不能记作修复通过；观察到136个实际PG18容器及同一个Ryuk，原精度修复和生命周期专项不等于完整PG验收。最后日志停在short/race完成之后；Pod最终回收，需继续收集完整终止原因，不推断为已确认的新业务错误或OOM。10.6e/10.7b与第三批仍未完成。新Zot真实push CI6a95126d/imagea142a862目前执行中，需完整终态/实际registry与Action摘要及精确job Checks核对后才记自动发布成功。
+
+
+## 2026-10-28 21:28：Zot 自动发布及固定 SHA Action 源码缓存验收
+
+首轮Zot image a142a862失败发生在任何checkout/login/build之前：下载docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051的原始公开源码归档，三次均触发既有2分钟HTTP上限；不是Zot权限或推送错误。失败保留，不盲目重试相同慢路径。
+
+新增通用可选镜像预载：管理员将公开Action的原始tar.gz及独立SHA256清单放进supervisor镜像，worker按repository/完整commit查找、验证SHA256与GitHub全局PAX commit header，再用既有32MiB压缩/128MiB展开/10,000文件和路径安全规则提取并原子接纳。新SHA未预置时仍走原下载；声明的包损坏时失败且不走公网。没有改upstream JS、Node执行、workflow/Action输入、取消/ACK/重启语义或timeout，没有新增配置字段、服务、数据库或PVC。源码目录固定为镜像内/opt/forgelet/action-sources，业务不能选择目录/校验表；数据和构建配方在tools/actions，七份公开源码约15MiB，不将大归档提交到Git。
+
+七份源码从官方codeload固定URL获取，逐项核对长度、SHA256及GitHub commit标识。单测/HTTP覆盖精确固定SHA匹配、预载命中零网络、坏hash/缺文件/坏commit/超限manifest与archive/不安全路径拒绝、取消和临时目录清理；make verify通过，Go race/HTTP/SQLite等、build/lint/generate、35前端单测与14浏览器29.4秒。首次lint的大小写错误文本与error比较被阻断后修正，通过结果不覆盖初次失败。实际最终镜像的七份原始归档在非root、read-only、network=none、1CPU/512Mi Testcontainers中全部通过，专项3.36秒（首次专项3.865秒），容器已回收。
+
+Ubuntu supervisor镜像d7ae262a4c6e61885eb6e88bdb0625ae234b1e272606ed99c9a450fd6e9c4153已发布到Zot并部署。逐项核对原ff812的runtime image config相同、base layers为相同前缀；只加新act-worker及公开源码资产。server仍a28ffec4、runner仍90ad0dc5，Rust/其他profiles、镜像目录、500m/4CPU与4Gi、并发2保持。空闲rollout后对同一f6源码/原workflow/完全相同ActionPins重跑eb0e06f3854898dd28b1d8f6bf9fbb76，真实日志确认使用预载源码；原CI6a95与新image的reliability/build全部成功。
+
+实际docker/login-action使用专用Zot账号，docker/metadata和build-push保持原执行行为。registry latest、sha-f6f4105及Action输出全部为sha256:4e9f5830e101409eecc7106b8538c3993fa8e7bdf913fd7f4130256e5c21052c；精确匹配两个workflow的7个新job external_id，GitHub Checks均completed/success，旧失败Checks未覆盖。该新Zot镜像用专用只读访问能力（发布账号本身含read）、原appuser、只读根、断网、256Mi/1CPU运行smoke通过：Atlas SHA/v1.3.0及两套迁移校验均成功。源仓库checkout和Action内部外部请求仍保留原网络要求，不把归档缓存称为完全离线Actions。
+
+当前源码完整Testcontainers回归仍在执行：初始两个启动因默认公网Go/apt准备过慢在构建阶段中止，使用既有GOPROXY/DEBIAN_MIRROR参数重启；随后第一次真正进入k3s的完整运行因系统DNS/存储未就绪在准备阶段失败400.204秒，未运行产品用例。补齐项目已有FORGELET_TEST_IMAGES、导入本机同版本官方k3s/Docker/Registry/BuildKit/Flux镜像后重新完整执行；不跳过系统部署或修改功能等待条件，不关闭go.sum、CA、Debian签名。将原失败诊断cleanup提前注册到系统就绪检查之前，避免该阶段失败时缺少节点/Pod/事件日志。初次两个自有legacy build容器fac01/b397已回收，owner builder未改。当前已通过并发/取消/重启、低水位及原UID保护，正在CI/CD与act场景，尚不宣称全量通过。
+
+Zot迁移本身已验收，未启动Tasks生产应用。利用全量回归等待时间，以同一f6的原workflow_dispatch、postgres:true新建6752ce401d72e2700684beba补验PG18，保留20分钟/完整测试/严格断言，并持续捕获supervisor日志和Pod终止状态以诊断旧eec missing ACK。该运行尚未终态，10.6e/10.7b及第三批保持未完成。21:24现有Web HTTP200、Deployment ready1、Flux仍564223da；etcd无告警、leader1，P99 fsync约24.3ms/commit49.7ms。
+
+
+## 2026-10-29 08:27：全量回归准备参数与整套预算修正，保留原失败
+
+昨夜完整运行3309.264秒最终FAIL：前面的并发、恢复、取消、低水位、CI/CD、日志、act与1120MiB独立BuildKit冷/热/重启/失败/取消用例均已通过，其中大缓存场景1428.15秒；随后全局55分钟context耗尽，SDK用例得到context deadline exceeded，浏览器/登录/保留清理尚未执行即连带失败。不是这些后续功能已经验收通过。Rust因未配置既有FORGELET_TEST_RUST_IMAGE明确SKIP，SDK也漏用了已有官方归档预载参数；首次准备阶段漏系统镜像预载的失败与该次全局预算失败分别保留。
+
+完整套件的总context调整为80分钟（Go test外层已有95分钟），只为容纳1.1GiB真实多轮传输及其余用例；单个功能等待、SDK十二分钟job、实际业务workflow二十分钟均不改。使用项目现有Go/apt镜像源、同版本k3s/Docker/Registry/BuildKit/Flux预载、已按官方SHA核对的SDK归档目录及本机生产Rust镜像重新完整执行；不是替换模拟SDK或跳过Rust/大缓存。原失败清理后，临时k3s/Registry容器已回收；本次全量仍在执行，暂不勾选10.6f。
+
+原PG18运行6752最终timed_out：观测138个PostgreSQL/Ryuk实例、读取错误0，日志无明确业务FAIL或reaper错误；supervisor明确输出job finished with state timed_out，控制面已有最终ACK，与旧eec的interrupted分别记录。它仍未完成原二十分钟完整workflow，不能声明PG18通过或提前完成10.6e/10.7b/第三批。已验证的f6完整CI、Zot image重跑eb0、4e9f5830双标签/Action摘要/Checks和实际发布镜像离线smoke结果保持。
+
+
+## 2026-10-29 09:00：本批完成——Zot 发布、预载源码与当前完整回归
+
+当前源码完整Testcontainers PASS1830.233秒，包含实际bundle镜像断网提取全部七份Action（3.08秒）与全部必需临时k3s用例：act重启/缓存/取消/失败359.99秒，Rust/PowerShell122.52秒，1120MiB独立BuildKit冷/热/重启/失败/取消282.22秒，真实SDK17.02秒，Web浏览器35.17秒，GitHub登录/仓库接入/重启107.13秒，日志/历史保留清理17.08秒。两项需外部私有业务目录的fixture明确SKIP，已单独记录的真实仓库结果不混入该计数；额外可选Atlas/DuckDB/Ryuk/Zot镜像场景本轮未配置，不冒称参加了此全量，它们先前独立专项记录保持。临时k3s、registry与test容器均已清理，仅保留owner原builder；无实际homelab执行Pod，仍只有Go控制面。
+
+make verify今日最终通过：Go race/HTTP/SQLite/解析/执行器等、build/lint/generate、35前端单测、14浏览器29.6秒。f6的CI6a95、同一固定快照image重跑eb0、7个精确job Checks、Zot latest/sha-f6f4105/Action摘要4e9f5830以及实际发布镜像的非root/只读/断网Atlas与两套迁移smoke均通过；专用账号只能read/create/update forgelet/apps/steam-task，跨仓库写入/删除/匿名私有访问均有真实正负验证。再次用专用账号读取latest仍为同一4e9摘要。Tasks业务发布地址迁移完成；现有生产Tasks部署/历史回滚digest保持。
+
+10.6f完成；10.6e、10.7b及第三批继续未完成，因为原PG18完整workflow在6752仍到二十分钟期限，虽然最终ACK已正确持久化，但没有完整测试成功结果。本批不改变该timeout、删减断言或将其误记为通过。阶段10的远程reusable/动态matrix/artifact v4等后续边界仍保持，不称阶段10整体全部结束。
+
+最终homelab业务Web HTTP200、ready1、Flux main@564223da；etcd无告警、leader1，P99 fsync约29.0ms/commit44.5ms。server a28ffec4、Ubuntu supervisor d7ae262a/runner90ad0dc5、Rust旧ff812及全部资源/并发预算保持。Zot及GitHub/Forgelet仓库专用Secrets已配置，托管Actions恢复原enabled=true。源码归档锁/配方、运行库及回归在本批代码中，进度与设计/兼容/重现文档已同步。

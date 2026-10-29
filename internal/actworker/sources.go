@@ -24,6 +24,7 @@ import (
 
 type sources struct {
 	dir, base string
+	preloaded string
 	pins      map[string]string
 	mu        sync.Mutex
 }
@@ -130,6 +131,24 @@ func (s *sources) ensure(ctx context.Context, key, sha string) (string, error) {
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
 		return "", err
+	}
+	temporary, err := os.MkdirTemp(filepath.Dir(dir), ".preloaded-")
+	if err != nil {
+		return "", err
+	}
+	found, loadErr := action.LoadPreloaded(ctx, s.preloaded, run.Action{Repository: key, SHA: sha}, temporary)
+	if loadErr == nil && found {
+		loadErr = os.Rename(temporary, dir)
+	}
+	if !found || loadErr != nil {
+		_ = os.RemoveAll(temporary)
+	}
+	if loadErr != nil {
+		return "", fmt.Errorf("preloaded immutable Action %s@%s: %w", key, sha, loadErr)
+	}
+	if found {
+		common.Logger(ctx).Infof("Using verified preloaded Action %s@%s", key, sha)
+		return dir, nil
 	}
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {

@@ -71,7 +71,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	configureBuilderDefaults(wf, request)
 	secrets := executionSecrets(wf, request)
 	env := runtimeEnvironment(request)
-	cache := &sources{dir: filepath.Join(meta, "sources"), base: request.ActionBaseURL, pins: request.Plan.ActionPins}
+	cache := &sources{preloaded: "/opt/forgelet/action-sources", dir: filepath.Join(meta, "sources"), base: request.ActionBaseURL, pins: request.Plan.ActionPins}
 	public, _ := request.Plan.Contexts()
 	actor := public["github.actor"]
 	if actor == "" {
