@@ -54,10 +54,12 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
   }
   if (url.pathname === '/repos/test/project/pulls/12') {
     const ready = !fs.existsSync('/fixture-state/pr-merge-pending');
-    return send({number:12,state:'open',mergeable:ready?true:null,merge_commit_sha:ready?'d'.repeat(40):null,
+    return send({number:12,state:'open',mergeable:ready?true:null,
       head:{sha:'e'.repeat(40),repo:{full_name:'test/project',fork:false}},
       base:{sha:'b'.repeat(40),ref:'main',repo:{full_name:'test/project'}}});
   }
+  if (url.pathname === '/repos/test/project/git/ref/pull/12/merge') return send({object:{type:'commit',sha:'d'.repeat(40)}});
+  if (url.pathname === '/repos/test/project/git/commits/'+'d'.repeat(40)) return send({sha:'d'.repeat(40),parents:[{sha:'b'.repeat(40)},{sha:'e'.repeat(40)}]});
   if (url.pathname.endsWith('/commits')) return send([{sha:'b'.repeat(40)}]);
   const onboarding = 'name: Onboarding integration\non: push\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - run: echo onboarding-real-k3s\n';
   const oauthWorkflow = 'name: OAuth integration\non: push\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - run: echo oauth-first-run-real-k3s\n';

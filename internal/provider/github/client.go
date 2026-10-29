@@ -155,6 +155,9 @@ func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, e
 		level = "write"
 	}
 	body := map[string]any{"permissions": map[string]string{key.permission: level}}
+	if key.permission == "pr-merge" {
+		body["permissions"] = map[string]string{"contents": "read", "pull_requests": "read"}
+	}
 	if key.permission == "gitops" {
 		body["permissions"] = map[string]string{"contents": "write", "pull_requests": "write"}
 	}

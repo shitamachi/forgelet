@@ -116,7 +116,7 @@ func (c *Client) ResolvePullRequest(ctx context.Context, event run.Event) (strin
 	if err != nil || n < 1 || event.Ref != "refs/pull/"+strconv.Itoa(n)+"/merge" || event.Name != "pull_request" || !validRepository(event.Repository) || !validSHA(event.HeadSHA) || !validSHA(event.BeforeSHA) || event.InstallationID <= 0 {
 		return "", fmt.Errorf("%w: invalid PR identity", ErrPullRequestSuperseded)
 	}
-	token, err := c.installationToken(ctx, tokenKey{installation: event.InstallationID, permission: "pull_requests", repository: event.Repository})
+	token, err := c.installationToken(ctx, tokenKey{installation: event.InstallationID, permission: "pr-merge", repository: event.Repository})
 	if err != nil {
 		return "", err
 	}
@@ -130,8 +130,35 @@ func (c *Client) ResolvePullRequest(ctx context.Context, event run.Event) (strin
 	if pr.Mergeable != nil && !*pr.Mergeable {
 		return "", fmt.Errorf("%w: PR has merge conflicts", ErrPullRequestSuperseded)
 	}
-	if pr.Mergeable == nil || !validSHA(pr.MergeCommitSHA) {
+	if pr.Mergeable == nil {
 		return "", fmt.Errorf("github: PR test merge commit is not ready")
 	}
-	return pr.MergeCommitSHA, nil
+	// REST 2026-03-10 no longer returns merge_commit_sha. Resolve the
+	// actual test-merge ref, then bind its parents to the original event to
+	// close the race between reading PR metadata and reading the mutable ref.
+	var ref struct {
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
+	}
+	if err = c.request(ctx, http.MethodGet, "/repos/"+event.Repository+"/git/ref/pull/"+number+"/merge", nil, token, nil, &ref); err != nil {
+		return "", err
+	}
+	if ref.Object.Type != "commit" || !validSHA(ref.Object.SHA) {
+		return "", fmt.Errorf("github: PR merge ref is not ready")
+	}
+	var commit struct {
+		SHA     string `json:"sha"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err = c.request(ctx, http.MethodGet, "/repos/"+event.Repository+"/git/commits/"+ref.Object.SHA, nil, token, nil, &commit); err != nil {
+		return "", err
+	}
+	if commit.SHA != ref.Object.SHA || len(commit.Parents) != 2 || commit.Parents[0].SHA != event.BeforeSHA || commit.Parents[1].SHA != event.HeadSHA {
+		return "", fmt.Errorf("github: PR test merge does not match original parents")
+	}
+	return ref.Object.SHA, nil
 }

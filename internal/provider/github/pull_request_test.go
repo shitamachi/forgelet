@@ -113,7 +113,9 @@ func TestPullRequestPendingMergeAndResolution(t *testing.T) {
 		change               func(map[string]any)
 		permanent, transient bool
 	}{
-		{name: "ready"},
+		{name: "ready without removed API field", change: func(p map[string]any) { delete(p, "merge_commit_sha") }},
+		{name: "merge parents changed", transient: true},
+		{name: "merge ref unavailable", transient: true},
 		{name: "pending", change: func(p map[string]any) { p["mergeable"] = nil; p["merge_commit_sha"] = nil }, transient: true},
 		{name: "conflict", change: func(p map[string]any) { p["mergeable"] = false }, permanent: true},
 		{name: "head advanced", change: func(p map[string]any) { p["head"].(map[string]any)["sha"] = strings.Repeat("d", 40) }, permanent: true},
@@ -137,10 +139,26 @@ func TestPullRequestPendingMergeAndResolution(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&scope); err != nil {
 						t.Error(err)
 					}
-					if len(scope.Permissions) != 1 || scope.Permissions["pull_requests"] != "read" || len(scope.Repositories) != 1 || scope.Repositories[0] != "repo" {
+					if len(scope.Permissions) != 2 || scope.Permissions["contents"] != "read" || scope.Permissions["pull_requests"] != "read" || len(scope.Repositories) != 1 || scope.Repositories[0] != "repo" {
 						t.Errorf("PR resolver token scope: %+v", scope)
 					}
 					writeToken(t, w)
+					return
+				}
+				if r.URL.Path == "/repos/owner/repo/git/ref/pull/12/merge" {
+					if tc.name == "merge ref unavailable" {
+						w.WriteHeader(404)
+						return
+					}
+					writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": testSHA}})
+					return
+				}
+				if r.URL.Path == "/repos/owner/repo/git/commits/"+testSHA {
+					base := event.BeforeSHA
+					if tc.name == "merge parents changed" {
+						base = strings.Repeat("e", 40)
+					}
+					writeJSON(t, w, map[string]any{"sha": testSHA, "parents": []map[string]string{{"sha": base}, {"sha": event.HeadSHA}}})
 					return
 				}
 				if r.URL.Path != "/repos/owner/repo/pulls/12" || r.Header.Get("Authorization") != "Bearer installation-secret" {

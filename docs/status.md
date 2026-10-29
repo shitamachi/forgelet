@@ -1165,3 +1165,6 @@ Tasks的冷热ref不同，热对照复用main原有缓存，不称为同计划�
 12.1/12.2线上推进：提交fb6e2f4已推送，server69fbb384…上线，SQL备份与管理/资源配置一致性核对通过。Admin Web真实开发分支8b3295f已push并创建PR#1，原setup-node已恢复main的npm缓存（cache-hit=true），全部测试尚未完成；原npm ci正遇npm registry metadata网络重试。原始GitHub签名opened delivery3851030510631419904因merge_commit_sha=null被旧服务400拒绝，不能宣称PR已验收。正在修复异步测试merge解析与先持久化再准入，并补单测/SQLite/重启Testcontainers；不改原PR为head执行。
 
 platform-web GitOps acb5fe1先对齐现网6ee9e663，再移除Flux spec.images覆盖；相同Deployment模板、Ready/Healthy、原digest均确认，尚待新发布/回滚验收。Admin Web两个托管workflow及platform-web check.yml已明确停用，Forgelet入口保留；本轮不声称其他仓库已切换。操作前状态和恢复命令保留在stage12-delivery-20261029。
+
+
+PR追加实测：f9d2b6d服务器a9a17192…已上线，原运行同Pod UID保留，原opened签名重投成功202并持久化等待。进一步用同一GitHub App比较实际API响应，确认默认旧版本提供merge_commit_sha，而控制面使用的2026-03-10不再返回该字段；原解析实现因此一直not ready，不能计为PR通过。现改为同仓库只读contents+pull_requests令牌，读取merge ref与不可变commit父列表并核对原始base/head；新夹具删除旧字段，补ref不存在与父提交变化回归。之前一次Testcontainers失败是新增夹具误用github容器名，已修正为github-test-api，失败日志保留。修正夹具后的专项825.448秒通过，含真实大BuildKit/自动发布依赖/重启/失败门禁及分支cache；最后只读令牌及旧字段移除专项281.327秒通过，但这两次尚未覆盖新的ref/parents实现，最终版本自动验证继续。
