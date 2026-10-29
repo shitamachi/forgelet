@@ -1,9 +1,9 @@
 # 项目状态
 
-更新：2026-10-29（Asia/Shanghai）。当前：**首批真实仓库 CI、Web Flux 发布/回滚及 Rust 已验收；Tasks f6f4105 完整 CI 与 Zot 自动发布、标签/Action digest/精确 Checks及断网镜像 smoke 已通过。七个固定 SHA 公共 Action 已预置进 Zot 执行镜像，当前完整自动回归已PASS1830.233秒，原手动 PG18 6752 已明确 timed_out 并收到最终 ACK，10.6e/10.7b/第三批尚未完成。**
+更新：2026-10-29（Asia/Shanghai）。当前：**首批真实仓库 CI、Web Flux 发布/回滚及 Rust 已验收；Tasks22b8b32完整PG18 workflow已成功：步骤9分30秒、含镜像准备11分43秒，原172个测试文件/断言及20分钟保留。同源CI、Zot镜像/标签/Action摘要/Checks与断网smoke全部通过，首批九仓库固定提交验收及本轮1/2/3完成。当前Forgelet完整自动回归PASS1830.233秒；阶段10其余扩展仍按清单保留。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
-## 本轮逐仓库验收（2026-10-28，仍在进行）
+## 本轮逐仓库验收（2026-10-29，首批固定提交已完成）
 
 以下固定提交代表已经核对的结果，不将后续业务新提交自动视为通过。镜像发布与实际部署分别记录。
 
@@ -16,7 +16,7 @@
 | steam-admin | aeca6d4；保护版本下新d2bf88f / 4e9a8016+60a17111 | 新提交原CI/Checks通过 | 新digest97d5b404…，latest/sha-d2bf88f/Action一致 | 非本批部署目标 |
 | steam-platform-etl | 6e57692 / 1ad78435 | 原手动workflow通过，SDK公开版本修正已提交 | 原workflow未发布镜像 | 非本批部署目标 |
 | steam-api | b8f4702；修复后重跑8ca9acc3成功，原失败留存 | 原test/镜像workflow及Checks成功，Go缓存true，缓存导出400未再发生 | digest5da83526…，latest/提交标签/Action一致 | 非本批部署目标 |
-| steam-tasks | f6f4105；CI6a95126d / image同快照重跑eb0e06f3；旧失败保留 | CI、原reliability/构建与精确7个Checks成功；实际1.48GiB Go缓存保存/重启热命中通过；原PG18仍待6752验收，MongoDB已移除 | Zot forgelet/apps/steam-task digest4e9f5830…，latest/sha-f6f4105/Action一致；非root只读断网Atlas/迁移smoke通过 | 非本批部署目标 |
+| steam-tasks | 22b8b32；CI06db20fc / image39fb828f / PG98b5a9fa；旧失败保留 | CI/reliability/构建与精确7个Checks成功；完整PG53包通过4分26秒、含镜像准备11分43秒，独立Check成功；Go缓存保存/重启热命中已验证，MongoDB已移除 | Zot forgelet/apps/steam-task digestf683f162…，latest/sha-22b8b32/Action一致；非root只读断网Atlas/迁移smoke通过 | 非本批部署目标 |
 | steam-cm | 新8e265947 / 50d91035；旧失败保留 | 原test/image及Checks完整成功，托管Actions恢复 | 本地release镜像004cbb45…，smoke与两个managed测试成功；普通push原publish=false跳过远程发布 | 不连接真实Steam，不自动部署 |
 
 验证期间收到的额外业务新提交单列：Admin Web `4d5cd9d02d…` / run `3267d26c5adb97cff86de1a7` 的32个单测中31通过，`src/features/games/api.test.tsx:72` 找不到“提交补采”按钮；实际1 CPU失败尚未精确复现归因，保留原失败，不覆盖上表b906验收结果，也不改测试门禁。其CI与镜像原本是两个独立workflow，镜像任务继续按原定义运行，未接生产CD。 03:10追加结果：同一4d5提交/原快照重跑3178ee3a在3CPU新Pod成功，原14文件/32测试全部通过17.25秒，类型检查/构建/生成文件检查、npm缓存true及GitHub Check完成success；原失败留存，业务代码/测试断言未修改。该对照确认新运行通过，不证明原1CPU失败的唯一根因。
@@ -1009,3 +1009,34 @@ make verify今日最终通过：Go race/HTTP/SQLite/解析/执行器等、build/
 10.6f完成；10.6e、10.7b及第三批继续未完成，因为原PG18完整workflow在6752仍到二十分钟期限，虽然最终ACK已正确持久化，但没有完整测试成功结果。本批不改变该timeout、删减断言或将其误记为通过。阶段10的远程reusable/动态matrix/artifact v4等后续边界仍保持，不称阶段10整体全部结束。
 
 最终homelab业务Web HTTP200、ready1、Flux main@564223da；etcd无告警、leader1，P99 fsync约29.0ms/commit44.5ms。server a28ffec4、Ubuntu supervisor d7ae262a/runner90ad0dc5、Rust旧ff812及全部资源/并发预算保持。Zot及GitHub/Forgelet仓库专用Secrets已配置，托管Actions恢复原enabled=true。源码归档锁/配方、运行库及回归在本批代码中，进度与设计/兼容/重现文档已同步。
+
+
+## 2026-10-29：PG18 完整 workflow 二十分钟优化（手动完整验收通过）
+
+原6752在20分钟内未完成，并非业务断言失败；更早72bd3ba的PG步骤完整执行13m1.231s，实际观测154个临时PG18服务。旧完整流程另有checkout约3–4分钟、Go缓存恢复约2分36秒、Codecov约4分48秒；网络与重复initdb/停止成本叠加耗尽预算，不以单个测试timeout解释整个job。原失败与最终ACK证据保持。
+
+已实现并推送业务仓库`shitamachi/steam-tasks@22b8b3238b85c2164b248fe88bcf48eddd2f2984`：新增`./scripts/ci/pg18`，只在显式PG步骤启动一个workflow自有的真实Testcontainers PG18，再以既有隔离数据库后备路径执行原命令。每个测试仍创建随机独立数据库并DROP FORCE；子进程DSN强制覆盖为本次临时容器，不使用继承的部署数据库。保留fsync/synchronous_commit/full_page_writes开启及logical WAL、所有172个既有测试文件字节、迁移校验、race/coverage、`go test -p=1 -race -count=1 -timeout=15m ./...`和原20分钟job。开发者直接测试仍默认每测试一个Testcontainer，不增加常驻PG。成功/失败/取消均销毁自有容器；取消杀停整个go-test进程组，保留子命令退出码。
+
+自动验证：新环境覆盖/参数/退出码/孙进程取消race五轮通过；53个包原short/race/coverage通过，go vet通过；真实PG18三库隔离/清理与持久化设置Testcontainers PASS8.961秒；真实wrapper成功/失败/取消生命周期PASS80.517秒（精确核对容器已不存在，退出码0/1/130）。固定源码完整PG18/race原命令53包通过3m58.646s并清理容器。第一次本地全量期间编辑新增测试导致Go import配置失效，保留该失败，不计作成功；固定源码重跑才是上述最终结果。Forgelet本轮make verify通过，含35前端单测和14浏览器32.7秒；本轮未修改Forgelet生产Go，当前源码完整临时k3s回归1830.233秒沿用09:00记录，不冒称本轮重复执行。
+
+真实push的CI`06db20fc97e62fa62d8269b5`成功；手动原入口`postgres=true`运行`98b5a9faf632a54e80258de2`完整success。最终job`547d816a5f2653d7762e7e23`、最后日志序号248与终态已持久化，精确external_id对应GitHub Check123212592746为completed/success；执行Pod已自动清理。53包完整PG/race通过，实际仅1个postgres:18-alpine和1个Ryuk、观测读取错误0。原172个既有测试文件字节未改、条件/全部断言/命令及job1200秒均核对；没有扩容或延长预算。
+
+| 手动完整workflow阶段 | 本轮真实耗时 |
+|---|---|
+| checkout | 5.858秒 |
+| setup-go，实际cache-hit=true | 2分32.500秒 |
+| 模块校验、vet、build | 46.160秒 |
+| Atlas缓存/安装及两套迁移校验 | 约6.340秒 |
+| 原short/race/coverage单测 | 1分8.865秒 |
+| PG18完整步骤（含wrapper构建/清理） | **4分25.701秒** |
+| Codecov原步骤 | 23.346秒 |
+| 所有计时Main/Post步骤合计 | **9分29.943秒** |
+| executor启动→最终结果落库，含Zot镜像准备，不含排队 | **11分43.217秒** |
+
+最后一项由Pod内executor startedAt01:58:49Z与最终job updatedAt02:10:32.216931542Z核对；不是将排队/镜像准备并入步骤计时来声称加速。完整PG子命令含fixture启动为4分23.578秒，fixture启动3.291秒；与旧13分1.231秒PG步骤相比主要消除了154次PG初始化/销毁，本轮仍独立建库及保持持久化设置。checkout和Codecov有网络波动，不能把所有跨次时差都归因于PG优化。Codecov本轮仍因protected main缺token拒绝上传，按原fail_ci_if_error=false非阻断；workflow success不表示覆盖率已经上传。
+
+同源image`39fb828f0c3feb09899b9c61`的reliability与build-push均success；原两个push workflows的7个精确job external_id Checks全部completed/success，另有上面的手动PG Check。Zot `latest`、`sha-22b8b32`与原build-push Action输出均为`sha256:f683f162d6bdb3279a75b3c4ecad73299c5c9b8bd50120245eb2e0261a664330`。以专用账号读取该新镜像，在非root/只读根/断网/256Mi/1CPU中验证Atlas SHA/v1.3.0和两套迁移均成功，不连接Tasks生产数据库或启动业务部署。
+
+10:20收尾核对：所有实际executor Pod已自动回收，仅原Go控制面常驻；本机只保留owner的lg-multiarch builder。Web HTTP200、Deployment ready1、Flux仍main@564223da；etcd无告警、leader1，P99 fsync约25.1ms/commit41.3ms。server a28ffec4、Ubuntu supervisor d7ae262a/runner90ad0dc5、节点/CPU/内存/并发预算、授权范围和业务部署保持；托管GitHub Actions已确认enabled=true。
+
+10.6e/10.6g/10.7b及本轮第三批完成：上表九仓库的固定提交CI/发布语义已分别验收，实际业务CD范围为platform-web，先前真实GitOps/Flux健康、失败阻断、回滚/恢复结果保持。不是给其余仓库新增生产部署。旧失败与新成功独立保留。阶段10的远程reusable、动态matrix、完整原版artifact v4等仍未实现，不因本批完成而勾选，具体边界见compatibility。

@@ -371,3 +371,8 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 
 
 2026-10-28 Atlas安装按owner授权切换：Tasks workflow明确固定官方v1.3.0/Linux amd64/SHA256，通过现有Zot OCI artifact blob下载并使用actions/cache@v4；runtime Dockerfile使用相同blob的ADD --checksum/--chmod，不再引用已失效的旧业务image digest。迁移校验、原业务测试、PG18输入和20分钟保持，但安装/cache/Dockerfile是显式仓库修改，不再声称YAML与旧样本字节相同。此CLI镜像策略不是Forgelet对所有公共二进制下载的透明代理，未新增解析能力；cold/warm、错误hash、截断、损坏cache、真实迁移及BuildKit正负例已独立验证，具体CI/镜像/PG结果见status。
+
+
+2026-10-29 PG18验收优化为显式业务workflow修改（Tasks22b8b32），不是Forgelet改写任意测试：workflow临时启动一个真实PG18，再通过既有测试后备接口为每个原测试创建/清理独立数据库，覆盖子进程继承的测试DSN。原测试/断言/迁移/race/20分钟保留，fsync等持久化设置不变；不增加平台常驻数据库或放宽执行器权限。开发者默认per-test Testcontainers保持。取消时CLI停止整个测试进程组并在有界独立cleanup context销毁自有容器；具体自动/真实workflow结果分别见status。
+
+该版本已在homelab以原手动postgres=true入口98b5a9fa完成：53包完整PG/race通过，PG步骤4分26秒、步骤合计9分30秒，含Zot准备11分43秒；实际仅一个PG18、Go缓存true、最后日志序号248及终态持久化，精确GitHub Check成功。172个既有测试文件字节未改，原job1200秒与测试参数保持。同源CI/镜像发布/标签与Action摘要/Checks和Atlas迁移smoke均已核对。Codecov仍沿用原缺token时非阻断行为，本轮没有成功上传覆盖率。上述是业务workflow夹具与固定执行环境的实测结果，不扩展到所有数据库/网络场景的20分钟保证，也不意味着阶段10所有Actions能力已经完成。
