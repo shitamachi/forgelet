@@ -620,7 +620,7 @@ worker 通过 Docker bind mount 将该目录挂到 job 的同名绝对路径，�
 
 
 构建缓存可以显式配置 blobs.cache_object_bytes 与 act.cache_object_bytes（最大2GiB）；默认仍256MiB，artifact/object_bytes仍最大256MiB。
-全局 Store 按种类预留对象预算，所有保留对象和并发上传仍受 blobs.total_bytes/objects 限制；不增加常驻缓存服务。
+全局Store按实际写入buffer逐段预留字节，所有已存对象和并发临时上传仍受blobs.total_bytes/objects限制；不增加常驻缓存服务。
 job-local facade 的暂存累计预算为对象预算两倍；单块64MiB不变，1MiB BuildKit blocks 数按对象预算有界扩展。
 数据流式落盘/校验，只有 SDK 单块进入内存，较大缓存不会一次分配整个对象；重启/取消清理沿用既有语义。
 资源隔离依据：[Linux cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)、[Docker cgroup parent](https://docs.docker.com/reference/cli/dockerd/#default-cgroup-parent)。
@@ -703,3 +703,6 @@ GitHub的opened事件可能包含null merge_commit_sha。验签、同仓库/fork
 
 
 PR执行SHA与Check归属分离：执行计划/checkout始终使用已固定测试merge SHA；GitHub Check读取计划内已验签原始事件的同仓库head身份，报告到head，名称使用forgelet / PR / …，终态摘要同时写明测试merge与head。push的Check行为保持。旧版本已经写到merge SHA的同App/同external job ID Check先置neutral并说明迁移，再按head+external ID恢复或创建Check，沿现有outbox CAS替换远端ID；其他App、其他job或不相关SHA不得迁移，失败可幂等重试。
+
+
+缓存上传配额按实际流量记账：上传开始只占对象槽，写入每个有界buffer前在Store锁内预留其字节，已存used+全部在途reserved始终不超过总配额；重命名提交时在同一锁内把reserved转为used。失败、取消及重复写清理临时文件后释放预留。继续用原对象上限+1字节检测越界，不信任Content-Length，不需要新执行器协议或额外内存缓存。此修复消除“剩余容量低于2GiB就拒绝所有小cache”的错误，不扩大总预算、不加入LRU或忽略缓存失败。

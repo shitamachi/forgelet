@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
+	configyaml "gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -45,6 +47,76 @@ func testPhaseThree(t *testing.T, ctx context.Context, cluster testcontainers.Co
 		return joined.String()
 	}
 	t.Run("CI to CD", func(t *testing.T) {
+		t.Run("small caches reserve actual bytes and survive quota failure restart", func(t *testing.T) {
+			cm, err := client.CoreV1().ConfigMaps("forgelet").Get(ctx, "forgelet-config", metav1.GetOptions{})
+			must(t, err)
+			original := cm.Data["forgelet.yaml"]
+			t.Cleanup(func() {
+				current, err := client.CoreV1().ConfigMaps("forgelet").Get(ctx, "forgelet-config", metav1.GetOptions{})
+				must(t, err)
+				current.Data["forgelet.yaml"] = original
+				_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, current, metav1.UpdateOptions{})
+				must(t, err)
+				restartServer(t, ctx, client, httpClient, endpoint)
+			})
+			output := clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "/opt/forgelet/node24/bin/node", "-e", `const fs=require('fs');let sum=0;for(const d of fs.readdirSync('/fixture-state/blobs')){const f='/fixture-state/blobs/'+d+'/metadata.json';if(fs.existsSync(f))sum+=JSON.parse(fs.readFileSync(f)).size;}console.log('SIZE='+sum)`)
+			at := strings.LastIndex(output, "SIZE=")
+			if at < 0 {
+				t.Fatal("missing byte inventory")
+			}
+			used, err := strconv.ParseInt(strings.TrimSpace(output[at+5:]), 10, 64)
+			must(t, err)
+			var cfg map[string]any
+			must(t, configyaml.Unmarshal([]byte(original), &cfg))
+			cfg["blobs"] = map[string]any{"object_bytes": 512 << 10, "cache_object_bytes": 512 << 10, "total_bytes": used + (512 << 10), "objects": 4096}
+			encoded, err := configyaml.Marshal(cfg)
+			must(t, err)
+			cm.Data["forgelet.yaml"] = string(encoded)
+			_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
+			must(t, err)
+			restartServer(t, ctx, client, httpClient, endpoint)
+			item := create(t, `on: push
+jobs:
+  save:
+    runs-on: homelab
+    steps:
+      - run: mkdir -p large small; dd if=/dev/zero of=large/data bs=1024 count=384; dd if=/dev/zero of=small/data bs=1024 count=16
+      - uses: actions/cache/save@v4
+        with: {key: actual-quota-large, path: large}
+      - uses: actions/cache/save@v4
+        with: {key: actual-quota-small, path: small}
+`)
+			if result := finishRun(t, ctx, get, item.ID); result.State != run.Succeeded {
+				t.Fatal(result, logs(t, result.Jobs[0].ID))
+			}
+			over := create(t, `on: push
+jobs:
+  exceed:
+    runs-on: homelab
+    steps:
+      - run: mkdir -p excess; dd if=/dev/zero of=excess/data bs=1024 count=200
+      - uses: actions/cache/save@v4
+        with: {key: actual-quota-overflow, path: excess}
+`)
+			if result := finishRun(t, ctx, get, over.ID); result.State != run.Failed {
+				t.Fatal("quota violation was accepted", result)
+			}
+			restartServer(t, ctx, client, httpClient, endpoint)
+			restored := create(t, `on: push
+jobs:
+  verify:
+    runs-on: homelab
+    steps:
+      - uses: actions/cache/restore@v4
+        with: {key: actual-quota-large, path: large, fail-on-cache-miss: true}
+      - uses: actions/cache/restore@v4
+        with: {key: actual-quota-small, path: small, fail-on-cache-miss: true}
+      - run: test "$(wc -c < large/data)" -eq 393216; test "$(wc -c < small/data)" -eq 16384
+`)
+			if result := finishRun(t, ctx, get, restored.ID); result.State != run.Succeeded {
+				t.Fatal(result, logs(t, result.Jobs[0].ID))
+			}
+		})
 		t.Run("artifact and cache persist across pods and server restart", func(t *testing.T) {
 			source := `on: push
 jobs:

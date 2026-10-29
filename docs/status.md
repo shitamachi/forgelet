@@ -1173,3 +1173,12 @@ PR追加实测：f9d2b6d服务器a9a17192…已上线，原运行同Pod UID保�
 6a52234/merge-ref修复已上线，原事件显式重试后固定2a35cf6（父提交c5db392和8b3295f），PR运行befc785a已创建；原分支0bde91ea最终完整success，npm metadata单次重试约671秒保留实测，不把缓存命中当作网络消除。原始workflow/32测试与构建保持。最新ref/parents实现make verify通过42前端/17浏览器39.8秒，真实k3s签名PR/等待/重启/固定执行专项PASS202.909秒（25.70秒叶场景）。
 
 又发现实际PR展示阻断：gh pr checks只见分支push成功，而PR merge Check写在测试合并SHA上。正在将PR Check关联到持久化事件的原始head，并用PR名称区分，执行计划SHA不变；旧Check需同App/job/精确merge SHA校验后幂等迁移，补单测和真实k3s断言。原PR仍在资源队列，不提前称通过。platform-web真实0d06918 push运行b498a426原48单测、28 Playwright与生产构建/smoke已通过，image/CD尚待结束；两个试用仓库该commit的GitHub hosted run总数均0。
+
+
+真实PR befc785a已完整success，cache-hit=true、原32测试/check/build/生成文件检查全部通过；GitHub显示独立PR检查SUCCESS，与分支检查区分。核对原始base/head及当前merge ref后，Admin Web PR#1已squash合并为945431dc，等待原main CI/image自动执行与发布，未提前称main CD通过。
+
+platform-web b498a426原build成功（48单测、28浏览器、build/smoke）；image已构建/推送，但GHA cache导出最终503失败，整体failure、CD正确skipped，健康6ee9e663保持。故障实际根因：总cache容量6GiB，现有4342683136B（4.044GiB），旧Store每个PUT无论大小都预留cache对象上限2GiB，因剩余不足2GiB拒绝小layer。现改为有界buffer写入前逐段预留、提交原子转账、失败/取消清理释放；总配额/对象上限/不可变缓存与TTL保持，无需扩大磁盘预算或修改原workflow忽略错误。
+
+配额修复的单测/race/HTTP+SQLite通过，覆盖多个小写满额、并发流、超额失败、取消释放、幂等ACK；make verify PASS（42前端、17浏览器41.5秒，首次新增测试import分组lint失败已修正）。真实Testcontainers专项PASS238.232秒（50.33秒叶场景）：总空闲低于对象上限时两次不同cache保存成功，真实超额任务失败，控制面重启后两份已存cache均可恢复。只执行该专项，非全量重跑。服务器升级及原workflow重跑仍待完成。
+
+公共Node24-alpine与nginx-unprivileged1.27-alpine的实际amd64镜像已缓存到Zot既有公开上游命名空间，未更改ACL或发布业务代码。Node官方根8a32c8cf对应amd64 manifest4eefa1bf，缺失57MiB公共层由本次job自有BuildKit只读提取、SHA256对照官方manifest验证后补齐；初次公网下载约1516秒的成本与早期失败同步日志保留。所有临时port-forward已退出、loopback凭据副本删除；后续构建是否命中镜像源另行实测。

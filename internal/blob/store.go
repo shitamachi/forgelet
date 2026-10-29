@@ -171,16 +171,26 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		}
 		return old, nil
 	}
-	// Reserve the maximum object size before accepting bytes, including every
-	// concurrent temporary upload in the global bound.
-	if s.used+s.reserved+objectLimit > s.limits.TotalBytes || len(s.entries)+s.uploads >= s.limits.Objects {
+	// Count the upload immediately, but reserve bytes as they are written.
+	// Reserving the per-object maximum made even tiny cache writes fail when
+	// free quota was below 2 GiB, despite ample room for the actual object.
+	if len(s.entries)+s.uploads >= s.limits.Objects {
 		s.mu.Unlock()
 		return Entry{}, ErrLimit
 	}
-	s.reserved += objectLimit
 	s.uploads++
+	var reserved int64
+	active := true
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.reserved -= objectLimit; s.uploads--; s.mu.Unlock() }()
+	defer func() {
+		s.mu.Lock()
+		if active {
+			s.reserved -= reserved
+			s.uploads--
+		}
+		s.mu.Unlock()
+	}()
+
 	dir, err := os.MkdirTemp(s.dir, ".upload-")
 	if err != nil {
 		return Entry{}, err
@@ -191,7 +201,17 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		return Entry{}, err
 	}
 	h := sha256.New()
-	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(&contextReader{ctx: ctx, r: input}, objectLimit+1))
+	sink := quotaWriter{writer: io.MultiWriter(f, h), reserve: func(n int64) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if n > s.limits.TotalBytes-s.used-s.reserved {
+			return ErrLimit
+		}
+		s.reserved += n
+		reserved += n
+		return nil
+	}}
+	n, copyErr := io.Copy(sink, io.LimitReader(&contextReader{ctx: ctx, r: input}, objectLimit+1))
 	if copyErr == nil {
 		copyErr = f.Sync()
 	}
@@ -237,6 +257,10 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		return Entry{}, err
 	}
 	s.entries[e.ID] = e
+	s.reserved -= reserved
+	reserved = 0
+	s.uploads--
+	active = false
 	s.used += n
 	if err := syncDir(s.dir); err != nil {
 		return Entry{}, err
@@ -330,4 +354,18 @@ func (r *contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.r.Read(p)
+}
+
+// quotaWriter reserves each buffer before touching the filesystem, so stored
+// data plus all in-flight temporary files never exceed the shared byte budget.
+type quotaWriter struct {
+	writer  io.Writer
+	reserve func(int64) error
+}
+
+func (w quotaWriter) Write(data []byte) (int, error) {
+	if err := w.reserve(int64(len(data))); err != nil {
+		return 0, err
+	}
+	return w.writer.Write(data)
 }

@@ -266,3 +266,124 @@ func TestQuotaAllowsIdempotentRetryAndExpiredReplacement(t *testing.T) {
 		t.Fatal(string(data), err)
 	}
 }
+
+func TestSmallWritesUseActualQuotaAndFailuresReleaseReservations(t *testing.T) {
+	s, err := Open(t.TempDir(), Limits{ObjectBytes: 8, CacheObjectBytes: 16, TotalBytes: 20, Objects: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{Repository: "o/r", Kind: "cache", Namespace: "refs/heads/main", Version: "v1"}
+	for _, tc := range []struct {
+		key     string
+		size    int
+		limited bool
+	}{{"large", 12, false}, {"small", 4, false}, {"overflow", 5, true}, {"fits remaining", 4, false}} {
+		_, err := s.Put(t.Context(), scope, tc.key, "job", time.Hour, time.Now(), strings.NewReader(strings.Repeat("a", tc.size)))
+		if errors.Is(err, ErrLimit) != tc.limited || err != nil && !tc.limited {
+			t.Fatal(tc, err)
+		}
+		s.mu.Lock()
+		reserved, uploads, used := s.reserved, s.uploads, s.used
+		s.mu.Unlock()
+		if reserved != 0 || uploads != 0 || used > 20 {
+			t.Fatal(reserved, uploads, used)
+		}
+	}
+	if len(s.List(scope, time.Now())) != 3 {
+		t.Fatal("failed write persisted")
+	}
+	// A full store must still ACK an already committed immutable cache.
+	if _, err := s.Put(t.Context(), scope, "large", "job", time.Hour, time.Now(), strings.NewReader("retry")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConcurrentStreamsCannotOverbookActualBytes(t *testing.T) {
+	s, err := Open(t.TempDir(), Limits{ObjectBytes: 32, TotalBytes: 40, Objects: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{Repository: "o/r", Kind: "cache", Namespace: "main"}
+	readers := []*io.PipeReader{}
+	writers := []*io.PipeWriter{}
+	results := make(chan error, 2)
+	for i := range 2 {
+		r, w := io.Pipe()
+		readers = append(readers, r)
+		writers = append(writers, w)
+		t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+		go func() {
+			_, err := s.Put(t.Context(), scope, string(rune('a'+i)), "job", time.Hour, time.Now(), r)
+			_ = r.CloseWithError(err)
+			results <- err
+		}()
+	}
+	// Both uploads first hold sixteen real bytes, rather than 32-byte maxima.
+	for _, w := range writers {
+		if _, err := w.Write([]byte(strings.Repeat("x", 16))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A pipe write unblocks at Read, so wait for both reservations to be recorded.
+	for i := 0; i < 1000; i++ {
+		s.mu.Lock()
+		held := s.reserved
+		s.mu.Unlock()
+		if held == 32 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	if s.reserved != 32 {
+		s.mu.Unlock()
+		t.Fatal("uploads did not reserve expected bytes")
+	}
+	s.mu.Unlock()
+	for _, w := range writers {
+		_ = w.Close()
+	}
+	for range readers {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = s.Put(t.Context(), scope, "too-large", "job", time.Hour, time.Now(), strings.NewReader(strings.Repeat("y", 9)))
+	if !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	if _, err = s.Put(t.Context(), scope, "fits", "job", time.Hour, time.Now(), strings.NewReader(strings.Repeat("z", 8))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStreamingQuotaCancellationReleasesTemporaryBytes(t *testing.T) {
+	s, err := Open(t.TempDir(), Limits{ObjectBytes: 32, TotalBytes: 32, Objects: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	r, w := io.Pipe()
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	scope := Scope{Repository: "o/r", Kind: "cache", Namespace: "main"}
+	done := make(chan error, 1)
+	go func() { _, err := s.Put(ctx, scope, "cancelled", "job", time.Hour, time.Now(), r); done <- err }()
+	if _, err = w.Write([]byte(strings.Repeat("x", 16))); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_ = w.CloseWithError(context.Canceled)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	used, reserved, uploads := s.used, s.reserved, s.uploads
+	s.mu.Unlock()
+	if used != 0 || reserved != 0 || uploads != 0 {
+		t.Fatal(used, reserved, uploads)
+	}
+	if _, err = s.Put(t.Context(), scope, "after-cancel", "job", time.Hour, time.Now(), strings.NewReader(strings.Repeat("y", 32))); err != nil {
+		t.Fatal(err)
+	}
+}
