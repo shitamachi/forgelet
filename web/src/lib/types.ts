@@ -32,7 +32,23 @@ export interface StepResult {
   exit_code: number
   outputs?: Record<string, string>
 }
+export interface ExecutionProgress {
+  seq: number
+  phase: 'preparing' | 'executing' | 'cleanup'
+  last_at: string
+  phases?: { name: string; started_at: string; finished_at?: string }[]
+  steps?: { id: string; state: RunState; started_at?: string; finished_at?: string }[]
+  annotations?: {
+    step_id?: string
+    level: 'notice' | 'warning' | 'error'
+    message: string
+    at: string
+  }[]
+}
 export interface Job {
+  progress?: ExecutionProgress
+  reserved_at?: string
+  claimed_at?: string
   check_error?: string
   id: string
   run_id: string
@@ -41,11 +57,13 @@ export interface Job {
   pod_name: string
   pod_uid?: string
   state: RunState
+  cancel_reason?: string
   cancel_requested: boolean
   created_at: string
   updated_at: string
   logs_expired?: boolean
   plan: {
+    control?: string
     key: string
     group?: string
     workflow_name?: string
@@ -121,7 +139,7 @@ export interface Delivery {
 }
 export interface Configuration {
   repositories: string[]
-  profiles: { name: string; image: string; build: boolean }[]
+  profiles: { name: string; image: string; build: boolean; image_groups?: string[] }[]
   targets: Target[]
   max_parallel: number
   features: { github: boolean; secrets: boolean; artifacts: boolean; delivery: boolean }
@@ -166,6 +184,7 @@ export interface RepositoryConfig {
   enabled: boolean
 }
 export interface WorkflowConfig {
+  image_groups?: string[]
   repository: string
   path: string
   enabled: boolean
@@ -234,4 +253,28 @@ export interface RepositoryAuthorization {
   repository_id: number
   repository: string
   authorize_url: string
+}
+
+export type GitHubRepositoryAccess = {
+  state:
+    | 'authorized'
+    | 'unknown'
+    | 'pending'
+    | 'not_authorized'
+    | 'suspended'
+    | 'insufficient_permissions'
+    | 'archived'
+    | 'disabled'
+    | 'renamed'
+  remote_name?: string
+}
+export interface GitHubAuthorizationStatus {
+  snapshot?: {
+    checked_at?: string
+    attempted_at?: string
+    pending: boolean
+    error?: string
+    catalog?: GitHubConnection
+  }
+  repositories: Record<string, GitHubRepositoryAccess>
 }

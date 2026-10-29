@@ -24,10 +24,11 @@ type RepositoryConfig struct {
 	Enabled        bool   `json:"enabled"`
 }
 type WorkflowConfig struct {
-	Repository string `json:"repository"`
-	Path       string `json:"path"`
-	Enabled    bool   `json:"enabled"`
-	Source     string `json:"source"`
+	ImageGroups []string `json:"image_groups,omitempty"`
+	Repository  string   `json:"repository"`
+	Path        string   `json:"path"`
+	Enabled     bool     `json:"enabled"`
+	Source      string   `json:"source"`
 }
 type Management struct {
 	Version      int                `json:"version"`
@@ -54,6 +55,9 @@ func (s *Server) management() Management {
 	return m
 }
 func (s *Server) LoadManagement(ctx context.Context) error {
+	if err := s.loadGitHubAuthorization(ctx); err != nil {
+		return err
+	}
 	body, err := s.store.Management(ctx)
 	if err != nil {
 		return fmt.Errorf("load management: %w", err)
@@ -101,6 +105,16 @@ func (s *Server) validateManagement(m Management, requireRuntime bool) error {
 		key := w.Repository + ":" + w.Path
 		if !repos[w.Repository] || !workflowPath(w.Path) || seen[key] || len(w.Source) > 256<<10 {
 			return errors.New("invalid, duplicate or oversized workflow")
+		}
+		if len(w.ImageGroups) > 32 {
+			return errors.New("at most 32 workflow image groups are allowed")
+		}
+		groups := map[string]bool{}
+		for _, name := range w.ImageGroups {
+			if !run.ValidImageGroup(name) || groups[name] {
+				return errors.New("invalid or duplicate workflow image group")
+			}
+			groups[name] = true
 		}
 		seen[key] = true
 		if w.Source != "" {

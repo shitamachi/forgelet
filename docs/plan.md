@@ -89,10 +89,10 @@
 - [x] **6.3a 单仓库启用**：搜索、选择并启用已授权仓库；发现与启用分离，授权新增仓库不自动运行，GitOps 仓库也不自动启用 CI。用 GitHub repository ID 追踪重命名，Installation ID 与展示 full_name 独立；rename 检出后明确要求手动迁移。
 - [ ] **6.3b 批量与 rename**：批量启用、自动迁移名称及关联配置，保留历史关联。
 - [x] **6.4 首次运行引导**：自动读取默认分支并解析固定 SHA，发现 workflow，检查兼容字段和 profile；保留修改建议/模板，不自动改写远端 workflow。确认后触发首个固定 SHA 运行，展示 Check、日志与产物结果；CD 目标选填，不阻塞首次 CI。
-- [ ] **6.5 同步与失效**：签名 installation/installation_repositories 事件触发权威列表同步；提供手动刷新及低频、可取消的后台校正。失败同步不视为仓库移除；只有完成的权威快照才确认失权。撤权/暂停后阻止新任务及新授权凭证，不伪装为“未启用”，保留历史。
+- [x] **6.5 同步与失效**：签名 installation/installation_repositories 事件触发权威列表同步；提供手动刷新及低频、可取消的后台校正。失败同步不视为仓库移除；只有完成的权威快照才确认失权。撤权/暂停后阻止新任务及新授权凭证，不伪装为“未启用”，保留历史。
 - [x] **6.6a 第一批自动验证**：分页/metadata scope/权限/伪造 ID/撤权/rename/部分失败单测与 HTTP/SQLite；浏览器授权返回参数、仓库搜索/启用/固定 SHA 首跑；全量 Testcontainers 配置重启/签名事件/真实 Pod 与 CI/CD 回归通过。
 - [x] **6.6b 第一批实际验证**：部署 homelab，用第三个真实仓库跑通页面接入、首次运行、GitHub push → CI → Check、日志/产物和重启。
-- [ ] **6.6c 后续同步验证**：跨账号、签名安装生命周期事件/重复事件、后台校正和撤权队列/凭证处理的真实 k3s 回归，随 6.5 交付。
+- [x] **6.6c 后续同步验证**：跨账号、签名安装生命周期事件/重复事件、后台校正和撤权队列/凭证处理的真实 k3s 回归，随 6.5 交付。
 
 产品参考：[Buildkite GitHub provider](https://buildkite.com/docs/pipelines/source-control/github)、[Woodpecker 仓库激活](https://woodpecker-ci.org/docs/usage/intro)。
 GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app)、[installation repositories](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)、[Setup URL 的参数不可直接信任](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url)。
@@ -128,9 +128,9 @@ GitHub 接口与边界：[App installations](https://docs.github.com/en/rest/app
 - [x] **9.6 自动验证**：单测/HTTP/SQLite/race、make verify、35 个 Vitest、14 组 Chromium；全量 Testcontainers 20 个场景通过（1046.235 秒），覆盖 70 秒停机后同 UID 恢复、真实 Pod 所有权漂移与取消收尾。全量启动后追加的 needs 大小检查另用最新镜像专项通过（104.174 秒）；全量中的工作台 4 组和认证 1 组真实浏览器亦通过。
 - [x] **9.7 homelab 部署**：2026-10-25 部署 server `sha256:fbc91710...`、executor `sha256:cc230abb...`（amd64 digest 见 status）；schema v5→v6 迁移先在本地生产快照副本上验证，再升级线上库。健康/session/匿名 401/UI 与部署前后数据计数通过；未登录管理界面、未触发真实 CI。v5 备份和旧镜像记录保留，旧程序不能直接打开 v6。
 
-## 阶段 10：以完整 Workflow 运行驱动兼容层（10.6c 已完成 platform-web 真实 push 验收，其余业务库按序推进）
+## 阶段 10：以完整 Workflow 运行驱动兼容层（首批真实仓库交付完成，兼容扩展待办保留）
 
-owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能执行完为目标；优先级高于新增仓库批量/后台同步和更多 UI 功能。不创建 spec 或审批门禁。
+owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能执行完为目标。2026-10-29已完成首批9仓库固定提交的CI/原发布语义、Tasks完整PG18和platform-web实际CD；后续提交仍需重新验证。下面10.3b/10.4b/10.5剩余扩展保持未完成，不将首批交付等同完整GitHub Actions兼容。不创建spec或审批门禁。
 
 - [x] **10.1 库与实现调研**：检查 actionlint v1.7.12、act v0.2.89、GitHub 官方 languageservices/runner；三份 steam-tasks 原始 workflow 的 parser PoC、7 个表达式对照、本机 act host 成功/失败运行试验完成。来源、依赖、限制见 architecture；调研阶段没有修改产品依赖或宣称真实 CI 通过。
 - [x] **10.2 标准 AST 与诊断（第一批）**：引入 actionlint 解析适配；识别 permissions/defaults/run-name 等标准字段，区分语法和执行能力错误；保留完整语义到中间计划，清除基于少数字段的误拒绝。
@@ -138,7 +138,7 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 - [ ] **10.3b 调用能力扩展**：远程 ref 解析并固定 SHA；调用 job 的 matrix/concurrency、callee workflow concurrency、运行期输入驱动的提前执行设置；第一批明确诊断。
 - [x] **10.4a 表达式引擎**：actionlint AST + act v0.2.89 MIT 局部适配（无 runner/model/Docker 依赖），事件对象、索引/过滤、转换、比较优先级、有界求值、状态回调和分阶段上下文；语义小样例与前置官方 PoC 对照。
 - [ ] **10.4b 运行期规划扩展**：动态 matrix、workspace hashFiles 等按实际需求补齐；不允许控制面隐式扫描本机文件。
-- [ ] **10.5 通用 Actions 运行**：tag/ref→SHA、metadata 与真实 Node/Composite/pre/post；移除 setup 系列的解析器硬编码，实际接上所需工具链、cache/artifact 和权限受限凭据能力；按 10.5b 的单 job Docker Exec 内核逐项扩展，不把整个调度外包给 act；原版 artifact v4 等协议仍未实现。
+- [ ] **10.5 通用 Actions 剩余执行能力**：显式act的通用ref→SHA、真实Node/Composite/Docker Actions、setup/cache及受限凭据核心已经在10.5b/10.6b/10.6c完成；native继续使用明确受限的适配器。未完成项主要为act原版artifact v4协议、可靠的逐step timeout、workspace-local Action pre等，私有远程Actions仍不支持。按真实workflow需要逐项交付，不把整个调度外包给act。
 - [x] **10.5a 执行内核对比工具与选型**：固定 act v0.2.89 / Gitea act v0.262.0、独立锁定模块、真实单 job/依赖快照、Node/Composite/post、调用与缓存、临时 k3s/按需 Docker。优先上游 act；记录 Gitea 强制 /api/v1、空结果、共同 PTY race 与完整 workflow always 缺口，不能将负向探针称为完整兼容。真实 steam-tasks 原 CI 已在两者执行到业务依赖失败，详见 status。
 - [x] **10.5b job worker 产品接入**：正式独立 act 单 job worker，使用 Docker Exec 避开 stock host PTY，不替换 SQLite 图和全局调度；接续 claim/日志 ACK/result/取消/重启协议，真实 Node20/24、受限 token、PVC cache facade 和显式按需 Docker profile。单测、HTTP/SQLite、Testcontainers 和 homelab 部署完成；专用仓库真实 push → CI/build → 原生 CD → GitOps → Flux 健康应用通过。全量外网失败项及专项补跑结果分列于 status，不混称全量整体 PASS。
 - [x] **10.5c 生产形态测试仓库与 homelab 实验**：按 owner 最新要求暂停用业务库试验；复用三个专用测试仓库，增加 Go/PostgreSQL 应用、固定版本私有 SDK、近似 steam-tasks 的 ci/reliability/image workflows；先部署基线，再验证真实 Actions、冷/热缓存、必跑数据库验收、镜像发布、CI 失败阻断、故障健康检查和 GitOps/Flux 回滚。单测、集成、Testcontainers 与实际操作分开记录，不将 operator 桥接当产品内核接入。
@@ -162,9 +162,18 @@ owner 要求先做 GitHub Actions YAML 解析与运行，以整个 workflow 能�
 
 10.6 后续每批随功能验证：单测覆盖 ref 固定/错误诊断、权限与 shell 退出/取消；HTTP/SQLite 覆盖持久化与重跑不漂移；Testcontainers 使用临时 k3s 验证真实 Go/Node/Buf/pnpm/Chromium/Rust、缓存冷/热与失败隔离、BuildKit 发布和取消/重启。随后独立记录真实仓库固定 SHA 的运行、Checks、镜像 digest 及需要部署时的 Flux/健康/回滚。保持低常驻资源，不引入 spec、独立审核或性能基线门禁。
 
-## 接下来
+## 接下来：阶段 11（日常使用与运行效率，11.1–11.4已验收）
 
-阶段 8、review #1/#2、阶段 9 和 10.5d 已部署；现在通过 GitHub 登录 → Connections 搜索账号仓库 → 启用 → workflow 检查/首跑接入。添加仓库弹窗默认展示全部账号仓库并滚动加载。未获 App 授权的仓库需在 GitHub 确认后返回复核，新组织仍需安装/批准。专用测试仓库已验证产品完整 GitOps/Flux 链路；10.6b 已在临时 k3s 验证 steam-platform-server / steam-admin-web 的原始 workflow，10.6c 已完成大层缓存协议、admin/login 隔离发布及 platform-web 修复后的原始 workflow 两轮验收；10.6d Rust原workflow与smoke/managed验收已完成，接下来完成10.6e的Tasks原流程/PG18（owner已移除MongoDB）和已接续业务CD的收尾；以 9 个实际仓库的原 workflow 驱动兼容，不先扩展这些仓库未使用的远程 reusable、动态 matrix 或 artifact v4。steam-platform-web 已完成 homelab 实际 push/Checks、冷/热缓存与镜像发布；其他仓库继续按实际接入逐项验收；6.3b / 6.5 暂列后续。
+阶段10首批交付已完成。下一步按11.1→11.2→11.3→11.4推进，每一批随功能运行单测、HTTP/SQLite集成、Testcontainers及独立homelab验收；不建立spec审批或资源基线门禁。owner已授权完成11.1–11.4；11.1–11.4的代码、make verify、完整Testcontainers及各项homelab实测已完成；Admin Web正向发布、CI失败阻断、健康失败与回滚/恢复、重启幂等均已验证。11.3保留明确边界：Tasks独立ref冷缓存的原测试/PG18成功，但完整workflow在coverage步骤达到原20分钟而超时；相同固定源码和Action的main热缓存完整流程成功，不将冷运行改记成功。具体计时与证据见status。
+
+- [x] **11.1 运行进度、计时与警告**（第一批）：执行器上报结构化准备/step开始/结束事件，持久化有界、幂等进度；API/UI区分排队、Kubernetes等待、镜像准备、实际执行及收尾，显示步骤实时状态和耗时。继续以最终result/日志ACK确认终态，不用日志正则猜测成功，也不把重连当重跑。标准Action annotations/显式诊断展示为警告，不能从任意stdout判断第三方上传成功。兼容旧历史的缺省时间；取消/乱序/重复事件/控制面重启有回归。临时k3s验证运行中UI、日志与进度恢复；homelab分别复验Go、Node、Tasks PG18。完成条件：用户无需下载日志或人工脚本即可看出任务在等什么、耗时在哪里、是否有警告。
+- [x] **11.2 GitHub接入状态同步**（承接6.5/6.6c）：处理签名installation/installation_repositories生命周期事件、幂等同步和有界后台校正；区分仓库未启用、未授权、安装暂停、同步失败。失败刷新保留最后成功快照；只有完整权威快照才确认失权。撤权/暂停阻止新的调度和凭据领取，明确排队/运行中任务处置；保留历史，恢复授权可重新启用。单测/HTTP/SQLite与真实k3s覆盖重复事件、部分失败、撤权/恢复、重启和凭据边界；homelab用测试仓库完成授权新增/移除/恢复，不扩大业务权限。
+- [x] **11.3 按需准备执行依赖**：原prepareActMirrors遍历全部配置镜像，每个新引擎重拉；现已实现管理员显式镜像分组/选择及诊断，减少无关Go/Node/Rust/数据库镜像准备。动态shell/Testcontainers依赖不能仅靠扫描YAML准确推断，保留显式依赖配置和旧完整目录兼容。保持固定digest验证、独立BuildKit的镜像配置、取消/清理、Pod自有引擎；不共享Docker data或宿主socket、不新增空闲Docker服务、不靠扩大并发解决等待。Go大缓存恢复与公共Action归档按实际计时再优化。测试选组、缺失/损坏镜像、取消/重启和Docker Action/BuildKit/Testcontainers；homelab重跑相同固定源码，分别记录冷/热缓存及准备/执行时间。Tasks已通过的20分钟结果是Go缓存命中场景，不预先承诺任意冷缓存/公网故障都在20分钟内。
+- [x] **11.4 下一批业务CD**：已在原platform-web之外交付配置/依赖明确的无状态应用steam-admin-web（已核对其环境变量、API地址、Ingress与健康检查），复用现有target/native CD/独立GitOps路径，关联通过CI的固定SHA及镜像digest。先完成清单、测试和可检查的配置，再进行真实部署。验收成功发布、CI失败不投递、健康失败不视为部署成功、digest回滚/恢复及重启幂等；其他仓库按需求接续，不把镜像push当作已经部署。
+
+已知业务/外部问题单列处理：Tasks的Codecov仍缺token，需显式配置对应secret引用并验证远端接收，不能把原非阻断step成功当成上传成功；Admin Web历史1CPU按钮断言失败尚未确认唯一根因，3CPU重跑通过不等于根因修复，保留原断言做受限CPU复现与同步修正。它们不通过扩展YAML解析能力解决。
+
+兼容扩展仍保留10.3b/10.4b/10.5，后续出现真实workflow需求时逐项排期。优先考虑逐step timeout与跨job artifact的具体使用场景，再做远程reusable/调用matrix与动态matrix；schedule、job.container/services、OIDC和私有远程Actions同样不提前宣称支持。act执行期hashFiles已有上游workspace求值能力；native/控制面规划缺少对应能力，两者分开描述。
 
 阶段 1–3 已完成当前清单；1.8 / 3.6 有真实 homelab 部署/回滚记录，1.10 的代码、独立 k3s 和实际 homelab 磁盘验证均已通过。
 1.10 实现批次的 `make verify`、17 个 Testcontainers 场景全部通过；本批完成实际部署和真实 GitHub → CI → GitOps → Flux 复验，应用 HTTP 200 且版本/digest/revision 相符，完整结果见 status。
@@ -184,8 +193,8 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 - [x] 部署后健康与 etcd 告警复查、状态文档同步；事故处置阶段未恢复重型业务全链路。
 - [x] 修复嵌套Docker/Buildx绕过祖先配额、job CPU发现失真与大缓存256MiB限制；make verify、完整回归与最新CPU专项分别记录于status，已配套部署；包含CPU发现修正的新完整回归也已PASS1522.854秒（27必选叶场景，2可选fixture SKIP）。
 - [x] 修复大对象分块清单XML仍限32KiB的协议缺口；最大长度ID/分块额度回归、make verify、384MiB真实BuildKit专项及完整Testcontainers PASS1654.999秒（27必选、2可选SKIP），新supervisor已部署；具体业务结果仍单列。
-- [ ] Tasks保留原20分钟：旧1/2CPU冷编译超时及12Gi引擎临时空间驱逐分别留证；后续CPU request1/limit3、内存4Gi、act-data24Gi、worker-only和并发2。实际3CPU内核/Node可见性已验证，待原workflow、PG/Mongo、镜像和etcd健康完整验收。
-- [ ] 在受限预算下逐个恢复真实 workflow，观察共享 registry/Longhorn I/O；owner 已要求继续，当前 API 测试通过、镜像运行中，Tasks/PG/Rust 待完成。保持现有预算，不自动增加任务槽位。
+- [x] Tasks保留原20分钟：旧1/2CPU冷编译超时、12Gi驱逐及中间3CPU对照分别留证；最终Ubuntu request500m/limit4CPU、4Gi/24Gi、node2 worker与并发2下，22b8b32完整PG/CI/Zot发布/Checks验收成功，含准备11分43秒。owner已移除MongoDB；收尾etcd无告警，详情见status。
+- [x] 在受限预算下恢复首批9仓库固定提交的真实CI/发布语义及Tasks完整PG，Rust及Web CD另有完整验收；实际Pod已回收、业务Web/Flux健康、etcd无告警。保持既有预算，未增加任务槽位；不代表未来任意并发负载已验收。
 
 2026-10-28 03:50追加：Tasks f495原race阶段最终缺失终态ACK，保留interrupted；停止确认由等待容器文件系统删除改为杀停并复查运行状态，新增回归及含后台容器/256MiB层的真实k3s超时验证，自动测试中，尚未部署。homelab公共Go标准库编译缓存层构建中，仅优化冷启动；API/Tasks/PG/Mongo/Rust仍按原条件逐项验收，不提前勾选10.7b。
 
@@ -244,3 +253,16 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 
 2026-10-29 10:20追加：Tasks22b8b32真实CI06db20fc/image39fb828f及手动PG98b5a9fa全部成功；原172测试文件/断言和job1200秒保留，PG步骤4分26秒、步骤合计9分30秒、含Zot准备11分43秒，实际1个PG18、53包race通过。新发布f683f162的双标签/Action摘要/7个push Checks、独立PG Check及非root只读断网Atlas/迁移smoke通过。make verify、53包原short/race/coverage、完整PG及真实夹具隔离/成功/失败/取消Testcontainers通过；未修改Forgelet生产Go，当前完整k3s1830.233秒沿用本日09:00结果，不冒称重复执行。10.6e/10.6g/10.7b及本轮第三批完成，现有实际CD目标仍为platform-web；阶段10远程reusable/动态matrix/完整artifact v4等保留未完成。
+
+
+## 下一批：用于日常开发（2026-10-29，12.1 代码与自动验证完成，线上验证待执行）
+
+先以Admin Web形成实际开发闭环，不把更多通用Actions能力、多租户或HA作为使用前置条件。下列代码、自动测试、配置变更和真实验收分别完成后再勾选；不新增spec审批或基线门禁。
+
+- [ ] **12.1 开发分支缓存复用**：可信同仓库当前ref→PR base→默认分支回退读取；默认分支由服务端可信元数据确定。写入保持当前ref，禁止兄弟/子分支反向污染，保持repo/version/平台隔离。补单测、HTTP/SQLite集成和Testcontainers分支/PR回归，用实际新分支验证默认分支缓存命中。
+- [ ] **12.2 单一发布来源与普通PR闭环**：先把platform-web GitOps对齐现网digest，再移除Flux镜像覆盖，验证发布/回滚。以Admin Web做真实功能分支→PR Checks→合并→CI→Zot→GitOps→Flux；选择Forgelet作为试用仓库唯一日常CI/镜像发布来源，保留重新启用GitHub workflow的应急说明。当前托管workflow仍active，不提前称已切换。
+- [ ] **12.3 覆盖率与自身CI收口**：确认Codecov能识别两个私有仓库后，合并已准备的token/slug引用，验证实际上传回执，不能依赖非阻断步骤绿色。阶段11形成可追溯Git提交；Forgelet自身接入时，拆分verify/全量集成预算并验证Go1.27及嵌套Testcontainers的按需资源。不要求先接入全部业务CD。
+
+本轮已完成的只有token文件保护、两个仓库加密Secret配置、一次Tasks常规CI手动快照及就绪检查；Codecov返回Repository not found，业务YAML补丁未推送，上述12.1–12.3均未完成。
+
+12.1推进：已实现服务端跨ref读取回退，增加顺序/去重单测和HTTP+SQLite回归（PR base、lookup、前缀优先级、读写隔离、版本/仓库隔离、不可读对象不回退）。原native与act共用runtime blob端点；新增临时k3s多Pod+重启专项PASS324.970秒（两项叶场景，非全量），make verify完整通过（42前端单测、17浏览器）。普通业务分支/PR的homelab验证尚未执行，12.1保留未勾选。12.2/12.3仍待实施；不自动禁用GitHub workflow或移除现网Flux覆盖。

@@ -228,3 +228,25 @@ func TestActTemporaryPathsShareOnlyTheBoundedEngineVolume(t *testing.T) {
 		}
 	}
 }
+
+func TestImageGroupValidation(t *testing.T) {
+	ref := "registry.test/runner@sha256:" + strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		name   string
+		groups map[string][]string
+		valid  bool
+	}{
+		{"one", map[string][]string{"pg": {"postgres:18-alpine"}}, true},
+		{"explicit empty", map[string][]string{"none": {}}, true},
+		{"missing", map[string][]string{"pg": {"missing:1"}}, false},
+		{"duplicate", map[string][]string{"pg": {"postgres:18-alpine", "postgres:18-alpine"}}, false},
+		{"bad name", map[string][]string{"../pg": {}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := ActProfile{ImageMirrors: map[string]string{"postgres:18-alpine": ref}, ImageGroups: tc.groups}
+			if err := a.Validate(); (err == nil) != tc.valid {
+				t.Fatal(err)
+			}
+		})
+	}
+}

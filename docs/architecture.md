@@ -656,3 +656,40 @@ CPU指令能力也是执行profile与worker的契约。DuckDB可选兼容库不�
 ### 按摘要分发公共 CLI 工具
 
 Tasks 的 Atlas 安装按 owner 授权改用现有 Zot 的公开上游命名空间。一次性运维脚本先核对官方固定版本二进制 SHA256，再将原始二进制作为 OCI artifact layer 发布；OCI manifest 保留该 layer 引用，避免仅上传无引用 blob 被 GC。workflow 使用固定 blob 摘要 URL，安装前独立校验，使用普通 Actions cache 复用；损坏缓存重新获取，失败不覆盖现有安装。不放宽 Zot ACL，不把 registry 写凭据交给任务，不新增常驻服务、PVC 或工具下载网关。runtime Dockerfile 的 scratch 工具stage同样使用固定blob的ADD --checksum/--chmod，避免依赖旧业务镜像留存。代价是 Zot 中约120MiB的公共二进制及有界cache中的实际压缩归档；无公网回退，镜像失效必须明确失败。该方式是仓库授权修改的工具安装策略，不属于通用 GitHub Actions 下载代理，也不声称保持旧 YAML 字节不变。版本/平台、发布与实际流程验收见 tools/atlas 和 status。
+
+
+## 阶段11.1：结构化执行进度（已部署并完成首批真实仓库复验）
+
+最终状态仍以result和完整日志ACK为准。额外的progress事件流仅描述准备、执行步骤、收尾及标准注解，不含outputs/secret；使用同一短期workload identity与Pod UID，严格连续seq和SHA256重放去重。SQLite schema v7新增progress_events外键journal保存摘要，小型物化视图保存在job JSON；每attempt最多2048事件/64注解，history删除级联清理，run列表不返回详细step/注解。新增reserved_at/claimed_at区分排队与Kubernetes启动，旧历史缺失值保持未知。
+
+worker通过claim响应progress_version协商；网络响应丢失保留同一pending事件，取消后用有界独立context补ACK，再带last_progress_seq提交最终result。回连不会重新执行步骤；旧worker仍能提交原结果。act使用已有结构化日志字段stage/stepID/stepResult，嵌套Composite的子步骤不会提前结束外层步骤；不匹配人类可读的Success/Failure文本。注解单独解码、按同一secret mask脱敏、UTF-8有界截断；页面以普通文本展示。进度终态与最终result不一致时以result为准，保留完整错误诊断。
+
+v6→v7是显式数据库升级；旧v6程序拒绝新库。部署前保留原v6备份并验证副本迁移，回退旧程序须使用对应旧库恢复流程，不直接用旧二进制打开新库。具体自动测试和实际部署状态见status。
+
+
+## 阶段11.2：GitHub授权生命周期（已部署并完成真实撤权/恢复验收）
+
+授权快照使用SQLite metadata独立保存，不覆盖管理员启用开关。签名installation/installation_repositories仅作为同步提示；128个delivery ID/摘要记录处理重放和内容冲突，受影响installation先隔离。单个可取消后台循环与手动刷新共用可取消的串行入口，完整分页/total_count核对成功才发布新快照；失败保留上次成功列表和时间。同步期间的新提示递增generation，旧网络读取不能清除较新的隔离状态。重启后先隔离已知安装，后台重新确认；旧名称配置保留安装身份关联以识别暂停，身份提示不授予访问权。
+
+新运行、重跑、排队预留、Pod启动/claim、secret/token发放均检查授权；token生成后再次检查。unknown/pending阻止新任务和凭据，但不把网络失败当作撤权；claim和credentials返回可重试503，让原attempt在既有重连窗口内等待，确认失权才永久403。完整快照确认撤权、暂停、归档或权限不足后，排队任务取消，活跃任务只先记录cancel_requested/cancel_reason，沿用现有日志/结果ACK和Pod回收确认，不提前释放并发额度。历史与启用配置保留。管理API/UI单独展示授权状态、最近成功同步和失败信息；元数据中的delivery账本不返回UI。
+
+## 阶段11.3：显式镜像分组（已部署并完成真实冷热对照）
+
+管理员在act profile的image_groups中登记组名到image_mirrors别名列表；workflow管理配置用image_groups选择所需组，不扩展GitHub YAML或扫描shell猜依赖。以根workflow为单位为展开后的act子图取并集，native CD控制节点不准备Docker镜像。固定digest目录在准入时解析为Plan.image_mirrors快照并设置image_mirrors_selected；显式空组保持空选择，未配置组保持旧完整目录行为。
+
+启动时复制profile并将已选目录交给既有Pod自有引擎；不修改共享配置，不共享Docker data或宿主socket。重跑保留已固定镜像引用，引用被当前管理员目录撤销/替换时明确诊断，不静默漂移。BuildKit独立镜像源配置、镜像身份核对、取消及清理仍走原路径。动态Docker/Testcontainers依赖必须在管理员分组中明确登记；实际冷/热耗时、Tasks原20分钟冷缓存边界及main热缓存对照见status。
+
+## 阶段11.4：Admin Web 业务交付（已部署并完成正向/负向/回滚验收）
+
+`steam-admin-web` 的镜像入口通过同仓库 reusable CI 的结果控制 publisher，保留原check、32项单测、build及生成文件检查；publisher成功后才释放已有native CD节点。native节点向控制面投递固定源码SHA及已发布的镜像digest，不在Pod内持有GitOps写凭据。CI失败不创建publisher Pod或delivery；流水线成功与Flux实际健康是两个独立状态。
+
+应用镜像使用已有Zot中的独立 `forgelet/apps/steam-admin-web` 路径。新增publisher仅有该路径read/create/update，reader仅有该路径read；reader以 `steam/forgelet-admin-web-pull` 作为应用的imagePullSecret，私有凭据不写入GitOps。已有Service、Gateway HTTPRoute、API地址与应用资源预算保留，后端 `steam-admin-service:8080` 的实际ready endpoint已核对。
+
+GitOps复用 `forgelet-homelab-gitops`，新增 `apps/steam-admin-web`；复用现有GitRepository源，新增只管理该路径的 `forgelet-admin-web` Kustomization，prune=false/Orphan。其独立reconciler SA仅可修改指定Deployment并读取ReplicaSet；Forgelet observer仅可读取指定Deployment和Kustomization。没有新增常驻控制器、数据库或扩大其他应用的写权限。platform-web现有Kustomization的镜像覆盖设置保持独立。
+
+交付仍须同时核对最新GitOps revision、目标镜像digest及Deployment/Flux健康，旧副本仍提供HTTP200不能证明新镜像已部署。回滚复用既有expected digest检查和确定性回滚ID；已实测delivered回滚跨控制面重启的重复请求不产生第二个GitOps提交，随后恢复Flux、回到旧digest并再次恢复新digest。具体正向、失败与恢复证据分别记在status，不将手动负向fixture称为原始push。
+
+
+### 日常开发分支缓存（12.1）
+
+缓存服务端读取先查计划的当前完整ref，再查已验证PR事件的BaseRef，最后查已保存GitHub安装仓库目录的默认分支；去重后按ref顺序执行原精确key/restore-keys查找。只有ErrNotFound可扩大查找，其他I/O错误保持失败。运行时请求不能传入任意分支来改变授权范围，PUT始终写当前ref；native及act本地v1/v2 facade共用runtime blob端点，无新协议、数据库迁移、外部逐请求I/O或常驻组件。目录未就绪时保留当前ref读取，不猜测默认分支；目录更新后默认分支读取随权威元数据调整，工作负载仍不能读取其他仓库或兄弟分支的缓存。原仓库/版本/平台隔离、TTL、总预算和取消/ACK保持。

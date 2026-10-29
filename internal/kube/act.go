@@ -16,23 +16,40 @@ import (
 // ActProfile explicitly opts trusted jobs into a Pod-owned privileged engine.
 // The registry Secret is mounted only into the supervising executor.
 type ActProfile struct {
-	CacheObjectBytes int64             `yaml:"cache_object_bytes,omitempty" json:"cache_object_bytes,omitempty"`
-	CPURequest       string            `yaml:"cpu_request,omitempty" json:"cpu_request,omitempty"`
-	MemoryRequest    string            `yaml:"memory_request,omitempty" json:"memory_request,omitempty"`
-	CPULimit         string            `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
-	MemoryLimit      string            `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
-	BuildkitConfig   string            `yaml:"buildkit_config,omitempty" json:"buildkit_config,omitempty"`
-	ImageMirrors     map[string]string `yaml:"image_mirrors,omitempty" json:"image_mirrors,omitempty"`
-	RunnerImage      string            `yaml:"runner_image,omitempty" json:"runner_image,omitempty"`
-	InsecureRegistry bool              `yaml:"insecure_registry,omitempty" json:"insecure_registry,omitempty"`
-	EngineImage      string            `yaml:"engine_image" json:"engine_image"`
-	RegistrySecret   string            `yaml:"registry_secret" json:"registry_secret"`
-	DataLimit        string            `yaml:"data_limit" json:"data_limit"`
+	ImageGroups      map[string][]string `yaml:"image_groups,omitempty" json:"image_groups,omitempty"`
+	CacheObjectBytes int64               `yaml:"cache_object_bytes,omitempty" json:"cache_object_bytes,omitempty"`
+	CPURequest       string              `yaml:"cpu_request,omitempty" json:"cpu_request,omitempty"`
+	MemoryRequest    string              `yaml:"memory_request,omitempty" json:"memory_request,omitempty"`
+	CPULimit         string              `yaml:"cpu_limit,omitempty" json:"cpu_limit,omitempty"`
+	MemoryLimit      string              `yaml:"memory_limit,omitempty" json:"memory_limit,omitempty"`
+	BuildkitConfig   string              `yaml:"buildkit_config,omitempty" json:"buildkit_config,omitempty"`
+	ImageMirrors     map[string]string   `yaml:"image_mirrors,omitempty" json:"image_mirrors,omitempty"`
+	RunnerImage      string              `yaml:"runner_image,omitempty" json:"runner_image,omitempty"`
+	InsecureRegistry bool                `yaml:"insecure_registry,omitempty" json:"insecure_registry,omitempty"`
+	EngineImage      string              `yaml:"engine_image" json:"engine_image"`
+	RegistrySecret   string              `yaml:"registry_secret" json:"registry_secret"`
+	DataLimit        string              `yaml:"data_limit" json:"data_limit"`
 }
 
 const ActEngineImage = "docker:28.5.1-dind"
 
 func (a ActProfile) Validate() error {
+	if len(a.ImageGroups) > 32 {
+		return fmt.Errorf("at most 32 image groups are allowed")
+	}
+	for name, aliases := range a.ImageGroups {
+		if !run.ValidImageGroup(name) || len(aliases) > 16 {
+			return fmt.Errorf("invalid image group %q", name)
+		}
+		seen := map[string]bool{}
+		for _, alias := range aliases {
+			if _, ok := a.ImageMirrors[alias]; !ok || seen[alias] {
+				return fmt.Errorf("image group %q has unknown or duplicate alias %q", name, alias)
+			}
+			seen[alias] = true
+		}
+	}
+
 	if a.CacheObjectBytes != 0 && (a.CacheObjectBytes < 2048 || a.CacheObjectBytes > blob.MaxCacheArchive) {
 		return fmt.Errorf("act cache_object_bytes must be 2048..2GiB (0 uses 256MiB)")
 	}

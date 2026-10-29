@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
+	"time"
 
 	"fmt"
 
@@ -66,6 +68,19 @@ func validateGraph(runID string, plans []run.Plan) error {
 // Reserve with zero capacity still reconciles conditions, failure propagation
 // and concurrency cancellation, without moving any queued job to starting.
 func (s *Store) Reserve(ctx context.Context, maxParallel int) ([]run.Job, error) {
+	return s.reserveAuthorized(ctx, maxParallel, nil)
+}
+
+// ReserveAuthorized leaves unconfirmed repositories queued without taking a
+// slot; an empty allowlist pauses all new execution, not cancellation cleanup.
+func (s *Store) ReserveAuthorized(ctx context.Context, maxParallel int, repositories []string) ([]run.Job, error) {
+	allowed := make(map[string]bool, len(repositories))
+	for _, repo := range repositories {
+		allowed[strings.ToLower(repo)] = true
+	}
+	return s.reserveAuthorized(ctx, maxParallel, allowed)
+}
+func (s *Store) reserveAuthorized(ctx context.Context, maxParallel int, allowed map[string]bool) ([]run.Job, error) {
 	if maxParallel < 0 {
 		return nil, fmt.Errorf("parallelism must be positive: %w", ErrLimit)
 	}
@@ -91,6 +106,10 @@ func (s *Store) Reserve(ctx context.Context, maxParallel int) ([]run.Job, error)
 				return nil
 			}
 			for _, row := range page {
+				afterTime, afterID = row.created, row.id
+				if allowed != nil && !allowed[strings.ToLower(row.repository)] {
+					continue
+				}
 				jobs, err := queryJobs(ctx, tx, "SELECT body FROM jobs WHERE run_id=? ORDER BY created_at,id", row.id)
 				if err != nil {
 					return err
@@ -112,12 +131,13 @@ func (s *Store) Reserve(ctx context.Context, maxParallel int) ([]run.Job, error)
 }
 
 type queuedRun struct {
-	id      string
-	created int64
+	repository string
+	id         string
+	created    int64
 }
 
 func queuedRunPage(ctx context.Context, tx *sql.Tx, afterTime int64, afterID string) ([]queuedRun, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,created_at FROM runs
+	rows, err := tx.QueryContext(ctx, `SELECT id,created_at,COALESCE(json_extract(body,'$.repository'),'') FROM runs
  WHERE (created_at>? OR (created_at=? AND id>?))
  AND EXISTS(SELECT 1 FROM jobs WHERE jobs.run_id=runs.id AND state='queued')
  ORDER BY created_at,id LIMIT 64`, afterTime, afterTime, afterID)
@@ -128,7 +148,7 @@ func queuedRunPage(ctx context.Context, tx *sql.Tx, afterTime int64, afterID str
 	var page []queuedRun
 	for rows.Next() {
 		var row queuedRun
-		if err := rows.Scan(&row.id, &row.created); err != nil {
+		if err := rows.Scan(&row.id, &row.created, &row.repository); err != nil {
 			return nil, fmt.Errorf("scan queued run: %w", err)
 		}
 		page = append(page, row)
@@ -187,6 +207,7 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 					continue
 				}
 				job.State = run.Starting
+				job.ReservedAt = time.Now().UTC()
 				slots--
 			} else {
 				continue

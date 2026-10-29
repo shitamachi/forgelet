@@ -2374,3 +2374,62 @@ select {
 .repository-search input:focus-visible {
   outline: none;
 }
+
+.execution-progress {
+  margin: 16px 0;
+  padding: 0 18px;
+}
+.execution-current {
+  color: var(--ink);
+  font-weight: 600;
+}
+.execution-timeline {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+.execution-timeline > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  color: var(--muted);
+}
+.execution-timeline > div[aria-current='step'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.execution-timeline dd {
+  margin: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.execution-annotations {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.execution-annotations summary {
+  font-weight: 600;
+  color: #825708;
+}
+.execution-annotations ul {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+.execution-annotations li {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.execution-annotations li p {
+  white-space: pre-wrap;
+}
+.execution-annotations .annotation-error {
+  color: #a52f46;
+}
+.step-elapsed {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

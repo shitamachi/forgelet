@@ -83,14 +83,16 @@ func (m *masker) consume(data []byte, final bool) []byte {
 }
 
 type logSink struct {
-	mu      sync.Mutex
-	stepID  string
-	mask    *masker
-	emit    func(string, []byte) error
-	cancel  context.CancelFunc
-	line    []byte
-	err     error
-	partial bool
+	annotation     func(string, string) error
+	annotationStop string
+	mu             sync.Mutex
+	stepID         string
+	mask           *masker
+	emit           func(string, []byte) error
+	cancel         context.CancelFunc
+	line           []byte
+	err            error
+	partial        bool
 }
 
 func (s *logSink) Write(data []byte) (int, error) {
@@ -131,6 +133,26 @@ func (s *logSink) Write(data []byte) (int, error) {
 }
 
 func (s *logSink) processLine() {
+	if !s.partial && s.annotation != nil {
+		text := strings.TrimSuffix(strings.TrimSuffix(string(s.line), "\n"), "\r")
+		if s.annotationStop != "" {
+			if text == "::"+s.annotationStop+"::" {
+				s.annotationStop = ""
+			}
+		} else if strings.HasPrefix(text, "::stop-commands::") {
+			s.annotationStop = strings.TrimPrefix(text, "::stop-commands::")
+		} else if strings.HasPrefix(text, "::") {
+			header, body, ok := strings.Cut(text[2:], "::")
+			kind, _, _ := strings.Cut(header, " ")
+			if ok && (kind == "notice" || kind == "warning" || kind == "error") && body != "" {
+				body = strings.NewReplacer("%0D", "\r", "%0A", "\n", "%25", "%").Replace(body)
+				if err := s.annotation(kind, redactAnnotation(body, s.mask)); err != nil {
+					s.fail(err)
+				}
+			}
+		}
+	}
+
 	if !s.partial && bytes.HasPrefix(s.line, []byte("::add-mask::")) {
 		value := strings.TrimSuffix(strings.TrimSuffix(string(s.line[len("::add-mask::"):]), "\n"), "\r")
 		value = strings.NewReplacer("%0D", "\r", "%0A", "\n", "%25", "%").Replace(value)

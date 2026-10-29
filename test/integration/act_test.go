@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/shitamachi/forgelet/internal/run"
+	"github.com/shitamachi/forgelet/internal/server"
 )
 
 func testActJobs(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint, image string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
@@ -45,10 +46,21 @@ func testActJobs(t *testing.T, ctx context.Context, cluster testcontainers.Conta
 			must(t, err)
 			restartServer(t, ctx, client, httpClient, endpoint)
 		}()
-		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  actions:\n    image: %s\n    act:\n      cpu_request: 500m\n      cpu_limit: '1'\n      memory_request: 512Mi\n      memory_limit: 2Gi\n      runner_image: %s\n      insecure_registry: true\n      registry_secret: forgelet-registry\n      image_mirrors:\n        forgelet-mirror-probe:stage10d: %s\n    memory_limit: 1Gi\n    node_selector: {kubernetes.io/os: linux}\n", image, runner, mirror), 1)
+		cm.Data["forgelet.yaml"] = strings.Replace(previous, "profiles:\n", fmt.Sprintf("profiles:\n  actions:\n    image: %s\n    act:\n      cpu_request: 500m\n      cpu_limit: '1'\n      memory_request: 512Mi\n      memory_limit: 2Gi\n      runner_image: %s\n      insecure_registry: true\n      registry_secret: forgelet-registry\n      image_groups:\n        fixture: [forgelet-mirror-probe:stage10d]\n      image_mirrors:\n        forgelet-mirror-probe:stage10d: %s\n        forgelet-unused-probe:stage11: %s\n    memory_limit: 1Gi\n    node_selector: {kubernetes.io/os: linux}\n", image, runner, mirror, mirror), 1)
 		_, err = client.CoreV1().ConfigMaps("forgelet").Update(ctx, cm, metav1.UpdateOptions{})
 		must(t, err)
 		restartServer(t, ctx, client, httpClient, endpoint)
+		var originalManagement server.Management
+		must(t, json.Unmarshal(request(t, "GET", "/api/management", nil, 200), &originalManagement))
+		selectedManagement := originalManagement
+		selectedManagement.Workflows = append(append([]server.WorkflowConfig(nil), originalManagement.Workflows...), server.WorkflowConfig{Repository: "test/project", Path: ".github/workflows/manual.yml", Enabled: true, ImageGroups: []string{"fixture"}})
+		request(t, "PUT", "/api/management", selectedManagement, 200)
+		defer func() {
+			var current server.Management
+			must(t, json.Unmarshal(request(t, "GET", "/api/management", nil, 200), &current))
+			originalManagement.Version = current.Version
+			request(t, "PUT", "/api/management", originalManagement, 200)
+		}()
 		secret := "act-split-private-secret"
 		request(t, "PUT", "/api/repositories/test/project/secrets/TOKEN", map[string]string{"value": secret}, 200)
 		defer request(t, "DELETE", "/api/repositories/test/project/secrets/TOKEN", nil, 200)
@@ -188,6 +200,7 @@ jobs:
             dd if=/dev/urandom of=cache/sdk-block bs=1048576 count=65
             sha256sum cache/sdk-block > cache/checksum
           fi
+          printf '::warning::fixture-warning-%s\n' "$TOKEN"
           printf 'formal-%s\n' act-ready
           printf '%2048s\n' ''
           while [ ! -f /workspace/repository/continue ]; do sleep 1; done
@@ -228,10 +241,27 @@ jobs:
 		if before.PodUID == "" || before.Plan.Kernel != "act" || len(before.Plan.ActionPins["actions/cache@v4"]) != 40 {
 			t.Fatal("missing immutable Action snapshot", before)
 		}
+		if !before.Plan.ImageMirrorsSelected || len(before.Plan.ImageMirrors) != 1 || before.Plan.ImageMirrors["forgelet-mirror-probe:stage10d"] != mirror {
+			t.Fatal("image selection missing from durable plan")
+		}
+		clusterCommand(t, ctx, cluster, "kubectl", "exec", "-n", "forgelet", before.PodName, "-c", "act-engine", "--", "sh", "-ec", `docker --host=unix:///run/forgelet-act/docker.sock image inspect forgelet-mirror-probe:stage10d >/dev/null; if docker --host=unix:///run/forgelet-act/docker.sock image inspect forgelet-unused-probe:stage11 >/dev/null 2>&1; then echo 'unselected image was prepared'; exit 1; fi`)
+		if before.Progress == nil || before.Progress.Phase != "executing" || len(before.Progress.Annotations) != 1 || strings.Contains(before.Progress.Annotations[0].Message, secret) || !strings.Contains(before.Progress.Annotations[0].Message, "***") {
+			t.Fatal("act live progress/annotation unavailable", before.Progress)
+		}
+		observedRunning := false
+		for _, step := range before.Progress.Steps {
+			observedRunning = observedRunning || step.State == run.Running
+		}
+		if !observedRunning {
+			t.Fatal("all act steps remain pending before terminal")
+		}
 		restartServer(t, ctx, client, httpClient, endpoint)
 		after := actJob(get(t, item.ID))
 		if after.PodUID != before.PodUID || after.State != run.Running || after.Plan.ActionPins["actions/cache@v4"] != before.Plan.ActionPins["actions/cache@v4"] {
 			t.Fatal("act attempt was replaced on restart", after)
+		}
+		if after.Progress == nil || after.Progress.Seq < before.Progress.Seq {
+			t.Fatal("act progress lost across restart")
 		}
 		// Touch only the supervisor's Pod-owned workspace, using its original UID.
 		pod, err := client.CoreV1().Pods("forgelet").Get(ctx, before.PodName, metav1.GetOptions{})
@@ -273,6 +303,10 @@ echo bounded-nested-cgroup-ready
 		result := waitDone(item)
 		if actJob(result).Result.Outputs["answer"] != "real-act" || strings.Contains(logs(item), secret) || !strings.Contains(logs(item), "node24-post-ran") {
 			t.Fatal("outputs or masking", result, logs(item))
+		}
+		finished := actJob(result)
+		if finished.Progress == nil || finished.Progress.Phase != "cleanup" || finished.Result.LastProgressSeq != finished.Progress.Seq {
+			t.Fatal("act final progress ACK missing", finished)
 		}
 		warmSource := strings.Replace(source, "while [ ! -f /workspace/repository/continue ]; do sleep 1; done", "test '${{ steps.cache.outputs.cache-hit }}' = true", 1)
 		warm := createCall(warmSource)

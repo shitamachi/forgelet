@@ -110,6 +110,12 @@ type CallInput struct {
 	Value    any    `json:"value"`
 }
 type Plan struct {
+	// Explicitly selected mirrors are a fixed administrator-owned snapshot.
+	ImageMirrorsSelected bool              `json:"image_mirrors_selected,omitempty"`
+	ImageMirrors         map[string]string `json:"image_mirrors,omitempty"`
+
+	// ProgressVersion is negotiated in claim responses, never inferred by a worker.
+	ProgressVersion    int                  `json:"progress_version,omitempty"`
 	PackageTokenSecret string               `json:"package_token_secret,omitempty"`
 	GitHubAPIURL       string               `json:"github_api_url,omitempty"`
 	ActionPins         map[string]string    `json:"action_pins,omitempty"`
@@ -165,23 +171,27 @@ type Plan struct {
 }
 
 type Job struct {
-	CheckError      string    `json:"check_error,omitempty"`
-	RuntimeFailures int       `json:"runtime_failures,omitempty"`
-	RuntimeError    string    `json:"runtime_error,omitempty"`
-	RuntimeRetryAt  time.Time `json:"runtime_retry_at,omitzero"`
-	LogsExpired     bool      `json:"logs_expired,omitempty"`
-	ID              string    `json:"id"`
-	RunID           string    `json:"run_id"`
-	Name            string    `json:"name"`
-	Profile         string    `json:"profile"`
-	PodName         string    `json:"pod_name"`
-	PodUID          string    `json:"pod_uid,omitempty"`
-	State           State     `json:"state"`
-	CancelRequested bool      `json:"cancel_requested"`
-	Plan            Plan      `json:"plan"`
-	Result          *Result   `json:"result,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	CancelReason    string             `json:"cancel_reason,omitempty"`
+	ReservedAt      time.Time          `json:"reserved_at,omitzero"`
+	ClaimedAt       time.Time          `json:"claimed_at,omitzero"`
+	Progress        *ExecutionProgress `json:"progress,omitempty"`
+	CheckError      string             `json:"check_error,omitempty"`
+	RuntimeFailures int                `json:"runtime_failures,omitempty"`
+	RuntimeError    string             `json:"runtime_error,omitempty"`
+	RuntimeRetryAt  time.Time          `json:"runtime_retry_at,omitzero"`
+	LogsExpired     bool               `json:"logs_expired,omitempty"`
+	ID              string             `json:"id"`
+	RunID           string             `json:"run_id"`
+	Name            string             `json:"name"`
+	Profile         string             `json:"profile"`
+	PodName         string             `json:"pod_name"`
+	PodUID          string             `json:"pod_uid,omitempty"`
+	State           State              `json:"state"`
+	CancelRequested bool               `json:"cancel_requested"`
+	Plan            Plan               `json:"plan"`
+	Result          *Result            `json:"result,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
 }
 
 type StepResult struct {
@@ -193,11 +203,12 @@ type StepResult struct {
 }
 
 type Result struct {
-	Outputs    map[string]string `json:"outputs,omitempty"`
-	State      State             `json:"state"`
-	Error      string            `json:"error,omitempty"`
-	Steps      []StepResult      `json:"steps,omitempty"`
-	LastLogSeq int64             `json:"last_log_seq"`
+	LastProgressSeq int64             `json:"last_progress_seq,omitempty"`
+	Outputs         map[string]string `json:"outputs,omitempty"`
+	State           State             `json:"state"`
+	Error           string            `json:"error,omitempty"`
+	Steps           []StepResult      `json:"steps,omitempty"`
+	LastLogSeq      int64             `json:"last_log_seq"`
 }
 
 type Log struct {

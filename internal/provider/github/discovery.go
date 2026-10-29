@@ -79,7 +79,7 @@ func (c *Client) Discover(ctx context.Context) (Catalog, error) {
 			return fail(err)
 		}
 		for _, inst := range batch {
-			if inst.ID <= 0 || seenInst[inst.ID] || !appSlug.MatchString(inst.Account.Login) {
+			if inst.ID <= 0 || inst.ID > 9007199254740991 || seenInst[inst.ID] || !appSlug.MatchString(inst.Account.Login) {
 				return fail(errors.New("invalid installation metadata"))
 			}
 			seenInst[inst.ID] = true
@@ -100,6 +100,7 @@ func (c *Client) Discover(ctx context.Context) (Catalog, error) {
 			if e != nil {
 				return fail(e)
 			}
+			expectedTotal, received := -1, 0
 			for rp := 1; ; rp++ {
 				if rp > 100 {
 					return fail(errors.New("repository listing limit exceeded"))
@@ -110,6 +111,14 @@ func (c *Client) Discover(ctx context.Context) (Catalog, error) {
 				}
 				if e = c.request(ctx, http.MethodGet, "/installation/repositories", pageQuery(rp), token, nil, &result); e != nil {
 					return fail(e)
+				}
+				if result.Total < 0 || result.Total > 10000 || len(result.Repositories) > 100 || expectedTotal >= 0 && result.Total != expectedTotal {
+					return fail(errors.New("incomplete or changing repository listing; refresh again"))
+				}
+				expectedTotal = result.Total
+				received += len(result.Repositories)
+				if received > expectedTotal || len(result.Repositories) < 100 && received != expectedTotal {
+					return fail(errors.New("incomplete repository listing; refresh again"))
 				}
 				for _, repo := range result.Repositories {
 					if repo.ID <= 0 || repo.ID > 9007199254740991 || !validRepository(repo.Name) || seenRepo[repo.ID] {

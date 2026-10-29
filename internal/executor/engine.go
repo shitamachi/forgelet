@@ -28,6 +28,7 @@ import (
 // Options supplies the execution workspace and scoped credentials. CloneToken is
 // passed only to git child processes and is never persisted in a git config file.
 type Options struct {
+	Progress              func(context.Context, run.ProgressEvent) error
 	ActCPUCount           int64
 	ActCacheObjectBytes   int64
 	ActPreparationTimeout time.Duration
@@ -202,7 +203,16 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 	}
 	env = jobEnv
 	actions := &actionSession{workspace: workspace, meta: meta, opts: opts, mask: mask, sources: map[string]string{}}
-	defer func() { actions.finish(jobCtx, env, &result, &returnErr) }()
+	defer func() {
+		progressErr := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "phase", Phase: "cleanup"})
+		actions.finish(jobCtx, env, &result, &returnErr)
+		if progressErr != nil && jobCtx.Err() == nil {
+			returnErr = errors.Join(returnErr, progressErr)
+		}
+	}()
+	if err := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "phase", Phase: "executing"}); err != nil {
+		return result, err
+	}
 	result.State = run.Succeeded
 	failed := false
 	outputBytes := 0
@@ -234,6 +244,9 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 			return result, fmt.Errorf("evaluate step condition: %w", err)
 		}
 		if !shouldRun {
+			if err := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "step", StepID: step.ID, State: run.Skipped}); err != nil {
+				return result, err
+			}
 			skipped := run.StepResult{ID: step.ID, ExitCode: 0, State: run.Skipped, Outcome: run.Skipped}
 			result.Steps = append(result.Steps, skipped)
 			stepResults[step.ID] = skipped
@@ -249,6 +262,9 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 			return result, err
 		}
 
+		if err := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "step", StepID: step.ID, State: run.Running}); err != nil {
+			return result, err
+		}
 		stepCtx, stepCancel := context.WithCancel(jobCtx)
 		if step.TimeoutSeconds > 0 {
 			stepCancel()
@@ -259,6 +275,7 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 			emit = func(id string, data []byte) error { return opts.ContextLog(stepCtx, id, data) }
 		}
 		sink := &logSink{stepID: step.ID, mask: mask, emit: emit, cancel: stepCancel}
+		attachAnnotations(stepCtx, opts, sink)
 		var exitCode int
 		if step.Action != nil {
 			exitCode, err = actions.invoke(stepCtx, plan, step, stepEnv, env, files, sink, outputs, stepResults, 0, conditionCtx)
@@ -326,6 +343,10 @@ func Execute(ctx context.Context, plan run.Plan, opts Options) (result run.Resul
 		}
 		if state == run.Failed && err == nil && exitCode > 0 && allowFailure {
 			stepResult.State = run.Succeeded
+		}
+		if progressErr := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "step", StepID: step.ID, State: stepResult.State}); progressErr != nil && jobCtx.Err() == nil {
+			result.State = run.Failed
+			return result, progressErr
 		}
 		result.Steps = append(result.Steps, stepResult)
 		stepResults[step.ID] = stepResult

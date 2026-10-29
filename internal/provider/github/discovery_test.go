@@ -78,7 +78,7 @@ func TestDiscoverPaginationAndMetadataScope(t *testing.T) {
 	}
 }
 func TestDiscoverRejectsPartialOrInvalidSnapshots(t *testing.T) {
-	for _, mode := range []string{"wrong-app", "bad-slug", "partial", "duplicate", "bad-repo", "bad-installation"} {
+	for _, mode := range []string{"wrong-app", "bad-slug", "partial", "duplicate", "bad-repo", "bad-installation", "truncated-total", "negative-total"} {
 		t.Run(mode, func(t *testing.T) {
 			client, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -111,7 +111,14 @@ func TestDiscoverRejectsPartialOrInvalidSnapshots(t *testing.T) {
 					if mode == "duplicate" {
 						repos = append(repos, repos[0])
 					}
-					writeJSON(t, w, map[string]any{"repositories": repos})
+					total := len(repos)
+					if mode == "truncated-total" {
+						total = 101
+					}
+					if mode == "negative-total" {
+						total = -1
+					}
+					writeJSON(t, w, map[string]any{"total_count": total, "repositories": repos})
 				default:
 					writeToken(t, w)
 				}

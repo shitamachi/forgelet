@@ -18,6 +18,8 @@ __pycache__/
 # local dev only
 .env
 *.local.yaml
+/codecov.token
+/codecov-upload.token
 
 # local persistent server data
 /data/

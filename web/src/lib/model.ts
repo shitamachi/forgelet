@@ -68,8 +68,37 @@ export function jobLayers(jobs: Job[]): Job[][] {
   return result
 }
 export function stepState(job: Job, stepID: string): RunState | 'pending' {
-  return job.result?.steps?.find((s) => s.id === stepID)?.state ?? 'pending'
+  const final = job.result?.steps?.find((s) => s.id === stepID)?.state
+  if (final) return final
+  const observed = job.progress?.steps?.find((s) => s.id === stepID)?.state
+  if (!observed) return 'pending'
+  if (observed === 'running' && !isActive(job.state)) {
+    return job.state === 'success' ? 'pending' : job.state
+  }
+  return observed
 }
+export function elapsed(start?: string, end?: string, now = Date.now()): string {
+  if (!start) return '—'
+  const from = Date.parse(start),
+    to = end ? Date.parse(end) : now
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return '—'
+  const seconds = Math.floor((to - from) / 1000)
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`
+}
+export function jobStage(job: Job): string {
+  if (job.state === 'queued') return '等待调度'
+  if (job.state === 'starting') return job.pod_uid ? '等待 Kubernetes 启动' : '正在创建执行环境'
+  if (!isActive(job.state)) return '执行已结束'
+  return (
+    (
+      { preparing: '正在准备镜像与工具', executing: '正在执行步骤', cleanup: '正在收尾' } as Record<
+        string,
+        string
+      >
+    )[job.progress?.phase ?? ''] ?? '执行器已启动，等待进度'
+  )
+}
+
 export function mergeLogs(previous: LogChunk[], incoming: LogChunk[]): LogChunk[] {
   const cursor = previous.at(-1)?.seq ?? 0
   return [...previous, ...incoming.filter((x) => x.seq > cursor)].sort((a, b) => a.seq - b.seq)

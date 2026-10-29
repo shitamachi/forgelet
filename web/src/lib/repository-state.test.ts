@@ -95,3 +95,23 @@ describe('focused repository discovery', () => {
   it('returns an empty list for an absent search', () =>
     expect(repositoryList(repos, 'absent', 'all')).toEqual([]))
 })
+
+describe('durable authorization state', () => {
+  it('retains confirmed access during a failed ordinary refresh', () => {
+    const state = repositoryState(registered, catalog(), true, { state: 'authorized' })
+    expect(state.key).toBe('ready')
+    expect(state.repository?.id).toBe(1)
+  })
+  it.each(['pending', 'not_authorized', 'suspended', 'renamed'] as const)(
+    'does not let an old catalog override %s',
+    (state) => {
+      const result = repositoryState(registered, catalog(), false, {
+        state,
+        remote_name: 'owner/new',
+      })
+      expect(result.key).toBe('attention')
+      expect(result.repository).toBeUndefined()
+      expect(registered.enabled).toBe(true)
+    },
+  )
+})

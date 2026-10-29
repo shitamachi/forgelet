@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -88,6 +89,17 @@ func (s *Server) runtimeBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e, f, err := s.cfg.Blobs.Get(scope, key, prefixes, s.now())
+	if kind == "cache" {
+		// A miss is the only reason to broaden the lookup. Corrupt/unreadable
+		// objects must remain errors, rather than silently selecting another ref.
+		for _, ref := range s.cacheReadRefs(job.Plan)[1:] {
+			if !errors.Is(err, blob.ErrNotFound) {
+				break
+			}
+			scope.Namespace = ref
+			e, f, err = s.cfg.Blobs.Get(scope, key, prefixes, s.now())
+		}
+	}
 	if err != nil {
 		blobError(w, err)
 		return
@@ -140,4 +152,37 @@ func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("Content-Length", strconv.FormatInt(e.Size, 10))
 	_, _ = io.Copy(w, f)
+}
+
+// cacheReadRefs uses only the persisted plan and the control plane's GitHub
+// catalog. Workload query parameters never select a repository or branch.
+// Within each ref, exact keys and then ordered restore prefixes are searched.
+func (s *Server) cacheReadRefs(plan run.Plan) []string {
+	refs := []string{plan.Ref}
+	appendBranch := func(branch string) {
+		if branch == "" || strings.HasPrefix(branch, "refs/") || strings.ContainsAny(branch, "\x00\r\n") {
+			return
+		}
+		ref := "refs/heads/" + branch
+		for _, existing := range refs {
+			if existing == ref {
+				return
+			}
+		}
+		refs = append(refs, ref)
+	}
+	// BaseRef is populated by the verified GitHub PR event, not manual input.
+	if plan.EventName == "pull_request" && strings.HasPrefix(plan.Ref, "refs/pull/") {
+		appendBranch(plan.BaseRef)
+	}
+	snapshot := s.authorization.Load()
+	if snapshot != nil && snapshot.Catalog != nil {
+		for _, repo := range snapshot.Catalog.Repositories {
+			if strings.EqualFold(repo.Name, plan.Repository) {
+				appendBranch(repo.DefaultBranch)
+				break
+			}
+		}
+	}
+	return refs
 }

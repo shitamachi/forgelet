@@ -13,13 +13,21 @@ import (
 // Credentials, encryption keys and registry Secret references stay server-side.
 func (s *Server) consoleConfig(w http.ResponseWriter, _ *http.Request) {
 	type profile struct {
-		Name  string `json:"name"`
-		Image string `json:"image"`
-		Build bool   `json:"build"`
+		ImageGroups []string `json:"image_groups,omitempty"`
+		Name        string   `json:"name"`
+		Image       string   `json:"image"`
+		Build       bool     `json:"build"`
 	}
 	profiles := make([]profile, 0, len(s.cfg.Profiles))
 	for name, p := range s.cfg.Profiles {
-		profiles = append(profiles, profile{Name: name, Image: p.Image, Build: p.Build != nil})
+		groups := []string{}
+		if p.Act != nil {
+			for group := range p.Act.ImageGroups {
+				groups = append(groups, group)
+			}
+			sort.Strings(groups)
+		}
+		profiles = append(profiles, profile{Name: name, Image: p.Image, Build: p.Build != nil, ImageGroups: groups})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
 	managed := s.management()

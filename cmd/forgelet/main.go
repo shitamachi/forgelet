@@ -331,6 +331,12 @@ func serve(ctx context.Context, path string) error {
 	if err := app.InitAuth(ctx); err != nil {
 		return err
 	}
+	// Stop and join the single authorization reader before the store is closed,
+	// including HTTP startup failures and shutdown, not just signal cancellation.
+	authorizationCtx, stopAuthorization := context.WithCancel(ctx)
+	authorizationDone := make(chan struct{})
+	go func() { defer close(authorizationDone); _ = app.RunGitHubAuthorization(authorizationCtx) }()
+	defer func() { stopAuthorization(); <-authorizationDone }()
 	httpServer := &http.Server{Addr: cfg.Listen, Handler: app.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	// WriteTimeout is intentionally unset for resumable SSE streams.
 	stopped := make(chan error, 1)

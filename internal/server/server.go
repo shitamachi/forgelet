@@ -38,6 +38,8 @@ import (
 )
 
 type Store interface {
+	GitHubAuthorization(context.Context) ([]byte, error)
+	SaveGitHubAuthorization(context.Context, []byte, []byte) error
 	Management(context.Context) ([]byte, error)
 	SaveManagement(context.Context, []byte, []byte) error
 	PutSetting(context.Context, string, string, string, []byte) error
@@ -53,6 +55,8 @@ type Store interface {
 	GetRun(context.Context, string) (run.Run, error)
 	GetJob(context.Context, string) (run.Job, error)
 	Reserve(context.Context, int) ([]run.Job, error)
+	ReserveAuthorized(context.Context, int, []string) ([]run.Job, error)
+	CancelRepository(context.Context, string, string) (int, error)
 	RecordPod(context.Context, string, string) error
 	Claim(context.Context, string, string) (run.Plan, error)
 	Finish(context.Context, string, string, run.Result) error
@@ -60,6 +64,7 @@ type Store interface {
 	CancelRun(context.Context, string) error
 	Active(context.Context) ([]run.Job, error)
 	AppendLog(context.Context, string, string, run.Log) error
+	AppendProgress(context.Context, string, string, run.ProgressEvent) error
 	Logs(context.Context, string, int64) ([]run.Log, error)
 	PendingChecks(context.Context, ...time.Time) ([]run.Check, error)
 	SaveCheck(context.Context, string, int64, run.State) error
@@ -113,16 +118,20 @@ type Config struct {
 }
 
 type Server struct {
-	auth            *authRuntime
-	managed         atomic.Pointer[Management]
-	cfg             Config
-	store           Store
-	runtime         Runtime
-	provider        Provider
-	tickMu          sync.Mutex
-	now             func() time.Time
-	nextMaintenance time.Time
-	disk            *diskGuard
+	authorization        atomic.Pointer[GitHubAuthorization]
+	authorizationMu      sync.Mutex
+	authorizationRefresh chan struct{}
+	authorizationWake    chan struct{}
+	auth                 *authRuntime
+	managed              atomic.Pointer[Management]
+	cfg                  Config
+	store                Store
+	runtime              Runtime
+	provider             Provider
+	tickMu               sync.Mutex
+	now                  func() time.Time
+	nextMaintenance      time.Time
+	disk                 *diskGuard
 }
 
 func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, error) {
@@ -206,7 +215,7 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 		}
 	}
 	cfg.Profiles = cloneProfiles(cfg.Profiles)
-	return &Server{cfg: cfg, store: store, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace)}, nil
+	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace)}, nil
 }
 
 func cloneProfiles(in map[string]kube.Profile) map[string]kube.Profile {
@@ -215,6 +224,10 @@ func cloneProfiles(in map[string]kube.Profile) map[string]kube.Profile {
 		if v.Act != nil {
 			copy := *v.Act
 			copy.ImageMirrors = maps.Clone(v.Act.ImageMirrors)
+			copy.ImageGroups = make(map[string][]string, len(v.Act.ImageGroups))
+			for name, aliases := range v.Act.ImageGroups {
+				copy.ImageGroups[name] = slices.Clone(aliases)
+			}
 			v.Act = &copy
 		}
 		if v.Build != nil {
@@ -269,6 +282,8 @@ func (s *Server) Handler() http.Handler {
 			}
 			respond(w, items, err)
 		})
+		r.Get("/api/github/authorization", s.githubAuthorizationStatus)
+		r.Post("/api/github/authorization/refresh", s.refreshGitHubAuthorizationHTTP)
 		r.Get("/api/runs/{runID}", func(w http.ResponseWriter, r *http.Request) {
 			item, err := s.store.GetRun(r.Context(), chi.URLParam(r, "runID"))
 			respond(w, item, err)
@@ -296,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/claim", s.claim)
 		r.Get("/credentials", s.credentials)
 		r.Post("/logs", s.appendLog)
+		r.Post("/progress", s.appendProgress)
 		r.Post("/result", s.result)
 		r.Get("/control", s.control)
 		r.Put("/blobs/{kind}", s.runtimeBlob)
@@ -368,6 +384,10 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 	eventName := r.Header.Get("X-GitHub-Event")
 	if eventName == "ping" {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "pong"})
+		return
+	}
+	if eventName == "installation" || eventName == "installation_repositories" {
+		s.githubLifecycle(w, r, eventName, body)
 		return
 	}
 	if eventName != "push" && eventName != "pull_request" {
@@ -542,6 +562,9 @@ func (s *Server) createRunFiles(ctx context.Context, e run.Event, path string, s
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return run.Run{}, err
 	}
+	if err := s.requireRepositoryAccess(e.Repository, e.InstallationID); err != nil {
+		return run.Run{}, err
+	}
 	vars, err := s.store.Settings(ctx, e.Repository, "vars")
 	if err != nil {
 		return run.Run{}, err
@@ -586,6 +609,9 @@ func (s *Server) createRunFiles(ctx context.Context, e run.Event, path string, s
 		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	if err := s.validateProfiles(plans); err != nil {
+		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
+	}
+	if err := s.selectImageMirrors(plans, e.Repository, path); err != nil {
 		return run.Run{}, fmt.Errorf("%w: %w", ErrWorkflow, err)
 	}
 	if err := s.resolveActions(ctx, plans); err != nil {
@@ -643,6 +669,16 @@ func (s *Server) validateProfiles(plans []run.Plan) error {
 		if err := s.packageAdmission(p, profile.Act != nil); err != nil {
 			return err
 		}
+		if p.ImageMirrorsSelected {
+			if profile.Act == nil {
+				return fmt.Errorf("selected image mirrors require an act profile")
+			}
+			for alias, source := range p.ImageMirrors {
+				if profile.Act.ImageMirrors[alias] != source {
+					return fmt.Errorf("selected image mirror %q is no longer configured; create a new run", alias)
+				}
+			}
+		}
 		if profile.Act != nil {
 			p.Kernel = "act"
 			for _, step := range p.Steps {
@@ -690,6 +726,10 @@ func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.allowed(old.Repository) {
 		http.Error(w, "repository disabled or removed", http.StatusForbidden)
+		return
+	}
+	if err := s.requireRepositoryAccess(old.Repository, old.InstallationID); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 	if !old.State.Terminal() {
@@ -766,7 +806,17 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
 		return
 	}
+	item, err := s.store.GetRun(r.Context(), job.RunID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if err := s.requireRepositoryAccess(item.Repository, item.InstallationID); err != nil {
+		serverError(w, err)
+		return
+	}
 	p, err := s.store.Claim(r.Context(), job.ID, who.PodUID)
+	p.ProgressVersion = 1
 	respond(w, p, err)
 }
 func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
@@ -777,6 +827,15 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 	}
 	if job.State != run.Running || job.CancelRequested {
 		http.Error(w, "job is not running", http.StatusConflict)
+		return
+	}
+	item, err := s.store.GetRun(r.Context(), job.RunID)
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	if err := s.requireRepositoryAccess(item.Repository, item.InstallationID); err != nil {
+		serverError(w, err)
 		return
 	}
 	needed := job.Plan.Kernel == "act" && (job.Plan.Permissions == nil || job.Plan.Permissions["contents"] == "read")
@@ -810,13 +869,12 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 	if packageToken != "" {
 		response["package_token"] = packageToken
 	}
-	if !needed {
-		writeJSON(w, http.StatusOK, response)
+	if err := s.requireRepositoryAccess(item.Repository, item.InstallationID); err != nil {
+		serverError(w, err)
 		return
 	}
-	item, err := s.store.GetRun(r.Context(), job.RunID)
-	if err != nil {
-		serverError(w, err)
+	if !needed {
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	token := ""
@@ -838,6 +896,10 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.State != run.Running || current.CancelRequested || current.PodUID != who.PodUID {
 		http.Error(w, "job is no longer running", http.StatusConflict)
+		return
+	}
+	if err := s.requireRepositoryAccess(item.Repository, item.InstallationID); err != nil {
+		serverError(w, err)
 		return
 	}
 	response["clone_url"] = "https://github.com/" + item.Repository + ".git"
@@ -993,6 +1055,12 @@ func serverError(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
 	message := "operation failed"
 	switch {
+	case errors.Is(err, errRepositoryAuthorizationPending):
+		code = http.StatusServiceUnavailable
+		message = err.Error()
+	case errors.Is(err, errRepositoryAuthorization):
+		code = http.StatusForbidden
+		message = err.Error()
 	case errors.Is(err, action.ErrUnavailable):
 		code = http.StatusServiceUnavailable
 		message = err.Error()
@@ -1028,6 +1096,10 @@ func (s *Server) Tick(ctx context.Context) error {
 		// Fail closed for admission, but still reconcile existing jobs and clean up.
 		problems = append(problems, err)
 	}
+	authorized, err := s.reconcileRepositoryAuthorization(ctx)
+	if err != nil {
+		return err
+	}
 	if s.provider != nil {
 		events, err := s.store.PendingEvents(ctx, s.now())
 		if err != nil {
@@ -1037,6 +1109,12 @@ func (s *Server) Tick(ctx context.Context) error {
 			if !s.allowed(e.Repository) {
 				if err := s.store.FinishEvent(ctx, e.DeliveryID, "repository disabled or removed"); err != nil {
 					problems = append(problems, err)
+				}
+				continue
+			}
+			if err := s.requireRepositoryAccess(e.Repository, e.InstallationID); err != nil {
+				if retryErr := s.store.RetryEvent(ctx, e.DeliveryID, err.Error(), s.now()); retryErr != nil {
+					problems = append(problems, retryErr)
 				}
 				continue
 			}
@@ -1144,7 +1222,7 @@ func (s *Server) Tick(ctx context.Context) error {
 	if s.disk.snapshot().Paused {
 		limit = 0
 	}
-	jobs, err := s.store.Reserve(ctx, limit)
+	jobs, err := s.store.ReserveAuthorized(ctx, limit, authorized)
 	if err != nil {
 		return err
 	}
@@ -1207,6 +1285,14 @@ func (s *Server) Tick(ctx context.Context) error {
 	return errors.Join(problems...)
 }
 func (s *Server) start(ctx context.Context, job run.Job) error {
+	item, err := s.store.GetRun(ctx, job.RunID)
+	if err != nil {
+		return err
+	}
+	if s.repositoryAccess(item.Repository, item.InstallationID).State != "authorized" {
+		return nil
+	}
+
 	// Also guard previously reserved attempts and pressure appearing mid-tick.
 	// Observe runs first, so an already-created Pod is adopted even while paused.
 	if err := s.disk.check(ctx, s.now()); err != nil {
@@ -1218,6 +1304,15 @@ func (s *Server) start(ctx context.Context, job run.Job) error {
 	profile, ok := s.cfg.Profiles[job.Profile]
 	if !ok {
 		return s.store.Interrupt(ctx, job.ID, "execution profile no longer exists")
+	}
+	if job.Plan.ImageMirrorsSelected {
+		if profile.Act == nil {
+			return s.store.Interrupt(ctx, job.ID, "selected image mirrors require act")
+		}
+		copy := *profile.Act
+		copy.ImageMirrors = maps.Clone(job.Plan.ImageMirrors)
+		copy.ImageGroups = nil // Group membership has already been resolved into the immutable plan.
+		profile.Act = &copy
 	}
 	uid, err := s.runtime.Ensure(ctx, job, profile)
 	if err != nil {

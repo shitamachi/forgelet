@@ -1,10 +1,47 @@
-import type { GitHubConnection, GitHubRepository, RepositoryConfig } from './types'
+import type {
+  GitHubConnection,
+  GitHubRepository,
+  GitHubRepositoryAccess,
+  RepositoryConfig,
+} from './types'
 
 export function repositoryState(
   repo: RepositoryConfig,
   catalog?: GitHubConnection,
   failed = false,
+  authority?: GitHubRepositoryAccess,
 ) {
+  if (authority) {
+    const labels: Record<GitHubRepositoryAccess['state'], [string, string]> = {
+      authorized: ['授权正常', 'GitHub App 可以读取仓库并回写 Checks。'],
+      unknown: ['授权待确认', '正在确认 GitHub 授权，新任务暂时等待。'],
+      pending: ['授权变更确认中', '新任务和凭据领取已暂停，确认完成后自动更新。'],
+      not_authorized: ['GitHub 授权已移除', '在 GitHub 恢复仓库授权后刷新；历史记录保留。'],
+      suspended: ['安装已暂停', '在 GitHub 恢复安装后刷新。'],
+      insufficient_permissions: ['安装权限不足', '需要代码读取和 Checks 写入权限。'],
+      archived: ['仓库已归档', '取消归档并刷新后才能运行。'],
+      disabled: ['GitHub 已禁用仓库', '请先在 GitHub 恢复仓库。'],
+      renamed: [
+        '仓库已改名',
+        `当前名称：${authority.remote_name || '请检查 GitHub'}。请更新仓库、workflow 和发布目标绑定。`,
+      ],
+    }
+    const [label, detail] = labels[authority.state]
+    return {
+      key:
+        authority.state === 'authorized'
+          ? 'ready'
+          : authority.state === 'unknown'
+            ? 'unknown'
+            : 'attention',
+      label,
+      detail,
+      repository:
+        authority.state === 'authorized'
+          ? catalog?.repositories.find((r) => r.full_name === repo.name)
+          : undefined,
+    }
+  }
   if (!catalog || failed)
     return {
       key: 'unknown',

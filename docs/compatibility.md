@@ -129,7 +129,7 @@ Node 仅在按需 executor 镜像中，常驻 server 仍是 Go + Alpine。`runs-
 - Composite 使用相同主容器/workspace，可调用 shell、JS、其他 Composite，嵌套深度最多 8、总调用最多 256；inputs/steps/outputs 隔离。
 - 下载同一 repo/SHA 在一个 job 内复用；压缩包最多 32 MiB、展开最多 128 MiB/10,000 项。
   拒绝路径逃逸、符号/硬链接及特殊文件，脚本限制在 Action 目录；metadata 最多 256 KiB。
-- GITHUB_STEP_SUMMARY 文件可写，但尚不发布摘要；problem matcher、annotation 等只保留日志，不提供 GitHub UI 等价展示。
+- GITHUB_STEP_SUMMARY 文件可写，但尚不发布摘要；problem matcher仍只保留日志。阶段11.1已发布结构化步骤进度和标准notice/warning/error注解：先脱敏后按文本展示，每attempt最多64条注解；最终result/日志ACK仍决定终态，不承诺GitHub UI等价能力。
 - runner.tool_cache 和下载内容在 job 内临时保存，不是跨 job cache。私有远程 Actions、Docker Actions、远程 reusable workflows 不支持；同仓库 reusable 支持范围见下。
 - checkout 不支持其他版本、ref/repository/token/submodules/lfs/sparse-checkout 等输入，也不重复 checkout 同目录。
   默认和 `path` 子目录均已验证固定 SHA；执行器创建自己所有的 workspace，避免 emptyDir 挂载根的 Git 所有权错误。
@@ -155,8 +155,9 @@ artifact/cache 路径仅支持 workspace 内相对路径及多行列表，不支
 tar 是 forgelet 格式，不是 GitHub ZIP；name 在一个 run 内不可覆盖。同 job 重试内容必须一致，不同 job 上传同名失败。
 下载先校验 digest 和所有归档条目，再逐文件原子写入目标目录；已有无关文件保留。
 
-cache 作用域为仓库 + **当前完整 ref** + OS/架构/路径版本，不回退默认分支，也不提供跨 OS 缓存。
-先精确 key，再按 restore-keys 顺序选择最新前缀匹配；cache-hit 精确命中为 `true`，前缀为 `false`，未命中为空。
+cache 写入作用域为仓库 + **当前完整 ref** + OS/架构/路径版本。读取按当前ref→同仓库PR目标分支（仅已验证PR事件的BaseRef）→仓库默认分支回退；默认分支来自控制面已保存的GitHub目录，目录缺失时不猜测main/master。native和act v1/v2共用相同服务端规则，不提供跨OS缓存。
+每个ref内先精确key，再按restore-keys顺序选择最新前缀匹配；当前ref的前缀命中优先于后备分支的精确命中。只有未命中才回退，损坏或不可读对象仍报错。cache-hit精确key命中为 `true`（包含后备分支），前缀为 `false`，未命中为空。
+默认分支不能读取子/兄弟分支或PR的缓存；查询参数不能指定读写分支/仓库，写入始终限定当前ref。仓库、版本和原配额/不可变对象规则保持。
 缓存默认保留 7 天，按创建时间到期，不是 LRU；同 key 首次写入胜出。cache@v4 仅在整个 job（含 JS post）成功后保存，失败/取消不保存。
 lookup-only 不下载且不保存；cache/save 空路径匹配失败。两个 setup Action 的内建缓存仍关闭；请显式使用这里的 builtin，
 不支持任意 JS Action 调 GitHub cache SDK。服务端配额默认 256 MiB/对象、2 GiB 总量、4096 对象，管理员可缩小。
@@ -376,3 +377,6 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 2026-10-29 PG18验收优化为显式业务workflow修改（Tasks22b8b32），不是Forgelet改写任意测试：workflow临时启动一个真实PG18，再通过既有测试后备接口为每个原测试创建/清理独立数据库，覆盖子进程继承的测试DSN。原测试/断言/迁移/race/20分钟保留，fsync等持久化设置不变；不增加平台常驻数据库或放宽执行器权限。开发者默认per-test Testcontainers保持。取消时CLI停止整个测试进程组并在有界独立cleanup context销毁自有容器；具体自动/真实workflow结果分别见status。
 
 该版本已在homelab以原手动postgres=true入口98b5a9fa完成：53包完整PG/race通过，PG步骤4分26秒、步骤合计9分30秒，含Zot准备11分43秒；实际仅一个PG18、Go缓存true、最后日志序号248及终态持久化，精确GitHub Check成功。172个既有测试文件字节未改，原job1200秒与测试参数保持。同源CI/镜像发布/标签与Action摘要/Checks和Atlas迁移smoke均已核对。Codecov仍沿用原缺token时非阻断行为，本轮没有成功上传覆盖率。上述是业务workflow夹具与固定执行环境的实测结果，不扩展到所有数据库/网络场景的20分钟保证，也不意味着阶段10所有Actions能力已经完成。
+
+
+管理员可在workflow管理配置选择act镜像分组（阶段11.3已部署并完成真实冷热对照，Tasks冷缓存边界见status），不修改仓库GitHub YAML。选择保存为运行计划中的固定digest目录；未配置组时保留完整镜像目录。分组必须显式包含shell/Testcontainers动态使用的镜像，不能从workflow解析成功推导这些依赖已满足。native/act执行能力与原有权限边界保持分别描述。

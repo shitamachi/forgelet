@@ -203,6 +203,7 @@ test('repository onboarding, workflow editing/dispatch and target forms persist 
   await page.getByRole('dialog').getByLabel('仓库', { exact: true }).selectOption('test/new-repo')
   await page.getByLabel('Workflow 来源').selectOption('managed')
   await page.getByRole('button', { name: '填入示例' }).click()
+  await page.getByLabel('镜像分组', { exact: true }).fill('node, build')
   await page.getByRole('button', { name: '保存配置', exact: true }).click()
   await expect(page.getByRole('row', { name: /test\/new-repo.*控制面 YAML/ })).toBeVisible()
   await page.reload()
@@ -449,13 +450,24 @@ test('repository picker loads a large account incrementally and handles missing 
   await expect(picker.getByRole('button', { name: /上一页仓库|下一页仓库/ })).toHaveCount(0)
   await page.getByRole('button', { name: '关闭对话框', exact: true }).click()
   await request.post('/__test/state', {
-    data: { errors: { 'GET /api/github/connection': { status: 502, body: 'unavailable' } } },
+    data: {
+      errors: { 'GET /api/github/connection': { status: 502, body: 'unavailable' } },
+      githubAuthorization: {
+        snapshot: {
+          checked_at: '2026-10-29T04:00:00Z',
+          pending: true,
+          error: '同步失败，保留最近成功结果。',
+        },
+        repositories: { 'homelab/gateway': { state: 'authorized' } },
+      },
+    },
   })
   await page.getByRole('button', { name: '重新加载', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('已保存的仓库和启用设置保留')
   await expect(page.getByRole('article', { name: 'homelab/gateway', exact: true })).toContainText(
-    '授权待检查',
+    '授权正常',
   )
+  await expect(page.getByText(/最近成功同步/)).toContainText('同步失败')
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
@@ -483,4 +495,153 @@ test('failed Checks delivery remains distinct from execution and can be retried'
   await expect(page.getByRole('button', { name: '重新回写 Checks' })).toHaveCount(0)
   const state = await (await request.get('/__test/state')).json()
   expect(state.runs.find((r: { id: string }) => r.id === 'run-success').state).toBe('success')
+})
+
+test('live phases, ticking step time, safe annotations and final authority', async ({
+  page,
+  request,
+}) => {
+  const state = await (await request.get('/__test/state')).json()
+  const run = state.runs.find((r: { id: string }) => r.id === 'run-live')
+  const job = run.jobs.find((j: { plan: { key: string } }) => j.plan.key === 'test')
+  const now = Date.now(),
+    at = (seconds: number) => new Date(now - seconds * 1000).toISOString()
+  run.created_at = at(240)
+  job.created_at = at(240)
+  job.reserved_at = at(210)
+  job.claimed_at = at(180)
+  job.progress = {
+    seq: 7,
+    phase: 'executing',
+    last_at: at(1),
+    phases: [
+      { name: 'preparing', started_at: at(180), finished_at: at(170) },
+      { name: 'executing', started_at: at(170) },
+    ],
+    steps: [
+      { id: 'checkout', state: 'success', started_at: at(170), finished_at: at(150) },
+      { id: 'test', state: 'running', started_at: at(150) },
+    ],
+    annotations: [
+      {
+        step_id: 'test',
+        level: 'warning',
+        at: at(100),
+        message: '<img src=x onerror=alert(1)> 上传没有被远端接受',
+      },
+    ],
+  }
+  await request.post('/__test/state', { data: state })
+  await page.goto('/runs/run-live?job=' + job.id)
+  await expect(page.getByLabel('执行时间线')).toContainText('正在执行步骤')
+  await expect(page.getByLabel('执行时间线')).toContainText('镜像与工具准备')
+  const step = page.locator('.steps li').filter({ hasText: 'Run tests' })
+  await expect(step).toContainText('运行中')
+  const initial = await step.locator('.step-elapsed').innerText()
+  await expect.poll(() => step.locator('.step-elapsed').innerText()).not.toBe(initial)
+  await expect(page.locator('.execution-annotations')).toContainText(
+    job.progress.annotations[0].message,
+  )
+  expect(await page.locator('.execution-annotations img').count()).toBe(0)
+  await page.screenshot({ path: '/tmp/forgelet-progress-desktop.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: '/tmp/forgelet-progress-mobile.png', fullPage: true })
+  run.state = 'failure'
+  job.state = 'failure'
+  job.updated_at = at(0)
+  job.result = {
+    state: 'failure',
+    last_log_seq: 0,
+    steps: [
+      { id: 'checkout', state: 'success', exit_code: 0 },
+      { id: 'test', state: 'failure', exit_code: 1 },
+    ],
+  }
+  await request.post('/__test/state', { data: state })
+  await page.reload()
+  await expect(page.getByLabel('执行时间线')).toContainText('执行已结束')
+  await expect(page.locator('.steps li').filter({ hasText: 'Run tests' })).toContainText('失败')
+})
+
+test('repository authorization keeps local enable state and recovers after refresh', async ({
+  page,
+  request,
+}) => {
+  const checked = '2026-10-29T04:00:00Z'
+  await request.post('/__test/state', {
+    data: {
+      githubAuthorization: {
+        snapshot: {
+          checked_at: checked,
+          pending: true,
+          error: 'GitHub 授权同步失败；保留最近成功结果，请稍后刷新。',
+        },
+        repositories: { 'homelab/gateway': { state: 'pending' } },
+      },
+    },
+  })
+  await page.goto('/connections')
+  const row = page.getByRole('article', { name: 'homelab/gateway', exact: true })
+  await expect(row.getByText('授权变更确认中', { exact: true })).toBeVisible()
+  await expect(row.getByText('CI 已启用', { exact: true })).toBeVisible()
+  await expect(page.getByText(/最近成功同步/)).toContainText('GitHub 授权同步失败')
+  await request.post('/__test/state', {
+    data: {
+      githubAuthorization: {
+        snapshot: { checked_at: checked, pending: false },
+        repositories: { 'homelab/gateway': { state: 'not_authorized' } },
+      },
+    },
+  })
+  await page.getByRole('button', { name: '重新加载', exact: true }).click()
+  await expect(row.getByText('GitHub 授权已移除', { exact: true })).toBeVisible()
+  await expect(row.getByText('CI 已启用', { exact: true })).toBeVisible()
+  await request.post('/__test/state', {
+    data: {
+      githubAuthorization: {
+        snapshot: { checked_at: checked, pending: false },
+        repositories: { 'homelab/gateway': { state: 'authorized' } },
+      },
+    },
+  })
+  await page.getByRole('button', { name: '重新加载', exact: true }).click()
+  await expect(row.getByText('授权正常', { exact: true })).toBeVisible()
+})
+
+test('manual admission waits for confirmed authorization and keeps edited installation', async ({
+  page,
+  request,
+}) => {
+  await request.post('/__test/state', {
+    data: {
+      githubAuthorization: {
+        snapshot: { pending: true },
+        repositories: { 'homelab/gateway': { state: 'pending' } },
+      },
+    },
+  })
+  await page.goto('/runs/new')
+  await page.getByLabel('Commit SHA').fill('a'.repeat(40))
+  await page.getByLabel('GitHub installation ID', { exact: true }).fill('0')
+  await expect(page.getByRole('button', { name: '创建运行', exact: true })).toBeDisabled()
+  await expect(page.getByRole('status').filter({ hasText: '授权变更确认中' })).toBeVisible()
+  await request.post('/__test/state', {
+    data: {
+      githubAuthorization: {
+        snapshot: { pending: false },
+        repositories: { 'homelab/gateway': { state: 'authorized' } },
+      },
+    },
+  })
+  await expect(page.getByRole('button', { name: '创建运行', exact: true })).toBeEnabled()
+  await expect(page.getByLabel('GitHub installation ID', { exact: true })).toHaveValue('0')
+  await page.getByRole('button', { name: '创建运行', exact: true }).click()
+  await expect(page).toHaveURL(/\/runs\/manual-/)
+  const state = await (await request.get('/__test/state')).json()
+  expect(
+    state.calls.filter(
+      (c: { method: string; path: string }) => c.method === 'POST' && c.path === '/api/runs',
+    ),
+  ).toHaveLength(1)
 })

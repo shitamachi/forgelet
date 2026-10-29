@@ -185,13 +185,29 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		return resp.StatusCode == 200
 	})
 	request := func(t *testing.T, method, path string, body any, status int) []byte {
+		// Named-snapshot callers need the same pre-persistence authorization retry
+		// as source fixtures after a restart. Unknown mutation outcomes are never retried.
+		if method == http.MethodPost && path == "/api/runs" && status == http.StatusCreated {
+			item := createPublicWorkflow(t, ctx, httpClient, endpoint, body)
+			encoded, err := json.Marshal(item)
+			must(t, err)
+			return encoded
+		}
 		return api(t, ctx, httpClient, endpoint, method, path, body, token, status)
 	}
+	waitFor(t, ctx, "GitHub installation authority confirmed", func() bool {
+		var status struct {
+			Repositories map[string]struct {
+				State string `json:"state"`
+			} `json:"repositories"`
+		}
+		must(t, json.Unmarshal(request(t, "GET", "/api/github/authorization", nil, 200), &status))
+		return status.Repositories["test/project"].State == "authorized"
+	})
 	create := func(t *testing.T, source string) run.Run {
-		var item run.Run
-		must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "workflow": source}, 201), &item))
-		return item
+		return createPublicWorkflow(t, ctx, httpClient, endpoint, map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "workflow": source})
 	}
+
 	get := func(t *testing.T, id string) run.Run {
 		var item run.Run
 		must(t, json.Unmarshal(request(t, "GET", "/api/runs/"+id, nil, 200), &item))
@@ -532,6 +548,7 @@ jobs:
 			return true
 		})
 	})
+	testGitHubAuthorizationLifecycle(t, ctx, cluster, client, httpClient, endpoint, request, create, get)
 	testDiskPressure(t, ctx, cluster, client, httpClient, endpoint, request, create, get)
 	testPhaseThree(t, ctx, cluster, client, httpClient, endpoint, root, request, create, get)
 	testBatchedLogRestart(t, ctx, cluster, client, httpClient, endpoint, create, get, request)

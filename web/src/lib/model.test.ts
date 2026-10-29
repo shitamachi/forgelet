@@ -4,6 +4,8 @@ import {
   branch,
   bytes,
   duration,
+  elapsed,
+  jobStage,
   filterRuns,
   isActive,
   jobLayers,
@@ -86,4 +88,42 @@ describe('log cursor', () => {
       ]),
     ).toBe('ok\n<svg>literal</svg>')
   })
+})
+
+describe('live execution progress', () => {
+  it('uses final step results over provisional observations', () => {
+    const job = fixtureJob('progress', 'running')
+    job.progress = {
+      seq: 2,
+      phase: 'executing',
+      last_at: '2026-10-29T00:00:01Z',
+      steps: [
+        { id: 'observed', state: 'running' },
+        { id: 'failed', state: 'failure' },
+      ],
+    }
+    job.state = 'running'
+    expect(stepState(job, 'observed')).toBe('running')
+    job.result = {
+      state: 'success',
+      last_log_seq: 0,
+      steps: [{ id: 'failed', state: 'success', outcome: 'failure', exit_code: 1 }],
+    }
+    expect(stepState(job, 'failed')).toBe('success')
+    job.state = 'interrupted'
+    expect(stepState(job, 'observed')).toBe('interrupted')
+    job.state = 'success'
+    expect(stepState(job, 'observed')).toBe('pending')
+  })
+})
+
+it('keeps missing historical times unknown and identifies execution phases', () => {
+  const job = fixtureJob('progress', 'starting')
+  expect(jobStage(job)).toBe('正在创建执行环境')
+  job.pod_uid = 'owned-pod'
+  expect(jobStage(job)).toBe('等待 Kubernetes 启动')
+  expect(elapsed(undefined)).toBe('—')
+  expect(elapsed('invalid')).toBe('—')
+  expect(elapsed('2026-10-29T00:00:00Z', '2026-10-28T00:00:00Z')).toBe('—')
+  expect(elapsed('2026-10-29T00:00:00Z', '2026-10-29T00:02:03Z')).toBe('2m 3s')
 })

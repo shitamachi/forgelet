@@ -48,11 +48,22 @@ func TestZotScopedPublisher(t *testing.T) {
 	cfg["log"] = map[string]any{"level": "error"}
 	raw, err = json.Marshal(cfg)
 	must(t, err)
-	const publisher = "forgelet-steam-tasks-push"
+	publisher := os.Getenv("FORGELET_TEST_ZOT_PUBLISHER")
+	if publisher == "" {
+		publisher = "forgelet-steam-tasks-push"
+	}
+	repository := os.Getenv("FORGELET_TEST_ZOT_REPOSITORY")
+	if repository == "" {
+		repository = "forgelet/apps/steam-task"
+	}
 	const password = "disposable-fixture-password-only"
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
 	must(t, err)
 	htpasswd := []byte("admin:" + string(hash) + "\n" + publisher + ":" + string(hash) + "\n")
+	reader := os.Getenv("FORGELET_TEST_ZOT_READER")
+	if reader != "" {
+		htpasswd = append(htpasswd, []byte(reader+":"+string(hash)+"\n")...)
+	}
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: testcontainers.ContainerRequest{
 		Image: image, ExposedPorts: []string{"5000/tcp"}, Cmd: []string{"serve", "/tmp/config.json"},
 		Files:              []testcontainers.ContainerFile{{Reader: bytes.NewReader(raw), ContainerFilePath: "/tmp/config.json", FileMode: 0644}, {Reader: bytes.NewReader(htpasswd), ContainerFilePath: "/tmp/htpasswd", FileMode: 0644}},
@@ -100,7 +111,7 @@ func TestZotScopedPublisher(t *testing.T) {
 		}
 		return resp.Header
 	}
-	const repo = "/v2/forgelet/apps/steam-task"
+	repo := "/v2/" + repository
 	request(http.MethodPost, repo+"/blobs/uploads/", "", nil, http.StatusUnauthorized)
 	request(http.MethodPost, "/v2/forgelet/server/blobs/uploads/", publisher, nil, http.StatusForbidden)
 	request(http.MethodPost, "/v2/forgelet/dockerhub/library/alpine/blobs/uploads/", publisher, nil, http.StatusForbidden)
@@ -116,6 +127,10 @@ func TestZotScopedPublisher(t *testing.T) {
 	query.Set("digest", digest)
 	location.RawQuery = query.Encode()
 	request(http.MethodPut, location.RequestURI(), publisher, config, http.StatusCreated)
+	if reader != "" {
+		request(http.MethodPost, repo+"/blobs/uploads/", reader, nil, http.StatusForbidden)
+		request(http.MethodGet, "/v2/forgelet/other/manifests/nonexistent", reader, nil, http.StatusForbidden)
+	}
 	var finalDigest string
 	for _, version := range []string{"first", "second"} {
 		manifest := map[string]any{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": map[string]any{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": digest, "size": len(config)}, "layers": []any{}, "annotations": map[string]string{"fixture-version": version}}
@@ -124,6 +139,12 @@ func TestZotScopedPublisher(t *testing.T) {
 		finalDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(body))
 		request(http.MethodPut, repo+"/manifests/latest", publisher, body, http.StatusCreated)
 		h := request(http.MethodGet, repo+"/manifests/latest", publisher, nil, http.StatusOK)
+		if reader != "" {
+			read := request(http.MethodGet, repo+"/manifests/latest", reader, nil, http.StatusOK)
+			if read.Get("Docker-Content-Digest") != finalDigest {
+				t.Fatal("reader received a different manifest")
+			}
+		}
 		if h.Get("Docker-Content-Digest") != finalDigest {
 			t.Fatal("latest did not point to the pushed manifest")
 		}

@@ -4,6 +4,8 @@ data
 .idea
 *.local.yaml
 .env
+codecov.token
+codecov-upload.token
 web/node_modules
 web/test-results
 web/playwright-report

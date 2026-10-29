@@ -91,6 +91,55 @@ jobs:
 				t.Fatal(result)
 			}
 		})
+		t.Run("branch cache fallback and write isolation across restart", func(t *testing.T) {
+			runAt := func(ref, source string) run.Run {
+				var item run.Run
+				must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{
+					"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": ref, "workflow": source,
+				}, 201), &item))
+				done := finishRun(t, ctx, get, item.ID)
+				if done.State != run.Succeeded {
+					t.Fatalf("%s: %+v logs=%s", ref, done, logs(t, done.Jobs[0].ID))
+				}
+				return done
+			}
+			runAt("refs/heads/main", `on: push
+jobs:
+  seed:
+    runs-on: homelab
+    steps:
+      - run: mkdir -p branch-cache; echo main-dependency > branch-cache/data
+      - uses: actions/cache/save@v4
+        with: {key: branch-fallback-main-v1, path: branch-cache}
+`)
+			restartServer(t, ctx, client, httpClient, endpoint)
+			runAt("refs/heads/feature/cache", `on: push
+jobs:
+  restore:
+    runs-on: homelab
+    steps:
+      - id: restored
+        uses: actions/cache/restore@v4
+        with: {key: branch-fallback-main-v1, path: branch-cache, fail-on-cache-miss: true}
+      - run: test "$(cat branch-cache/data)" = main-dependency; test '${{ steps.restored.outputs.cache-hit }}' = true; echo topic-dependency > branch-cache/data
+      - uses: actions/cache/save@v4
+        with: {key: branch-fallback-topic-v1, path: branch-cache}
+`)
+			restartServer(t, ctx, client, httpClient, endpoint)
+			runAt("refs/heads/main", `on: push
+jobs:
+  isolated:
+    runs-on: homelab
+    steps:
+      - id: private
+        uses: actions/cache/restore@v4
+        with: {key: branch-fallback-topic-v1, path: branch-cache}
+      - run: test '${{ steps.private.outputs.cache-hit }}' = ''; test ! -e branch-cache/data
+      - uses: actions/cache/restore@v4
+        with: {key: branch-fallback-main-v1, path: branch-cache, fail-on-cache-miss: true}
+      - run: test "$(cat branch-cache/data)" = main-dependency
+`)
+		})
 		t.Run("rootless BuildKit pushes immutable digest and cleans failed builders", func(t *testing.T) {
 			ensureTestRegistry(t, ctx, client)
 			image := registryImage(t, ctx, client)

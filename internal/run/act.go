@@ -18,11 +18,12 @@ type ActRequest struct {
 }
 
 type ActMessage struct {
-	ExitCode *int    `json:"exit_code,omitempty"`
-	StepID   string  `json:"step_id,omitempty"`
-	Message  string  `json:"message,omitempty"`
-	Mask     string  `json:"mask,omitempty"`
-	Result   *Result `json:"result,omitempty"`
+	Progress *ProgressEvent `json:"progress,omitempty"`
+	ExitCode *int           `json:"exit_code,omitempty"`
+	StepID   string         `json:"step_id,omitempty"`
+	Message  string         `json:"message,omitempty"`
+	Mask     string         `json:"mask,omitempty"`
+	Result   *Result        `json:"result,omitempty"`
 }
 
 const ActSocket = "/run/forgelet-act/docker.sock"

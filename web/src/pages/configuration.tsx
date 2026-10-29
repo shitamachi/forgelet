@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Plus, Pencil, Trash2, Play, RefreshCw } from 'lucide-react'
 import { api } from '../lib/api'
-import { queryClient } from '../lib/queries'
+import { queries, queryClient } from '../lib/queries'
 import type { Management, RepositoryConfig, WorkflowConfig, Target } from '../lib/types'
 import { Confirm, Dialog, Empty, ErrorPanel, Loading, PageHeader, useToast } from '../components/ui'
 
@@ -244,6 +244,10 @@ function Editor({
   close: () => void
   save: (m: Management) => Promise<void>
 }) {
+  const config = useQuery(queries.config)
+  const imageGroups = [
+    ...new Set(config.data?.profiles.flatMap((p) => p.image_groups || []) || []),
+  ].sort()
   const repository = doc.repositories[edit.index],
     workflow = doc.workflows[edit.index],
     target = doc.targets[edit.index]
@@ -284,6 +288,10 @@ function Editor({
           path: value('path'),
           enabled: data.has('enabled'),
           source: mode === 'managed' ? source : '',
+          image_groups: value('image_groups')
+            .split(',')
+            .map((g) => g.trim())
+            .filter(Boolean),
         }
         if (edit.index < 0) next.workflows.push(w)
         else next.workflows[edit.index] = w
@@ -384,6 +392,25 @@ function Editor({
                   <option value="git">Git 文件（事件 SHA）</option>
                   <option value="managed">控制面保存 YAML</option>
                 </select>
+              </label>
+              <label>
+                镜像分组
+                <input
+                  aria-label="镜像分组"
+                  list="workflow-image-groups"
+                  name="image_groups"
+                  defaultValue={workflow?.image_groups?.join(', ') || ''}
+                  placeholder="例如 node, build"
+                />
+                <datalist id="workflow-image-groups">
+                  {imageGroups.map((group) => (
+                    <option key={group} value={group} />
+                  ))}
+                </datalist>
+                <span className="field-hint">
+                  使用管理员在执行 profile 中配置的分组，逗号分隔。留空准备全部已有镜像；不修改
+                  GitHub YAML。
+                </span>
               </label>
               {mode === 'managed' && (
                 <label>

@@ -46,6 +46,12 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
     retry: false,
     staleTime: 60_000,
   })
+  const sync = useQuery({
+    queryKey: ['github-authorization'],
+    queryFn: ({ signal }) => api.githubAuthorization(signal),
+    refetchInterval: 15_000,
+    retry: false,
+  })
   const runs = useQuery(queries.runs)
   const connected =
     session.data?.mode === 'session' &&
@@ -72,7 +78,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
     retry: false,
     staleTime: 60_000,
   })
-  const catalog = connection.data
+  const catalog = sync.data?.snapshot?.catalog || connection.data
   const repos = connected ? userRepos.data || [] : catalog?.repositories || []
   const choice = selected || repos.find((r) => r.id === pendingID) || null
   const matches = repositoryList(repos, search, owner)
@@ -82,7 +88,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
   const rows = doc.repositories.map((repo, index) => ({
     repo,
     index,
-    access: repositoryState(repo, catalog, connection.isError),
+    access: repositoryState(repo, catalog, connection.isError, sync.data?.repositories[repo.name]),
   }))
   const attention = rows.filter((r) => r.access.key === 'attention').length
   const visible = rows.filter(
@@ -130,6 +136,7 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
   async function refresh() {
     reload()
     await connection.refetch()
+    await sync.refetch()
     if (adding && connected) await userRepos.refetch()
   }
   async function enable(repo: GitHubRepository) {
@@ -252,6 +259,14 @@ export default function RepositoryConnections({ doc, reload, edit, remove, inspe
           error={new Error('暂时无法检查 GitHub 授权。已保存的仓库和启用设置保留，请重新加载。')}
           retry={() => void connection.refetch()}
         />
+      )}
+      {sync.data?.snapshot && (
+        <p className="section-note" role="status">
+          {sync.data.snapshot.error || '授权状态自动同步。'}
+          {sync.data.snapshot.checked_at &&
+            ` 最近成功同步：${new Date(sync.data.snapshot.checked_at).toLocaleString()}。`}
+          {sync.data.snapshot.pending && ' 正在等待确认授权变更。'}
+        </p>
       )}
       {operationError != null && <ErrorPanel error={operationError} />}
       <section className="repository-workspace" aria-label="已接入仓库">

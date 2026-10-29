@@ -277,7 +277,7 @@ func TestV1MigrationPreservesActivePlansAndDedupe(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	var version, vacuum int
-	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 6 {
+	if err := s.db.QueryRowContext(t.Context(), "PRAGMA user_version").Scan(&version); err != nil || version != 7 {
 		t.Fatalf("schema version=%d, %v", version, err)
 	}
 	if err := s.db.QueryRowContext(t.Context(), "PRAGMA auto_vacuum").Scan(&vacuum); err != nil || vacuum != 0 {

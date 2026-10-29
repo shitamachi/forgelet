@@ -2,6 +2,7 @@ package run
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/distribution/reference"
 )
@@ -51,3 +52,7 @@ func ValidateImageMirrors(runner string, images map[string]string) error {
 	}
 	return nil
 }
+
+var imageGroupName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+func ValidImageGroup(name string) bool { return imageGroupName.MatchString(name) }

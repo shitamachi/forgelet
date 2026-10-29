@@ -68,6 +68,8 @@ export const api = {
         body: JSON.stringify({ repository_id, version }),
       },
     ),
+  githubAuthorization: (signal?: AbortSignal) =>
+    request<import('./types').GitHubAuthorizationStatus>('/github/authorization', { signal }),
   githubConnection: (signal?: AbortSignal) =>
     request<import('./types').GitHubConnection>('/github/connection', { signal }),
   githubEnable: (repository_id: number, version: number) =>

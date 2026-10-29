@@ -198,7 +198,7 @@ func TestV5RetryMigrationPreservesPendingWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Reconstruct the predecessor layout with existing queued work.
-	_, err = s.db.ExecContext(t.Context(), `DROP INDEX events_retry;DROP INDEX checks_retry;
+	_, err = s.db.ExecContext(t.Context(), `DROP TABLE progress_events;DROP INDEX events_retry;DROP INDEX checks_retry;
  ALTER TABLE events DROP COLUMN attempts;ALTER TABLE events DROP COLUMN next_attempt_at;
  ALTER TABLE jobs DROP COLUMN check_attempts;ALTER TABLE jobs DROP COLUMN check_next_attempt_at;
  PRAGMA user_version=5;`)

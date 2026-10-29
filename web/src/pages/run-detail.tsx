@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -19,6 +19,7 @@ import {
   bytes,
   date,
   duration,
+  elapsed,
   isActive,
   jobLayers,
   shortSHA,
@@ -27,12 +28,20 @@ import {
 } from '../lib/model'
 import { Confirm, Empty, ErrorPanel, Loading, PageHeader, Status, useToast } from '../components/ui'
 import JobLogs from '../components/job-logs'
+import JobProgress from '../components/job-progress'
 export default function RunDetail() {
   const { runId } = useParams({ from: '/runs/$runId' })
   const search = useSearch({ from: '/runs/$runId' })
   const navigate = useNavigate({ from: '/runs/$runId' })
   const record = useQuery(queries.run(runId))
   const config = useQuery(queries.config)
+  const [now, setNow] = useState(() => Date.now())
+  const active = !!record.data && isActive(record.data.state)
+  useEffect(() => {
+    if (!active) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [active])
   const artifacts = useQuery({
     // A fast job may finish before the first poll: fetch once more at terminal state.
     queryKey: ['artifacts', runId, record.data?.state],
@@ -141,7 +150,7 @@ export default function RunDetail() {
         </a>
         <span>
           <Clock3 size={15} />
-          {duration(run)}
+          {duration(run, now)}
         </span>
         <time>{date(run.created_at)}</time>
       </div>
@@ -193,6 +202,7 @@ export default function RunDetail() {
                 超时<strong>{selected.plan.timeout_seconds / 60} 分钟</strong>
               </span>
             </div>
+            <JobProgress job={selected} now={now} />
             <ol className="steps">
               {selected.plan.steps.map((step, i) => (
                 <li key={step.id}>
@@ -202,6 +212,16 @@ export default function RunDetail() {
                       {step.name || step.action?.uses || (step.checkout ? 'Checkout' : step.id)}
                     </strong>
                     <Status state={stepState(selected, step.id)} small />
+                    {selected.progress?.steps?.find((s) => s.id === step.id)?.started_at && (
+                      <span className="step-elapsed">
+                        {elapsed(
+                          selected.progress.steps.find((s) => s.id === step.id)?.started_at,
+                          selected.progress.steps.find((s) => s.id === step.id)?.finished_at ??
+                            (!isActive(selected.state) ? selected.updated_at : undefined),
+                          now,
+                        )}
+                      </span>
+                    )}
                     {selected.result?.steps?.find((s) => s.id === step.id)?.outcome === 'failure' &&
                       selected.result?.steps?.find((s) => s.id === step.id)?.state ===
                         'success' && <p className="field-hint">失败已忽略（continue-on-error）</p>}
@@ -210,7 +230,16 @@ export default function RunDetail() {
               ))}
             </ol>
             {isActive(selected.state) && (
-              <p className="step-note">步骤结果在任务结束后确认，当前输出见实时日志。</p>
+              <p className="step-note">
+                {selected.progress
+                  ? '步骤进度实时更新；最终结论以任务结果为准。'
+                  : '当前执行器未提供实时进度，步骤结果在任务结束后确认。'}
+              </p>
+            )}
+            {selected.cancel_reason && (
+              <p className="step-note" role="status">
+                取消原因：{selected.cancel_reason}
+              </p>
             )}
             {selected.result?.error && (
               <div role="alert" className="step-error">

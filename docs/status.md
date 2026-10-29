@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-29（Asia/Shanghai）。当前：**首批真实仓库 CI、Web Flux 发布/回滚及 Rust 已验收；Tasks22b8b32完整PG18 workflow已成功：步骤9分30秒、含镜像准备11分43秒，原172个测试文件/断言及20分钟保留。同源CI、Zot镜像/标签/Action摘要/Checks与断网smoke全部通过，首批九仓库固定提交验收及本轮1/2/3完成。当前Forgelet完整自动回归PASS1830.233秒；阶段10其余扩展仍按清单保留。**
+更新：2026-10-29（Asia/Shanghai）。当前：**阶段11.1–11.4已实现、完成自动验证并部署到homelab；真实授权撤销/恢复、按需镜像组、Go/Node冷热缓存与Tasks PG18热缓存、Admin Web发布/失败阻断/健康失败/回滚及重启幂等已验收。Tasks独立ref冷缓存保留原20分钟超时记录，不宣称冷运行整条workflow成功；Codecov上传token已配置，但外部返回Repository not found，尚未成功。**
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 本轮逐仓库验收（2026-10-29，首批固定提交已完成）
@@ -1040,3 +1040,123 @@ make verify今日最终通过：Go race/HTTP/SQLite/解析/执行器等、build/
 10:20收尾核对：所有实际executor Pod已自动回收，仅原Go控制面常驻；本机只保留owner的lg-multiarch builder。Web HTTP200、Deployment ready1、Flux仍main@564223da；etcd无告警、leader1，P99 fsync约25.1ms/commit41.3ms。server a28ffec4、Ubuntu supervisor d7ae262a/runner90ad0dc5、节点/CPU/内存/并发预算、授权范围和业务部署保持；托管GitHub Actions已确认enabled=true。
 
 10.6e/10.6g/10.7b及本轮第三批完成：上表九仓库的固定提交CI/发布语义已分别验收，实际业务CD范围为platform-web，先前真实GitOps/Flux健康、失败阻断、回滚/恢复结果保持。不是给其余仓库新增生产部署。旧失败与新成功独立保留。阶段10的远程reusable、动态matrix、完整原版artifact v4等仍未实现，不因本批完成而勾选，具体边界见compatibility。
+
+
+## 2026-10-29：阶段10交付范围复核与下一步计划
+
+结合当前代码及上述固定提交证据，阶段10的首批9仓库完整CI/原发布语义、Tasks PG18限时与platform-web实际CD目标已完成。原清单所有兼容扩展尚未完成：远程reusable及调用matrix/concurrency、动态matrix、act原版artifact v4/逐step timeout/local pre、私有远程Actions等仍有明确诊断；native与act的hashFiles/artifact能力需分别描述。既有SDK/Atlas/Zot/PG夹具调整属于显式业务修改，不把固定提交验收扩大成任意仓库零修改或完整GitHub云服务兼容。
+
+代码确认的日常使用缺口：StepResult无开始/结束时间、UI仅在终态展示步骤结果，准备阶段与排队/执行耗时未结构化区分；prepareActMirrors遍历全部配置镜像；webhook只处理push/PR，installation生命周期同步仍待6.5实现。Codecov上传缺token，Admin Web历史1CPU失败的唯一根因未确认。Tasks20分钟通过场景Go cache=true，不能视为任意全冷/公网状态的保证。除了platform-web，其余仓库未在本批新增实际业务CD。
+
+已在plan写入阶段11建议顺序：11.1结构化实时进度/计时/警告→11.2 GitHub授权生命周期同步→11.3按需镜像准备及实际缓存开销优化→11.4选择一个无状态应用继续真实CD。每一批随实现做单测/集成/Testcontainers，再独立记录homelab验证；不设spec或独立基线门禁。阶段11仅为计划，本轮未改功能代码、未运行新测试或操作实际集群；没有把计划记作已实现。已修正文档陈旧的阶段10标题、接下来说明和事故恢复待办，历史失败记录保留。
+
+
+## 2026-10-29：11.1–11.4开始实施，当前11.1自动验证中
+
+owner已授权完整实现11.1至11.4，目标保持不缩减。当前新增结构化进度事件与SQLite v7迁移：事件严格绑定job/Pod UID、连续seq与SHA256去重记录，限制2048条/attempt与64条注解；有界物化进度同job保存，journal随job删除级联清理，列表移除详细steps/annotations。claim协商progress_version，新worker保留未知ACK事件并在取消后独立有界flush，最终result带last_progress_seq核对；最终result/日志ACK继续独立权威，进度不会把任务提前标成功。原生执行器与act已接准备/步骤/收尾事件，act只使用上游结构化stage/stepID/stepResult字段；标准warning/error注解走脱敏与文本展示，不解析任意stdout推断第三方成功。
+
+本轮Go race已通过run/storage/server/executor/actworker，包含HTTP+SQLite运行中观察、乱序/重复/身份/重启/终态不可变与ACK丢失取消后flush；v6→v7迁移保留旧attempt。前端新增时间线、实时step状态与计时、警告、旧历史缺失值处理；37个前端单测、15个浏览器用例通过，桌面/移动截图已检查。最终make verify通过（含Go race/build/lint/generate、37前端、15浏览器35.8秒）；早期import分组lint失败已修正，不算首次全绿。临时k3s act专项PASS718.387秒（用例464.85秒），真实Pod中运行进度/脱敏注解、同UID控制面重启进度保留、冷/热缓存、失败/取消/超时与最终progress/log ACK通过，临时容器已清理；11.1真实仓库复验尚在进行，清单仍未勾选。
+
+原v6快照已私有备份；副本v6→v7迁移保留117 runs/288 jobs/19 settings/20 deliveries/68 events。已将11.1 server及native/两种act supervisor部署homelab，原登录会话/历史可读；入口短暂503后同一新Pod恢复，无重复重启。镜像父层和运行配置精确核对保持，所有runner工具/资源/并发/业务部署不变。源码与二进制摘要和快照保存于本机私有stage11-delivery-20261029目录。11.4只读盘点发现steam-admin-web已有实际部署，upstream为steam-admin-service:8080；后续接GitOps前以当前集群和仓库状态为准，保留现有配置/服务入口，不用旧验收digest覆盖新部署。11.2授权同步、11.3按需准备、11.4实际CD均仍待实现与各自完整验收。
+
+
+11.1真实仓库复验已创建：platform-server固定ac3f90d/run acd575db577d7de1ee3b3569，admin-web固定4d5cd9d/run5261cc2a10f0f48c46563d7e，Tasks22b8b32/原PG18输入run3becc4bc3e502091c11d5f4a。保持原workflow测试/断言/超时，观测阶段进度及最后progress ACK；三项当前仍在运行/排队，不提前算成功。11.2–11.4目标继续保留，未标记完成。
+
+
+## 2026-10-29：11.1真实复验完成，11.2/11.3实施中
+
+三项原workflow固定快照均已success：Go ac3f90d/acd575db、Node 4d5cd9d/5261cc2a、Tasks22b8b32/手动PG18 3becc4bc。验收程序实际观察每项执行中的running step，并确认最终result.last_progress_seq等于持久化progress.seq；Tasks原1200秒预算及PG步骤成功保持。最终证据progress-live-complete.json保存于本机私有stage11-delivery-20261029目录；未将本次手动快照复验称为新的真实push或镜像/CD验收。结合先前make verify与718.387秒真实k3s专项，11.1勾选完成。
+
+11.2新增签名安装生命周期提示、持久化幂等/冲突处理、权威快照和可取消后台刷新；接通排队准入、启动/claim及凭据生成前后检查，确认失权走现有取消/ACK/Pod清理，普通同步失败保留最后成功结果。专项race回归通过；完整自动回归、真实k3s及homelab撤权/恢复验收尚未完成，不能称11.2交付。11.3开始增加管理员image_groups和workflow显式选择、固定digest计划快照及旧配置全目录兼容；尚在自动验证，没有部署。11.4仍保持完整目标，未进行新的业务CD操作。
+
+
+11.2真实k3s首轮暴露旧名称绑定遇installation suspend时丢失安装关联，误显示not_authorized；已增加仅用于身份匹配的持久化关联与race回归。修复后临时k3s授权生命周期9.03秒通过：失败读取保留快照/两个活跃Pod和排队任务、撤权后的凭据403、同UID控制面重启、确认失权全部取消/清理、恢复运行及暂停识别。合并的act场景因重启后尚在确认授权而收到准入503，整轮298.661秒仍记FAIL；测试客户端随后增加仅针对持久化前明确授权pending的有界重试，不重试传输不明结果或已创建任务。最终act分组和全量Testcontainers尚待重跑，11.2/11.3均不勾选。
+
+11.4已本地准备Admin Web image workflow复用同提交CI的needs门禁，并改向Zot；原npm ci/check/32测试/build/生成文件检查全部通过。完整候选YAML的真实SQLite回归确认CI失败时publisher和native CD均skipped、无Pod，CI成功才放行publisher。Zot候选精确路径发布/只读拉取权限Testcontainers通过4.890秒：禁止跨私有路径写入、读取与删除边界保持；新账号/steam命名空间只读pull Secret及Forgelet/GitHub加密仓库secrets已配置，Zot rollout成功，操作前无活跃CI。业务workflow尚未推送，业务Deployment/Service/Gateway与实际GitOps目标尚未修改，不算11.4交付。
+
+
+11.2/11.3完整回归首轮最终FAIL2835.101秒，不能作为全量通过：自动发布子场景的直接POST夹具未等待重启后的授权确认；真实浏览器手动表单也在确认前允许提交。已分别补齐持久化前503的有界准入等待及UI按钮授权门禁，用户填写的installation不再被历史轮询覆盖；最后成功授权不会因普通刷新失败被降级。新make verify通过42前端单测/17浏览器41秒。新增跨账号真实k3s回归：installation7撤权提示/全量失败不隔离已确认的8，确认7失权取消其任务后8仍能成功执行；重启/权限发放边界继续通过。包含四个真实浏览器场景的专项316.482秒PASS（授权14.73、控制台73.24秒）；更新后的完整回归正在执行，明确加载原Rust工具镜像及Zot权限用例，首轮Rust缺环境SKIP不冒称通过。
+
+11.4真实正向链路已通过：Admin Web业务c5db392仅修改CI复用门禁与Zot发布，原32测试/检查/构建保留。独立GitOps基线eff0719按原digest630820b5完整复制至Zot，Deployment配置仅更换等价registry引用及只读pull Secret；原Service/Gateway/API地址保留。新Flux forgelet-admin-web使用同仓库只读source与限于本Deployment的reconciler/observer权限，Ready/Healthy与HTTP/healthz200通过。实际platform-web由Flux spec.images覆盖的6ee9e663保持，不用其旧GitOps文件c85覆盖当前配置。
+
+真实push的CI b5506506及image内复用CI均通过，但image0049a510的publisher checkout因GitHub TLS/连接超时失败，CD正确skipped，旧失败保留。连接恢复后同SHA/原固定steps/Action pins计划仅重跑一次652df38e，CI/镜像/native CD全部success；投递b604e4a9已deployed，GitOps91715022，实际Zot镜像f29f6ff3，latest/sha-c5db392/Action摘要、OCI revision标签、Deployment和精确Checks一致；此前digest630记录为回滚起点。GitHub托管image workflow在原push期间临时关闭以避免双写标签，已恢复active。后续仍需负向CI、部署健康失败、回滚/恢复和控制面重启幂等，不提前勾选11.4。
+
+## 2026-10-29：11.2/11.3 控制面上线与 11.4 回滚实测
+
+11.2/11.3 控制面镜像 `02ad1e35…` 已部署，配置仅增加显式镜像组，保留资源预算、supervisor、管理设置、登录会话和原任务 UID。真实 GitHub 安装设置仅移除测试仓库 `forgelet-e2e-app`：收到签名生命周期 delivery `61485ba2-d36e-11f1-9045-c8dc4b8dc627` 后，完整权威同步确认 `not_authorized`；探针 `c885cc5f…` 的一个运行中任务及一个排队变体均取消，记录明确失权原因。随后重启控制面，取消历史及本地启用配置保留，新运行 HTTP403；其他12个仓库的授权范围不变。owner操作时确认后已保存恢复该测试仓库，Forgelet自动同步为authorized；核对全部13个仓库ID/安装关联及权限与测试前完全一致。恢复验证新任务 `1c7d5da2…` 已接收，等待现有队列正常调度；旧取消任务未重放，执行成功验收尚未完成。
+
+11.4 的真实 Admin Web 发布 `b604e4a9…` 已完成。回滚 `0a59b6ed…` 提交 `cd007af8…` 在仅暂停新增的 `forgelet-admin-web` Flux Kustomization 时保持 delivered；控制面升级后重复请求返回相同回滚 ID，GitOps HEAD 未变化。已恢复该 Kustomization，baseline digest `630820b5…` 健康；再回滚此回滚得到 `21d228c0…`，GitOps `47fe0142…`，恢复发布 digest `f29f6ff3…`，状态 deployed、HTTP健康检查200。未修改 platform-web 的镜像覆盖设置。CI失败阻断与应用健康失败后的恢复另行验证，未宣称11.4全部完成。
+
+完整 Testcontainers 第二轮最终 FAIL2090.959秒：授权用例通过管理API临时写配置时，意外将空targets持久化成覆盖项，导致之后原native CI→CD目标不可用。已将跨账号测试仓库改为临时 ConfigMap 声明，并在用例结束恢复原配置，避免污染管理覆盖项；这是测试隔离修复，未放宽交付授权。另发现生产边界：claim/credentials 在授权暂待确认时误用永久403，现改为可重试503，确认失权仍403，临时状态不会返回凭据。真实 remote executor + HTTP/SQLite/race 回归验证 claim、claim后领取凭据两个窗口等待确认后，同UID只执行一次并完成进度ACK；make verify通过（42前端单测、17浏览器41.7秒）。包含这两项修复的完整Testcontainers重新运行中，尚未记录为通过；该503修复随后以 server `400978eb…` 上线；资源和管理配置未变，Node冷运行与已创建Pod UID保留，完整回归仍继续。
+
+11.3 管理配置已选择 Go/Node tools空组、构建build组、Tasks postgres组及Rust组，保留未选择工作流的旧完整目录兼容。固定原源码 Go `ac3f90d…`、Node `4d5cd9d…`、Tasks `22b8b32…` 在独立ref缓存范围运行，冷运行完成后重跑相同固定计划；计时、实际缓存命中和完整PG18结果待核对，不提前声明通过。
+
+11.3 实际冷缓存边界：Tasks `8d9933f6…` 在独立ref、Go cache-hit=false 下，原模块/静态检查/构建约6分48秒、原short/race约6分45秒、完整PG18约4分29秒均成功；Atlas安装/迁移校验也通过。后续原Codecov上传步骤运行时触及原20分钟，最终状态timed_out，**不能计作完整workflow成功**，未延长超时或删减步骤。已保留冷运行、最终日志/进度ACK与失效Check，另接收相同22b8源码、步骤、固定Action SHA和PG18输入的main现有缓存对照 `8e6763e1…`；仅ref/cache范围不同，不能宣称它是同一计划的冷→热重跑。Go与Node的冷热对照仍使用完全相同的原计划重跑。与计划既定边界一致，不承诺任意冷缓存都能在20分钟内完成；热对照结果待核对。
+
+补充实际镜像身份验证：独立Testcontainers Docker引擎专项PASS6.354秒（用例5.50秒），验证完整已加载镜像只在固定manifest digest与精确config ID匹配时复用，错误digest被拒绝，临时引擎已清理；原pull/tag/别名身份不符及取消回归也保留。完整k3s回归继续，不用该专项替代全量结论。
+
+最新完整Testcontainers最终 **PASS2466.697秒**，28个k3s必选叶场景通过（包含授权/跨账号/重启14.86秒、act421.08秒、Rust134.62秒、大BuildKit缓存560.33秒、实际SDK51.61秒、Web浏览器78.51秒、登录/授权重启91.21秒、GC18.32秒），另有6个非k3s辅助叶检查通过。共7个环境可选fixture跳过：Action镜像归档、Atlas安装/镜像stage、DuckDB工具、两套私有业务目录综合fixture及工具reaper策略；未将其宣称为本轮执行。真实业务仓库/Atlas/冷热结果另行记录，不替代可选fixture结论。浏览器实际k3s4项51.3秒，官方SHA验证的SDK归档预载不计公网SDK下载性能。所有临时k3s/registry/容器按测试正常清理；首次和第二次失败记录保留，没有改成成功。
+
+授权恢复后新native运行 `1c7d5da2…` 已成功，旧 `c885cc5f…` 两个取消变体未重放；实际线上Connections页面显示CI已启用、授权正常和这次成功运行，最近同步时间正常。再补一次真实GitHub凭据/checkout恢复探针 `6d6d97c0…`，验证相同固定SHA可实际读取，尚待队列执行。Go热缓存 `6bffdc39…` 同计划成功、cache-hit=true，准备70.484秒、实际执行60.454秒；Node热缓存 `a242ebfb…` 也已成功，命中与计时在最终报告汇总。
+
+11.4 真实CI失败负向验收 `b8381832…` 已通过：明确标识的手动快照保留原32个测试、check/build/生成文件校验，全部先成功，再追加exit23失败；publisher与native CD均skipped且未创建delivery，应用HTTP200。该fixture使用旧4d5源码SHA，未伪装为原push或修改业务提交。健康失败fixture `e101d21e…` 保留原CI，仅在独立workspace生成故意退出17的镜像，使用独立测试tag，不写latest或提交tag；已接收，最终健康失败/恢复仍待核对。
+
+11.2额外真实凭据验收已完成：`6d6d97c0…` 成功从恢复授权的GitHub测试仓库领取短期凭据、checkout并核对固定SHA，日志确认restored-private-checkout-ok，完整日志/进度ACK一致；原取消任务的实际Pod已不存在、历史仍取消。本地开关/原13个仓库范围与权限保留，11.2已勾选。
+
+
+## 阶段11收尾：11.1–11.4完成（2026-10-29）
+
+最终现场核对通过：275个运行源码/测试/前端文件hash与已验证构建一致，server为 `400978eb601091e08c65cdfa42db91f2c78db4dd85c85f35d927aab883bde30c`，SQLite实际快照schema v7；本地私有快照包含两条真实签名授权生命周期delivery及完整13仓库目录。会话、全部管理设置及原执行资源预算保留；配置只增加镜像组及其已记录选择。没有新增常驻执行器或共享Docker数据/宿主socket。
+
+- **11.1**：结构化实时步骤、计时、标准注解、日志/进度/最终结果ACK及历史兼容已验证，Go/Node/完整Tasks PG18真实运行成功；临时k3s覆盖重启、取消与运行中UI，不从任意第三方stdout推断上传成功。
+- **11.2**：真实测试仓库签名撤权取消运行中/排队任务，重启后继续拒绝新运行；恢复同一原13仓库授权后，native运行及真实短期凭据checkout均成功，旧取消历史不重放、Pod已回收。UI显示授权正常及最近运行，已核对源码身份/实际固定SHA。
+- **11.3**：显式空组/选组/并集、旧完整目录兼容、固定digest及计划快照/重跑检查、缺失与身份不符、取消/重启、Docker Action/BuildKit/Testcontainers均有验证。实际Go/Node不再准备额外镜像，Tasks仅选3个依赖；冷热结果如下，预算和原测试保持。
+- **11.4**：Admin Web原CI成功才允许publisher/native CD；真实c5db392 push的原CI及同计划镜像重跑完成GitOps/Flux发布。明确负向fixture保留原全部CI后exit23，正确阻断publisher和CD。另一fixture保留原CI，独立tag发布退出17的坏镜像；delivery `3c308a6d…`、digest `6c538235…` 保持delivered，Flux两次明确HealthCheckFailed、坏Pod退出17，旧副本HTTP200。回滚 `4a555320…` 后恢复健康digest `f29f6ff3…`，最终GitOps `774ef847aa457925b1935bf2de4a20199b0000be`，Flux Ready、Deployment 1/1、HTTP200，坏记录superseded。此前已验证baseline digest回滚/恢复及控制面重启后同ID/同GitOps提交幂等。
+
+健康失败采样说明：Flux报错后立即开始下一次健康检查，Ready=False的瞬时状态被原3秒轮询漏采；改用同一Kustomization UID、当前attempted revision和本次delivery之后的持久HealthCheckFailed事件，另核对真实Pod退出17、目标digest、非deployed状态和HTTP200。原观察器因漏采以exit1退出，日志保留；后续使用同一实际失败运行、上述持久证据和同一个确定性回滚ID完成验证与恢复，没有重跑业务流水线或放松健康要求，未遗留观察器。
+
+| 固定源码/缓存对照 | 准备 | 实际workflow执行 | 实际结果 |
+|---|---:|---:|---|
+| Server ac3f90d 冷 | 70.317秒 | 197.101秒 | success，Go cache-hit=false |
+| Server 同计划热 | 70.484秒 | 60.454秒 | success，Go cache-hit=true |
+| Admin Web 4d5cd9d 冷 | 70.224秒 | 283.736秒 | success，14文件/32测试，npm cache-hit=false |
+| Admin Web 同计划热 | 71.964秒 | 102.335秒 | success，14文件/32测试，npm cache-hit=true |
+| Tasks 22b8b32 独立ref冷 | 82.199秒 | 1200.416秒 | timed_out；原short/race、迁移及完整PG18先成功，coverage步骤达到原20分钟 |
+| Tasks 同源码/步骤/Action main热 | 82.508秒 | 789.004秒 | 完整workflow success；Go与Atlas缓存true，完整PG18约4分28秒 |
+
+Tasks的冷热ref不同，热对照复用main原有缓存，不称为同计划重跑或冷超时修复。热流程中的Go安装/缓存恢复约162秒，Codecov步骤约139秒；Codecov依旧因缺token拒绝外部上传，但原fail_ci_if_error=false使Action正常退出。保留这些外部/冷启动边界及计时依据，不保证任意空缓存或公网故障都能在20分钟内完成，也没有删减测试或扩大并发。公共Action固定SHA归档及SDK镜像工具复用继续沿用已验证实现。
+
+最终自动验证：make verify通过（真实构建、Go race/HTTP/SQLite集成、lint/generate、42前端单测、17浏览器41.7秒）；完整Testcontainers PASS2466.697秒（28个k3s核心叶场景、6个辅助叶检查通过，7个额外环境可选fixture跳过，详见上文）；另有真实Docker固定digest/已加载镜像身份专项PASS6.354秒。没有把单测、计划、自动测试和真实部署混为同一结论。
+
+收尾确认 `latest` / `sha-c5db392` 仍为健康 `f29f6ff3…`，负向镜像仅使用专用tag；GitHub托管image workflow处于active，未遗留暂停。platform-web原Kustomization spec及owner镜像覆盖 `6ee9e663…` 精确保留，原应用HTTP200；Admin后端service存在ready endpoint。没有本轮遗留executor Pod，最后etcd无触发告警，5分钟窗口P99 fsync约15ms/commit约38ms（现场时点观察，不是资源基线或未来负载保证）。Forgelet源码改动保留当前工作区，未自动提交；业务workflow与GitOps的已授权提交已实际发布。
+
+
+## 2026-10-29：日常开发就绪检查与 Codecov 配置
+
+结论：现有能力已足够开始使用，优先以 Admin Web 做普通开发分支→PR→合并→发布的日常试用；不继续把完整 Actions 兼容当作使用前置条件。阶段11的自动测试与真实集群验收保持原结论，本轮配置检查没有重新执行全量 Testcontainers，也没有新的发布/回滚验收。
+
+- **Codecov 配置已完成，上传未成功**：owner提供的 `codecov.token` 是账户 API Token，`codecov-upload.token` 是 `CODECOV_TOKEN=...` 格式的 Global Upload Token。两文件均设为0600，并加入 Git 和 Docker context 排除。安全解析赋值文本，未通过shell执行。仅将上传token作为加密仓库Secret配置到使用Codecov的 `steam-tasks`、`steam-api`；没有全局注入或写入Git。
+- **真实配置集成验证**：Tasks固定源码 `22b8b3238b85c2164b248fe88bcf48eddd2f2984`，常规CI入口、原测试/断言/20分钟预算保持，运行 `98b8116fa406cb130ab38770` 最终success。该手动workflow快照只给原coverage Action增加token、slug和关联name，不是新push，也不是原YAML原样验收；本次未打开可选PG18。Codecov create-commit/create-report/do-upload均返回 `Repository not found`，API查询也为404；`fail_ci_if_error: false`使步骤绿色，**不代表上传成功**。需继续确认Codecov侧私有仓库接入/可见性，不能仅凭404判定token错误或缺少某一权限。
+- **业务YAML仍需合并引用**：两个远端workflow目前没有 `with.token`，只保存Secret不会自动注入。已在本机私有 `daily-readiness-20261029` 目录准备仅增加token/slug的补丁；未修改/推送业务仓库。证据、完整脱敏日志、配置名称及请求快照也保存在该目录，不含明文token。
+- **缓存是真正的日常使用缺口**：缓存命名空间只使用完整ref，没有默认分支/PR base读取回退；新的开发分支可能重复冷编译。此前Tasks独立ref完整冷流程超时不能因main热运行成功而消除。下一批优先实现可信同仓库的回退读取，写入仍限定当前ref。
+- **platform-web发布有配置冲突**：Flux `forgelet-platform-web.spec.images`固定外部registry的 `6ee9e663…`，GitOps文件仍为 `c85afdda…`；覆盖项会压过Forgelet的GitOps镜像提交。不能直接删除覆盖项导致回退：应先把GitOps对齐现网digest，再移除覆盖并验证新发布/回滚。本轮未修改该资源。Admin Web没有此覆盖，GitOps/实际运行均为 `f29f6ff3…`，可先使用。
+- **CI归属尚未切换**：Admin Web/Tasks的GitHub托管workflow仍active，正常push可能两边执行并重复发布。试用仓库应选定Forgelet为唯一日常CI/镜像发布方，保留可重新启用的GitHub应急路径；本轮没有禁用workflow。当前私有仓库的GitHub合并保护API提示升级套餐，属于外部限制；不阻碍先人工核对Checks后合并。
+- **Forgelet自身尚未接入**：App仓库目录和本地启用列表都没有本仓库；本地阶段11变更尚未提交。自身workflow单job预算40分钟，而最新本地完整Testcontainers已用2466.697秒，另有make verify；不能直接声称原预算足够。runner现有预载Go1.26而本项目需Go1.27，嵌套k3s资源也须实测。先形成可追溯提交，再分开快速verify与完整集成预算、验证按需执行环境；不因此阻止业务仓库先使用。
+
+现有业务CD目标仅platform-web和Admin Web；其他仓库已验收CI/镜像不等于已经配置自动CD。历史分页、Pending原因及资源感知排队可随实际使用改进，不作为首个试用仓库的前置工程。
+
+
+## 2026-10-29：12.1 开发分支缓存阻断修复
+
+**代码和自动验证完成，尚未部署homelab或做业务真实PR验收。** 为解决其他项目每个开发分支重复冷编译，runtime blob GET/lookup现在按当前ref→PR目标分支→目录中的默认分支回退读取；每层保持精确key/restore-keys顺序，只在未命中时回退。目标分支由已验证PR事件持久化计划提供，默认分支来自控制面GitHub安装目录；不从执行器请求取分支、不猜main/master、不添加每请求GitHub I/O。目录缺失时保留当前ref。PUT仍只写当前ref，仓库/版本隔离、原配额和不可变对象约束保持。native和act v1/v2通过原端点共用规则，无新依赖、迁移或常驻服务。
+
+自动验证分别记录：
+
+- 顺序/去重/非main默认分支/PR base/未知目录单测；HTTP+真实SQLite覆盖实际持久化PR计划、lookup、当前ref前缀优先、后备精确/前缀命中、版本/仓库/兄弟分支隔离、默认分支禁止反读开发分支、写入参数不能越界、不可读当前对象不静默回退。
+- `make verify` PASS：真实构建、全Go race/HTTP/SQLite、lint 0 issues、generate、42前端单测、17浏览器场景（1.1分钟）。server专项race PASS45.438秒；更新后的完整verify中server race PASS46.707秒。
+- **Testcontainers专项 PASS324.970秒**：临时k3s实际安装/执行，原artifact/cache跨Pod与重启26.51秒；新增实际开发分支读取默认分支cache、开发分支保存、两次控制面重启后main仍读原值且不能读开发分支cache43.78秒。只选择这两个叶场景，**不是全量Testcontainers重跑**。临时k3s及构建容器正常清理，未使用用户kubeconfig。
+
+日志保存在本机私有 `daily-readiness-20261029/forgelet-{daily-verify,cache-k3s,cache-race}.log`。12.1整体清单因homelab真实分支/PR验收尚缺保持未勾选；12.2的Flux覆盖与双CI发布归属、12.3的Codecov外部接入和自身CI预算仍未解决。本轮未修改业务仓库、禁用托管workflow、变更实际集群、提交或推送。
+
+
+12.1交付继续：owner已授权提交/推送本批、部署homelab、真实开发分支与PR缓存验收，以及platform-web镜像覆盖和双CI归属修正。阶段11未提交实现与12.1一起纳入本批可追溯提交；owner自行修改的AGENTS.md保留本地不纳入提交。工作区diff与未跟踪文件已在本机私有stage12-delivery-20261029备份；部署及实际验收结果随后追加，不提前称为完成。

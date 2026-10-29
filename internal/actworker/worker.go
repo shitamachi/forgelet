@@ -18,9 +18,9 @@ import (
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
-type formatter struct{}
+type formatter struct{ progress *workerProgress }
 
-func (formatter) Format(e *logrus.Entry) ([]byte, error) {
+func (f formatter) Format(e *logrus.Entry) ([]byte, error) {
 	m := run.ActMessage{Message: e.Message + "\n"}
 	if e.Data["stage"] == "Main" && strings.HasPrefix(e.Message, "exitcode '") {
 		var code int
@@ -35,8 +35,21 @@ func (formatter) Format(e *logrus.Entry) ([]byte, error) {
 		m.Mask, _ = e.Data["arg"].(string)
 		m.Message = ""
 	}
+	var prefix []byte
+	if f.progress != nil {
+		if event := f.progress.event(e); event != nil {
+			data, err := json.Marshal(run.ActMessage{Progress: event})
+			if err != nil {
+				return nil, err
+			}
+			prefix = append(data, '\n')
+		}
+	}
+	if e.Level == logrus.DebugLevel {
+		return prefix, nil
+	}
 	data, err := json.Marshal(m)
-	return append(data, '\n'), err
+	return append(append(prefix, data...), '\n'), err
 }
 
 type loggerFactory struct{ out io.Writer }
@@ -44,8 +57,8 @@ type loggerFactory struct{ out io.Writer }
 func (f loggerFactory) WithJobLogger() *logrus.Logger {
 	l := logrus.New()
 	l.SetOutput(f.out)
-	l.SetFormatter(formatter{})
-	l.SetLevel(logrus.InfoLevel)
+	l.SetFormatter(formatter{progress: &workerProgress{started: map[string]bool{}, finished: map[string]bool{}}})
+	l.SetLevel(logrus.DebugLevel)
 	return l
 }
 

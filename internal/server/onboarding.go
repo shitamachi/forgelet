@@ -21,12 +21,13 @@ type onboardingProvider interface {
 }
 
 func (s *Server) catalog(ctx context.Context) (gh.Catalog, error) {
-	p, ok := s.provider.(onboardingProvider)
-	if !ok {
-		return gh.Catalog{}, errors.New("GitHub App discovery is not configured")
+	state, err := s.refreshGitHubAuthorization(ctx)
+	if err != nil {
+		return gh.Catalog{}, err
 	}
-	return p.Discover(ctx)
+	return *state.Catalog, nil
 }
+
 func (s *Server) githubConnection(w http.ResponseWriter, r *http.Request) {
 	catalog, err := s.catalog(r.Context())
 	if err != nil {

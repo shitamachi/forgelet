@@ -66,6 +66,15 @@ func (p *actProtocol) Write(data []byte) (written int, returnErr error) {
 			}
 			continue
 		}
+		if message.Progress != nil {
+			e := *message.Progress
+			if e.Kind == "annotation" {
+				e.Message = redactAnnotation(e.Message, p.mask)
+			}
+			if err := reportProgress(p.ctx, p.opts, e); err != nil {
+				return 0, err
+			}
+		}
 		if message.ExitCode != nil && message.StepID != "" {
 			if p.codes == nil {
 				p.codes = map[string]int{}
@@ -194,9 +203,15 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 			result.Error = strings.ReplaceAll(result.Error, value, "***")
 		}
 	}()
+	if err := reportProgress(preparationCtx, opts, run.ProgressEvent{Kind: "phase", Phase: "preparing"}); err != nil {
+		return result, err
+	}
 	// All containers belong to this one engine/job. Stop them before reporting
 	// cancellation or timeout, including Testcontainers and nested build helpers.
 	defer func() {
+		if err := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "phase", Phase: "cleanup"}); err != nil && jobCtx.Err() == nil {
+			returnErr = errors.Join(returnErr, err)
+		}
 		cleanupCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer done()
 		if err := stopActContainers(cleanupCtx); err != nil {
@@ -269,6 +284,9 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 		return result, err
 	}
 	cancelPreparation()
+	if err := reportProgress(jobCtx, opts, run.ProgressEvent{Kind: "phase", Phase: "executing"}); err != nil {
+		return result, err
+	}
 	workflowCtx, cancelWorkflow := context.WithTimeout(jobCtx, time.Duration(seconds)*time.Second)
 	defer cancelWorkflow()
 	protocol.ctx = workflowCtx

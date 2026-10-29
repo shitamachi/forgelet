@@ -87,7 +87,7 @@ func getRun(ctx context.Context, q queryer, id string, summary ...bool) (run.Run
 	}
 	query := "SELECT body FROM jobs WHERE run_id=? ORDER BY created_at,id"
 	if len(summary) > 0 && summary[0] {
-		query = "SELECT json_remove(body,'$.plan.event','$.plan.steps','$.plan.env','$.plan.vars','$.plan.inputs','$.plan.call_inputs','$.plan.call_values','$.plan.needs_context','$.result.steps','$.result.outputs') FROM jobs WHERE run_id=? ORDER BY created_at,id"
+		query = "SELECT json_remove(body,'$.plan.event','$.plan.steps','$.plan.env','$.plan.vars','$.plan.inputs','$.plan.call_inputs','$.plan.call_values','$.plan.needs_context','$.result.steps','$.result.outputs','$.progress.steps','$.progress.annotations') FROM jobs WHERE run_id=? ORDER BY created_at,id"
 	}
 	jobs, err := queryJobs(ctx, q, query, id)
 	if err != nil {
@@ -202,6 +202,16 @@ func queryJobs(ctx context.Context, q queryer, query string, args ...any) ([]run
 
 func saveJob(ctx context.Context, tx *sql.Tx, job run.Job) error {
 	job.UpdatedAt = time.Now().UTC()
+	if job.State.Terminal() && job.Progress != nil && len(job.Progress.Phases) > 0 {
+		i := len(job.Progress.Phases) - 1
+		if job.Progress.Phases[i].FinishedAt.IsZero() {
+			end := job.UpdatedAt
+			if end.Before(job.Progress.LastAt) {
+				end = job.Progress.LastAt
+			}
+			job.Progress.Phases[i].FinishedAt = end
+		}
+	}
 	body, err := json.Marshal(job)
 	if err != nil {
 		return fmt.Errorf("encode job: %w", err)
@@ -244,6 +254,9 @@ func (s *Store) Claim(ctx context.Context, id, uid string) (run.Plan, error) {
 			return fmt.Errorf("claim job %s: %w", id, ErrConflict)
 		}
 		job.PodUID, job.State = uid, run.Running
+		if job.ClaimedAt.IsZero() {
+			job.ClaimedAt = time.Now().UTC()
+		}
 		if err := saveJob(ctx, tx, job); err != nil {
 			return err
 		}

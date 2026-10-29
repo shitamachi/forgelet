@@ -132,6 +132,9 @@ func (s *Store) Finish(ctx context.Context, id, uid string, result run.Result) e
 		if result.LastLogSeq != last {
 			return fmt.Errorf("result log sequence %d differs from stored %d: %w", result.LastLogSeq, last, ErrConflict)
 		}
+		if result.LastProgressSeq < 0 || result.LastProgressSeq > run.MaxProgressEvents || result.LastProgressSeq > 0 && (job.Progress == nil || job.Progress.Seq != result.LastProgressSeq) {
+			return fmt.Errorf("result progress sequence differs from stored progress: %w", ErrConflict)
+		}
 		job.State, job.Result = result.State, &result
 		if job.Plan.ContinueOnError && result.State == run.Failed && result.Error == "" {
 			job.State = run.Succeeded

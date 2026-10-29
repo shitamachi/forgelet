@@ -114,6 +114,14 @@ const server = createServer(async (req, res) => {
       state.management.version++
       return json(state.management)
     }
+    if (path === '/api/github/authorization')
+      return json(
+        state.githubAuthorization || {
+          repositories: Object.fromEntries(
+            state.config.repositories.map((name) => [name, { state: 'authorized' }]),
+          ),
+        },
+      )
     if (path === '/api/github/connection')
       return json({
         app: 'forgelet-test',

@@ -5,6 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowLeft, LoaderCircle, Play } from 'lucide-react'
 import { queries, queryClient } from '../lib/queries'
 import { api } from '../lib/api'
+import { repositoryState } from '../lib/repository-state'
 import { ErrorPanel, PageHeader, useToast } from '../components/ui'
 import type { ManualRun } from '../lib/types'
 const template = `name: Manual check\non: workflow_dispatch\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - name: Check workspace\n        run: |\n          echo "Hello from forgelet"\n          pwd\n`
@@ -14,6 +15,14 @@ export default function NewRun() {
   const navigate = useNavigate()
   const toast = useToast()
   const [repository, setRepository] = useState('')
+  const [editedInstallations, setInstallations] = useState<Record<string, string>>({})
+  const authorization = useQuery({
+    queryKey: ['github-authorization'],
+    queryFn: ({ signal }) => api.githubAuthorization(signal),
+    enabled: config.data?.features.github === true,
+    refetchInterval: 3000,
+    retry: false,
+  })
   const [editedWorkflow, setWorkflow] = useState<string>()
   const profile =
     config.data?.profiles.find((p) => p.name === 'homelab')?.name ||
@@ -33,9 +42,18 @@ export default function NewRun() {
   const repo = repository || config.data?.repositories[0] || ''
   const installation =
     runs.data?.find((r) => r.repository === repo && r.installation_id > 0)?.installation_id || 0
+  const access = repositoryState(
+    { name: repo, enabled: true, installation_id: installation },
+    authorization.data?.snapshot?.catalog,
+    authorization.isError,
+    authorization.data?.repositories[repo],
+  )
+  const requiresAuthorization = config.data?.features.github === true
+  const authorized = !requiresAuthorization || access.key === 'ready'
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError(undefined)
+    if (!authorized) return
     const data = new FormData(event.currentTarget)
     try {
       const inputs: unknown = JSON.parse(String(data.get('inputs') || '{}'))
@@ -119,16 +137,17 @@ export default function NewRun() {
             <label>
               GitHub installation ID
               <input
-                key={repo + installation}
+                aria-label="GitHub installation ID"
                 name="installation"
                 type="number"
                 min="0"
                 step="1"
-                defaultValue={installation}
+                value={editedInstallations[repo] ?? String(installation)}
+                onChange={(e) => setInstallations((old) => ({ ...old, [repo]: e.target.value }))}
                 required
               />
               <span className="field-hint">
-                私有仓库 checkout 与 Checks 需要对应 App installation；纯 shell 可用 0。
+                私有仓库 checkout 与 Checks 需要对应 installation。填写 0 仍会检查仓库授权。
               </span>
             </label>
           </div>
@@ -162,6 +181,12 @@ export default function NewRun() {
             className="code-input workflow-editor"
           />
         </section>
+        {requiresAuthorization && !authorized && (
+          <p className="section-note" role="status">
+            {access.label}：{access.detail} 填写内容会保留。
+            <Link to="/connections">检查仓库接入</Link>
+          </p>
+        )}
         {error != null && <ErrorPanel error={error} />}
         <div className="form-actions">
           <Link to="/runs" search={{ q: '', state: 'all', repo: 'all' }} className="button">
@@ -170,7 +195,7 @@ export default function NewRun() {
           <button
             type="submit"
             className="button button-primary"
-            disabled={create.isPending || config.isPending}
+            disabled={create.isPending || config.isPending || !authorized}
           >
             {create.isPending ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}
             创建运行
