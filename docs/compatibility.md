@@ -383,3 +383,5 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 
 
 PR opened/reopened/synchronize/ready_for_review的同仓库事件若测试合并SHA尚未生成，先持久化等待，再通过GitHub API核对原始head/base、读取PR merge ref并验证合并提交的两个父SHA后固定测试merge SHA；兼容2026-03-10已移除merge_commit_sha的REST响应。不会退回head SHA。冲突/关闭或head/base变化不执行新的源快照，事件诊断保留；恢复后应使用新事件或明确重试。固定结果先持久化再准入，重启/重复投递不重新解析成其他提交。
+
+PR Check使用原始head SHA并命名为 `forgelet / PR / …`，与分支push检查区分；执行仍是固定测试merge SHA，终态摘要列出两个提交。分支保护如需配置，应选择PR检查名称。旧merge Check仅在同App/同job和精确执行SHA匹配时迁移；不能将分支push成功当作PR完成。

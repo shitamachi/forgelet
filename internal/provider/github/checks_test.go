@@ -284,3 +284,82 @@ func TestDeletedCheckIsReconciledAndEmptyDetailsAreOmitted(t *testing.T) {
 		})
 	}
 }
+
+func TestPRCheckHeadAndLegacyMigration(t *testing.T) {
+	for _, mode := range []string{"new", "legacy", "foreign App", "unrelated SHA"} {
+		t.Run(mode, func(t *testing.T) {
+			head := strings.Repeat("b", 40)
+			check := checkFixture()
+			check.Job.Plan.EventName = "pull_request"
+			check.Job.Plan.Event = json.RawMessage(`{"pull_request":{"head":{"sha":"` + head + `","repo":{"full_name":"owner/repo","fork":false}}}}`)
+			if mode != "new" {
+				check.RemoteID = 11
+			}
+			mutations := 0
+			retired := false
+			client, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					writeToken(t, w)
+					return
+				}
+				if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/commits/") {
+					if !strings.Contains(r.URL.Path, head) {
+						t.Error("searched wrong commit", r.URL.Path)
+					}
+					writeJSON(t, w, map[string]any{"check_runs": []remoteCheck{}})
+					return
+				}
+				if r.Method == http.MethodGet {
+					old := remoteFixture(11, 42, "job-1")
+					if mode == "foreign App" {
+						old.App.ID = 77
+					}
+					if mode == "unrelated SHA" {
+						old.HeadSHA = strings.Repeat("d", 40)
+					}
+					writeJSON(t, w, old)
+					return
+				}
+				mutations++
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if r.URL.Path == "/repos/owner/repo/check-runs/11" {
+					retired = true
+					if body["conclusion"] != "neutral" || body["status"] != "completed" {
+						t.Error(body)
+					}
+					writeJSON(t, w, remoteFixture(11, 42, "job-1"))
+					return
+				}
+				if body["head_sha"] != head || body["name"] != "forgelet / PR / test" {
+					t.Error(body)
+				}
+				created := remoteFixture(22, 42, "job-1")
+				created.HeadSHA = head
+				writeJSON(t, w, created)
+			})
+			id, err := client.ReportCheck(t.Context(), check, "https://forgelet.example/runs/pr")
+			if mode == "foreign App" || mode == "unrelated SHA" {
+				if err == nil || mutations != 0 {
+					t.Fatal(id, err, mutations)
+				}
+				return
+			}
+			if err != nil || id != 22 || retired != (mode == "legacy") {
+				t.Fatal(id, err, retired)
+			}
+			if check.Run.SHA != testSHA {
+				t.Fatal("execution SHA changed")
+			}
+		})
+	}
+	check := checkFixture()
+	check.Job.Plan.EventName = "pull_request"
+	check.Job.Plan.Event = json.RawMessage(`{}`)
+	client, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) { t.Error("network called for invalid PR identity") })
+	if _, err := client.ReportCheck(t.Context(), check, ""); err == nil {
+		t.Fatal("accepted missing source head")
+	}
+}

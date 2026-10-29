@@ -110,6 +110,29 @@ func testPhaseTwo(t *testing.T, ctx context.Context, cluster testcontainers.Cont
 		if resolved.State != run.Succeeded || resolved.SHA != strings.Repeat("d", 40) {
 			t.Fatal(resolved)
 		}
+		waitFor(t, ctx, "PR checks target original head and preserve merge execution", func() bool {
+			output := clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "cat", "/fixture-state/github-checks.json")
+			// clusterCommand contains the Docker stream header; locate the JSON array.
+			at := strings.Index(output, "[{")
+			if at < 0 {
+				return false
+			}
+			var checks []struct {
+				External   string `json:"external_id"`
+				Head       string `json:"head_sha"`
+				Name       string `json:"name"`
+				Conclusion string `json:"conclusion"`
+			}
+			if json.Unmarshal([]byte(output[at:]), &checks) != nil {
+				return false
+			}
+			for _, c := range checks {
+				if c.External == resolved.Jobs[0].ID {
+					return c.Head == strings.Repeat("e", 40) && strings.HasPrefix(c.Name, "forgelet / PR / ") && c.Conclusion == "success"
+				}
+			}
+			return false
+		})
 		send("pull_request", "integration-pr-pending", pr)
 		if repeated := find("integration-pr-pending"); repeated.ID != resolved.ID {
 			t.Fatal("duplicate PR was replayed", repeated)

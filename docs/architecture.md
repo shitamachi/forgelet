@@ -700,3 +700,6 @@ GitOps复用 `forgelet-homelab-gitops`，新增 `apps/steam-admin-web`；复用�
 GitHub的opened事件可能包含null merge_commit_sha。验签、同仓库/fork排除和原始head/base校验后，先以空SHA持久化事件；Tick沿原有有界退避读取PR，使用仅限该仓库的contents:read + pull_requests:read短期令牌（不发往Pod）。只有API报告open/mergeable=true且number、head/base SHA、base ref及仓库身份仍匹配原事件，才读取refs/pull/<number>/merge与该提交的两个父SHA，核对原始base/head后固定测试merge SHA。REST 2026-03-10不再提供merge_commit_sha，不能依赖该字段就绪；读取ref与commit也不能省略父提交检查。未就绪/网络错误保留事件，冲突、关闭或源身份变化记录明确诊断而不运行其他提交。
 
 固定SHA与event payload的merge_commit_sha在一个SQLite事务中保存，之后才加载/编译workflow；重复delivery、重启和部分workflow准入失败均复用第一次固定结果，不采用稍后变化的PR或head提交。现有非空merge SHA事件路径保持；不新增后台服务或表迁移。重试耗尽沿现有事件重试入口处理，不能把PR从未运行误记为成功。GitHub mergeable=null的异步行为见官方REST pulls文档。
+
+
+PR执行SHA与Check归属分离：执行计划/checkout始终使用已固定测试merge SHA；GitHub Check读取计划内已验签原始事件的同仓库head身份，报告到head，名称使用forgelet / PR / …，终态摘要同时写明测试merge与head。push的Check行为保持。旧版本已经写到merge SHA的同App/同external job ID Check先置neutral并说明迁移，再按head+external ID恢复或创建Check，沿现有outbox CAS替换远端ID；其他App、其他job或不相关SHA不得迁移，失败可幂等重试。

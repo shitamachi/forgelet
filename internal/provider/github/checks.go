@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,6 +35,19 @@ func (c *Client) ReportCheck(ctx context.Context, check run.Check, detailsURL st
 			return 0, errors.New("github: invalid check details URL")
 		}
 	}
+	checkSHA := check.Run.SHA
+	isPR := check.Job.Plan.EventName == "pull_request"
+	if isPR {
+		var payload struct {
+			PullRequest struct {
+				Head pullRequestIdentity `json:"head"`
+			} `json:"pull_request"`
+		}
+		if json.Unmarshal(check.Job.Plan.Event, &payload) != nil || !validSHA(payload.PullRequest.Head.SHA) || payload.PullRequest.Head.Repo.Fork || payload.PullRequest.Head.Repo.FullName != check.Run.Repository {
+			return 0, errors.New("github: invalid persisted PR check head identity")
+		}
+		checkSHA = payload.PullRequest.Head.SHA
+	}
 	status, conclusion, err := checkStatus(check.Job.State)
 	if err != nil {
 		return 0, err
@@ -51,12 +65,27 @@ func (c *Client) ReportCheck(ctx context.Context, check run.Check, detailsURL st
 			id = 0
 		} else if err != nil {
 			return 0, fmt.Errorf("github: read check: %w", err)
-		} else if existing.ID != id || existing.ExternalID != check.Job.ID || existing.HeadSHA != check.Run.SHA || existing.App.ID != c.appID {
+		} else if existing.ID != id || existing.ExternalID != check.Job.ID || existing.App.ID != c.appID {
 			return 0, errors.New("github: check identity or App mismatch")
+		} else if existing.HeadSHA != checkSHA {
+			if !isPR || existing.HeadSHA != check.Run.SHA {
+				return 0, errors.New("github: check identity or App mismatch")
+			}
+			// Retire only this exact legacy test-merge check. Its replacement
+			// is found by the same external ID at the immutable PR head.
+			var retired remoteCheck
+			body := map[string]any{"status": "completed", "conclusion": "neutral", "completed_at": c.now().UTC().Format(time.RFC3339), "output": map[string]string{"title": "PR check moved to source head", "summary": "Execution still tests merge " + check.Run.SHA + ". Follow the PR head check for the result."}}
+			if err := c.request(ctx, http.MethodPatch, base+"/check-runs/"+strconv.FormatInt(id, 10), nil, token, body, &retired); err != nil {
+				return 0, fmt.Errorf("github: retire legacy PR check: %w", err)
+			}
+			if retired.ID != id || retired.App.ID != c.appID || retired.ExternalID != check.Job.ID || retired.HeadSHA != check.Run.SHA {
+				return 0, errors.New("github: invalid retired check identity")
+			}
+			id = 0
 		}
 	}
 	if id == 0 {
-		id, err = c.findCheck(ctx, base, token, check.Run.SHA, check.Job.ID)
+		id, err = c.findCheck(ctx, base, token, checkSHA, check.Job.ID)
 		if err != nil {
 			return 0, fmt.Errorf("github: find check: %w", err)
 		}
@@ -64,6 +93,9 @@ func (c *Client) ReportCheck(ctx context.Context, check run.Check, detailsURL st
 	name := check.Job.Name
 	if name == "" {
 		name = check.Job.ID
+	}
+	if isPR {
+		name = "PR / " + name
 	}
 	body := map[string]any{"name": "forgelet / " + name, "status": status, "external_id": check.Job.ID}
 	if detailsURL != "" {
@@ -85,16 +117,19 @@ func (c *Client) ReportCheck(ctx context.Context, check run.Check, detailsURL st
 		body["completed_at"] = completed.UTC().Format(time.RFC3339)
 		body["output"] = map[string]string{"title": "Forgelet: " + string(check.Job.State), "summary": "Execution state: " + string(check.Job.State) + ". Open details for logs."}
 	}
+	if isPR && conclusion != "" {
+		body["output"] = map[string]string{"title": "Forgelet PR: " + string(check.Job.State), "summary": "Execution state: " + string(check.Job.State) + ". Tested merge " + check.Run.SHA + " for source head " + checkSHA + ". Open details for logs."}
+	}
 	method, endpoint := http.MethodPatch, base+"/check-runs/"+strconv.FormatInt(id, 10)
 	if id == 0 {
 		method, endpoint = http.MethodPost, base+"/check-runs"
-		body["head_sha"] = check.Run.SHA
+		body["head_sha"] = checkSHA
 	}
 	var response remoteCheck
 	if err := c.request(ctx, method, endpoint, nil, token, body, &response); err != nil {
 		return 0, fmt.Errorf("github: report check: %w", err)
 	}
-	if response.ID <= 0 || (id != 0 && response.ID != id) || response.App.ID != c.appID || response.ExternalID != check.Job.ID || response.HeadSHA != check.Run.SHA {
+	if response.ID <= 0 || (id != 0 && response.ID != id) || response.App.ID != c.appID || response.ExternalID != check.Job.ID || response.HeadSHA != checkSHA {
 		return 0, errors.New("github: invalid check response identity")
 	}
 	return response.ID, nil

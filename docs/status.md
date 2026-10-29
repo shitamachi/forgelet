@@ -1168,3 +1168,8 @@ platform-web GitOps acb5fe1先对齐现网6ee9e663，再移除Flux spec.images�
 
 
 PR追加实测：f9d2b6d服务器a9a17192…已上线，原运行同Pod UID保留，原opened签名重投成功202并持久化等待。进一步用同一GitHub App比较实际API响应，确认默认旧版本提供merge_commit_sha，而控制面使用的2026-03-10不再返回该字段；原解析实现因此一直not ready，不能计为PR通过。现改为同仓库只读contents+pull_requests令牌，读取merge ref与不可变commit父列表并核对原始base/head；新夹具删除旧字段，补ref不存在与父提交变化回归。之前一次Testcontainers失败是新增夹具误用github容器名，已修正为github-test-api，失败日志保留。修正夹具后的专项825.448秒通过，含真实大BuildKit/自动发布依赖/重启/失败门禁及分支cache；最后只读令牌及旧字段移除专项281.327秒通过，但这两次尚未覆盖新的ref/parents实现，最终版本自动验证继续。
+
+
+6a52234/merge-ref修复已上线，原事件显式重试后固定2a35cf6（父提交c5db392和8b3295f），PR运行befc785a已创建；原分支0bde91ea最终完整success，npm metadata单次重试约671秒保留实测，不把缓存命中当作网络消除。原始workflow/32测试与构建保持。最新ref/parents实现make verify通过42前端/17浏览器39.8秒，真实k3s签名PR/等待/重启/固定执行专项PASS202.909秒（25.70秒叶场景）。
+
+又发现实际PR展示阻断：gh pr checks只见分支push成功，而PR merge Check写在测试合并SHA上。正在将PR Check关联到持久化事件的原始head，并用PR名称区分，执行计划SHA不变；旧Check需同App/job/精确merge SHA校验后幂等迁移，补单测和真实k3s断言。原PR仍在资源队列，不提前称通过。platform-web真实0d06918 push运行b498a426原48单测、28 Playwright与生产构建/smoke已通过，image/CD尚待结束；两个试用仓库该commit的GitHub hosted run总数均0。
