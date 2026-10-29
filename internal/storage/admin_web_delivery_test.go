@@ -28,6 +28,12 @@ func TestAdminWebReusableCIGatesPublishAndDelivery(t *testing.T) {
 			t.Fatal("original CI command removed", command)
 		}
 	}
+	image := string(files[".github/workflows/image.yml"])
+	setup := strings.Index(image, "uses: docker/setup-buildx-action@v3")
+	publish := strings.Index(image, "uses: docker/build-push-action@v6")
+	if setup < 0 || publish < setup || !strings.Contains(image, "cache-from: type=gha,scope=admin-web") || !strings.Contains(image, "cache-to: type=gha,scope=admin-web,mode=max") || strings.Contains(image, "ignore-error") {
+		t.Fatal("standard mirror-aware builder/cache contract missing or failures ignored")
+	}
 	for _, outcome := range []run.State{run.Succeeded, run.Failed} {
 		t.Run(string(outcome), func(t *testing.T) {
 			ctx := t.Context()
