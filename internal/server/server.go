@@ -46,6 +46,7 @@ type Store interface {
 	Settings(context.Context, string, string) (map[string][]byte, error)
 	DeleteSetting(context.Context, string, string, string) error
 	PutEvent(context.Context, run.Event) (bool, error)
+	PinEventSHA(context.Context, string, string) (run.Event, error)
 	PendingEvents(context.Context, ...time.Time) ([]run.Event, error)
 	Events(context.Context) ([]run.Event, error)
 	FinishEvent(context.Context, string, string) error
@@ -405,7 +406,7 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusAccepted, map[string]string{"status": "ignored push"})
 			return
 		}
-		http.Error(w, "invalid event payload or missing merge commit", http.StatusBadRequest)
+		http.Error(w, "invalid event payload or pull request identity", http.StatusBadRequest)
 		return
 	}
 	e.DeliveryID = r.Header.Get("X-GitHub-Delivery")
@@ -1117,6 +1118,35 @@ func (s *Server) Tick(ctx context.Context) error {
 					problems = append(problems, retryErr)
 				}
 				continue
+			}
+			if e.Name == "pull_request" && e.SHA == "" {
+				resolver, ok := s.provider.(interface {
+					ResolvePullRequest(context.Context, run.Event) (string, error)
+				})
+				var sha string
+				var resolveErr error
+				if !ok {
+					resolveErr = fmt.Errorf("PR merge resolution unavailable")
+				} else {
+					sha, resolveErr = resolver.ResolvePullRequest(ctx, e)
+				}
+				if errors.Is(resolveErr, gh.ErrPullRequestSuperseded) {
+					if err := s.store.FinishEvent(ctx, e.DeliveryID, resolveErr.Error()); err != nil {
+						problems = append(problems, err)
+					}
+					continue
+				}
+				if resolveErr != nil {
+					if err := s.store.RetryEvent(ctx, e.DeliveryID, resolveErr.Error(), s.now()); err != nil {
+						problems = append(problems, err)
+					}
+					continue
+				}
+				e, err = s.store.PinEventSHA(ctx, e.DeliveryID, sha)
+				if err != nil {
+					problems = append(problems, err)
+					continue
+				}
 			}
 			files, err := s.eventWorkflows(ctx, e)
 			if err != nil {

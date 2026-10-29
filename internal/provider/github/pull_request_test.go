@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +20,7 @@ func TestSameRepositoryPullRequestUsesMergeCommit(t *testing.T) {
 	for _, tc := range []struct {
 		body    string
 		ignored bool
-	}{{strings.Replace(body, `"fork":false`, `"fork":true`, 1), true}, {strings.Replace(body, `"head":{"sha"`, `"head":{"sha"`, 1), false}, {strings.Replace(body, testSHA, "", 1), false}, {strings.Replace(body, `"synchronize"`, `"closed"`, 1), true}} {
+	}{{strings.Replace(body, `"fork":false`, `"fork":true`, 1), true}, {strings.Replace(body, `"head":{"sha"`, `"head":{"sha"`, 1), false}, {strings.Replace(body, testSHA, "invalid", 1), false}, {strings.Replace(body, `"synchronize"`, `"closed"`, 1), true}} {
 		if tc.body == body {
 			continue
 		}
@@ -102,5 +103,72 @@ func TestChangedFilesUsesImmutableComparisonAndRejectsTruncation(t *testing.T) {
 				t.Fatal(files, err)
 			}
 		})
+	}
+}
+
+func TestPullRequestPendingMergeAndResolution(t *testing.T) {
+	event := run.Event{Name: "pull_request", Repository: "owner/repo", InstallationID: 7, Ref: "refs/pull/12/merge", BaseRef: "main", HeadSHA: strings.Repeat("b", 40), BeforeSHA: strings.Repeat("c", 40)}
+	for _, tc := range []struct {
+		name                 string
+		change               func(map[string]any)
+		permanent, transient bool
+	}{
+		{name: "ready"},
+		{name: "pending", change: func(p map[string]any) { p["mergeable"] = nil; p["merge_commit_sha"] = nil }, transient: true},
+		{name: "conflict", change: func(p map[string]any) { p["mergeable"] = false }, permanent: true},
+		{name: "head advanced", change: func(p map[string]any) { p["head"].(map[string]any)["sha"] = strings.Repeat("d", 40) }, permanent: true},
+		{name: "base advanced", change: func(p map[string]any) { p["base"].(map[string]any)["sha"] = strings.Repeat("d", 40) }, permanent: true},
+		{name: "base ref changed", change: func(p map[string]any) { p["base"].(map[string]any)["ref"] = "private" }, permanent: true},
+		{name: "fork", change: func(p map[string]any) { p["head"].(map[string]any)["repo"].(map[string]any)["fork"] = true }, permanent: true},
+		{name: "closed", change: func(p map[string]any) { p["state"] = "closed" }, permanent: true},
+		{name: "wrong number", change: func(p map[string]any) { p["number"] = 13 }, permanent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			details := map[string]any{"number": 12, "state": "open", "mergeable": true, "merge_commit_sha": testSHA, "head": map[string]any{"sha": event.HeadSHA, "repo": map[string]any{"full_name": event.Repository, "fork": false}}, "base": map[string]any{"sha": event.BeforeSHA, "ref": event.BaseRef, "repo": map[string]any{"full_name": event.Repository}}}
+			if tc.change != nil {
+				tc.change(details)
+			}
+			c, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+					var scope struct {
+						Permissions  map[string]string `json:"permissions"`
+						Repositories []string          `json:"repositories"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&scope); err != nil {
+						t.Error(err)
+					}
+					if len(scope.Permissions) != 1 || scope.Permissions["pull_requests"] != "read" || len(scope.Repositories) != 1 || scope.Repositories[0] != "repo" {
+						t.Errorf("PR resolver token scope: %+v", scope)
+					}
+					writeToken(t, w)
+					return
+				}
+				if r.URL.Path != "/repos/owner/repo/pulls/12" || r.Header.Get("Authorization") != "Bearer installation-secret" {
+					t.Error("unexpected PR lookup", r.URL.Path)
+				}
+				writeJSON(t, w, details)
+			})
+			sha, err := c.ResolvePullRequest(t.Context(), event)
+			if tc.permanent {
+				if !errors.Is(err, ErrPullRequestSuperseded) {
+					t.Fatal(sha, err)
+				}
+				return
+			}
+			if tc.transient {
+				if err == nil || errors.Is(err, ErrPullRequestSuperseded) {
+					t.Fatal(sha, err)
+				}
+				return
+			}
+			if err != nil || sha != testSHA {
+				t.Fatal(sha, err)
+			}
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"action": "opened", "number": 12, "repository": map[string]string{"full_name": "owner/repo"}, "installation": map[string]int{"id": 7}, "pull_request": map[string]any{"merge_commit_sha": nil, "head": map[string]any{"sha": event.HeadSHA, "repo": map[string]any{"full_name": event.Repository}}, "base": map[string]any{"sha": event.BeforeSHA, "ref": "main", "repo": map[string]any{"full_name": event.Repository}}}})
+	parsed, err := ParsePullRequest(body)
+	if err != nil || parsed.SHA != "" || parsed.HeadSHA != event.HeadSHA {
+		t.Fatal(parsed, err)
 	}
 }

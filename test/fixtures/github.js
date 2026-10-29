@@ -52,6 +52,12 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
     const repositories=[...(authorizationMode==='removed'?[]:[{id:11,full_name:'test/project',default_branch:'main'}]),{id:12,full_name:'test/console',default_branch:'main'},{id:13,full_name:'test/onboarding',default_branch:'main'},...(oauthGranted?[{id:14,full_name:'test/oauth',default_branch:'main'}]:[]),...['steam-admin-web','steam-admin','steam-platform-web','steam-login','steam-api'].map((name,i)=>({id:1001+i,full_name:'shitamachi/'+name,default_branch:'main'}))];
     return send({total_count:repositories.length,repositories});
   }
+  if (url.pathname === '/repos/test/project/pulls/12') {
+    const ready = !fs.existsSync('/fixture-state/pr-merge-pending');
+    return send({number:12,state:'open',mergeable:ready?true:null,merge_commit_sha:ready?'d'.repeat(40):null,
+      head:{sha:'e'.repeat(40),repo:{full_name:'test/project',fork:false}},
+      base:{sha:'b'.repeat(40),ref:'main',repo:{full_name:'test/project'}}});
+  }
   if (url.pathname.endsWith('/commits')) return send([{sha:'b'.repeat(40)}]);
   const onboarding = 'name: Onboarding integration\non: push\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - run: echo onboarding-real-k3s\n';
   const oauthWorkflow = 'name: OAuth integration\non: push\njobs:\n  check:\n    runs-on: homelab\n    steps:\n      - run: echo oauth-first-run-real-k3s\n';

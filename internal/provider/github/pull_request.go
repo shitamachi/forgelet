@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/shitamachi/forgelet/internal/run"
 )
@@ -16,8 +17,25 @@ import (
 // truncated diff complete or create the missing immutable base commit.
 var ErrComparisonUnsupported = errors.New("github: unsupported changed-file comparison")
 
-// ParsePullRequest accepts only same-repository PRs and a concrete test merge
-// commit. Fork URLs and head SHAs never substitute for a missing merge commit.
+type pullRequestIdentity struct {
+	SHA  string `json:"sha"`
+	Ref  string `json:"ref"`
+	Repo struct {
+		FullName string `json:"full_name"`
+		Fork     bool   `json:"fork"`
+	} `json:"repo"`
+}
+type pullRequestDetails struct {
+	Number         int                 `json:"number"`
+	State          string              `json:"state"`
+	Mergeable      *bool               `json:"mergeable"`
+	MergeCommitSHA string              `json:"merge_commit_sha"`
+	Head           pullRequestIdentity `json:"head"`
+	Base           pullRequestIdentity `json:"base"`
+}
+
+// ParsePullRequest accepts only same-repository PR identities. GitHub may not
+// have computed the test merge yet; an empty SHA is persisted for resolution.
 func ParsePullRequest(body []byte) (run.Event, error) {
 	var p struct {
 		Action     string `json:"action"`
@@ -28,24 +46,9 @@ func ParsePullRequest(body []byte) (run.Event, error) {
 		Installation struct {
 			ID int64 `json:"id"`
 		} `json:"installation"`
-		PullRequest struct {
-			MergeCommitSHA string `json:"merge_commit_sha"`
-			Head           struct {
-				SHA  string `json:"sha"`
-				Repo struct {
-					FullName string `json:"full_name"`
-					Fork     bool   `json:"fork"`
-				} `json:"repo"`
-			} `json:"head"`
-			Base struct {
-				SHA  string `json:"sha"`
-				Ref  string `json:"ref"`
-				Repo struct {
-					FullName string `json:"full_name"`
-				} `json:"repo"`
-			} `json:"base"`
-		} `json:"pull_request"`
+		PullRequest pullRequestDetails `json:"pull_request"`
 	}
+
 	if len(body) > maxResponseBytes || json.Unmarshal(body, &p) != nil {
 		return run.Event{}, fmt.Errorf("github: invalid pull request payload")
 	}
@@ -57,8 +60,8 @@ func ParsePullRequest(body []byte) (run.Event, error) {
 	if p.PullRequest.Head.Repo.Fork || p.PullRequest.Head.Repo.FullName != p.Repository.FullName {
 		return run.Event{}, ErrIgnored
 	}
-	if !validRepository(p.Repository.FullName) || p.PullRequest.Base.Repo.FullName != p.Repository.FullName || p.Installation.ID <= 0 || p.Number <= 0 || !validSHA(p.PullRequest.MergeCommitSHA) || !validSHA(p.PullRequest.Head.SHA) || !validSHA(p.PullRequest.Base.SHA) || p.PullRequest.Base.Ref == "" {
-		return run.Event{}, fmt.Errorf("github: pull request requires same-repository identity and a merge commit")
+	if !validRepository(p.Repository.FullName) || p.PullRequest.Base.Repo.FullName != p.Repository.FullName || p.Installation.ID <= 0 || p.Number <= 0 || (p.PullRequest.MergeCommitSHA != "" && !validSHA(p.PullRequest.MergeCommitSHA)) || !validSHA(p.PullRequest.Head.SHA) || !validSHA(p.PullRequest.Base.SHA) || p.PullRequest.Base.Ref == "" {
+		return run.Event{}, fmt.Errorf("github: pull request requires valid same-repository head/base identity")
 	}
 	return run.Event{Name: "pull_request", Action: p.Action, Repository: p.Repository.FullName, SHA: p.PullRequest.MergeCommitSHA, HeadSHA: p.PullRequest.Head.SHA, BeforeSHA: p.PullRequest.Base.SHA, BaseRef: p.PullRequest.Base.Ref, Ref: "refs/pull/" + strconv.Itoa(p.Number) + "/merge", InstallationID: p.Installation.ID, Payload: append(json.RawMessage(nil), body...)}, nil
 }
@@ -100,4 +103,35 @@ func (c *Client) ChangedFiles(ctx context.Context, event run.Event) ([]string, e
 		}
 	}
 	return files, nil
+}
+
+// ErrPullRequestSuperseded cannot be retried into executing different source.
+var ErrPullRequestSuperseded = errors.New("github: pull request no longer matches the original event")
+
+// ResolvePullRequest resolves only the original head/base pair. It never falls
+// back to the head commit or adopts a later branch update after an API failure.
+func (c *Client) ResolvePullRequest(ctx context.Context, event run.Event) (string, error) {
+	number := strings.TrimSuffix(strings.TrimPrefix(event.Ref, "refs/pull/"), "/merge")
+	n, err := strconv.Atoi(number)
+	if err != nil || n < 1 || event.Ref != "refs/pull/"+strconv.Itoa(n)+"/merge" || event.Name != "pull_request" || !validRepository(event.Repository) || !validSHA(event.HeadSHA) || !validSHA(event.BeforeSHA) || event.InstallationID <= 0 {
+		return "", fmt.Errorf("%w: invalid PR identity", ErrPullRequestSuperseded)
+	}
+	token, err := c.installationToken(ctx, tokenKey{installation: event.InstallationID, permission: "pull_requests", repository: event.Repository})
+	if err != nil {
+		return "", err
+	}
+	var pr pullRequestDetails
+	if err = c.request(ctx, http.MethodGet, "/repos/"+event.Repository+"/pulls/"+number, nil, token, nil, &pr); err != nil {
+		return "", err
+	}
+	if pr.Number != n || pr.State != "open" || pr.Head.Repo.Fork || pr.Head.Repo.FullName != event.Repository || pr.Base.Repo.FullName != event.Repository || pr.Head.SHA != event.HeadSHA || pr.Base.SHA != event.BeforeSHA || pr.Base.Ref != event.BaseRef {
+		return "", ErrPullRequestSuperseded
+	}
+	if pr.Mergeable != nil && !*pr.Mergeable {
+		return "", fmt.Errorf("%w: PR has merge conflicts", ErrPullRequestSuperseded)
+	}
+	if pr.Mergeable == nil || !validSHA(pr.MergeCommitSHA) {
+		return "", fmt.Errorf("github: PR test merge commit is not ready")
+	}
+	return pr.MergeCommitSHA, nil
 }

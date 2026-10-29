@@ -693,3 +693,10 @@ GitOps复用 `forgelet-homelab-gitops`，新增 `apps/steam-admin-web`；复用�
 ### 日常开发分支缓存（12.1）
 
 缓存服务端读取先查计划的当前完整ref，再查已验证PR事件的BaseRef，最后查已保存GitHub安装仓库目录的默认分支；去重后按ref顺序执行原精确key/restore-keys查找。只有ErrNotFound可扩大查找，其他I/O错误保持失败。运行时请求不能传入任意分支来改变授权范围，PUT始终写当前ref；native及act本地v1/v2 facade共用runtime blob端点，无新协议、数据库迁移、外部逐请求I/O或常驻组件。目录未就绪时保留当前ref读取，不猜测默认分支；目录更新后默认分支读取随权威元数据调整，工作负载仍不能读取其他仓库或兄弟分支的缓存。原仓库/版本/平台隔离、TTL、总预算和取消/ACK保持。
+
+
+### PR 测试合并提交异步解析
+
+GitHub的opened事件可能包含null merge_commit_sha。验签、同仓库/fork排除和原始head/base校验后，先以空SHA持久化事件；Tick沿原有有界退避读取PR，使用仅限该仓库的pull_requests:read短期令牌（不发往Pod）。只有API报告open/mergeable=true且number、head/base SHA、base ref及仓库身份仍匹配原事件，才固定测试merge SHA。未就绪/网络错误保留事件，冲突、关闭或源身份变化记录明确诊断而不运行其他提交。
+
+固定SHA与event payload的merge_commit_sha在一个SQLite事务中保存，之后才加载/编译workflow；重复delivery、重启和部分workflow准入失败均复用第一次固定结果，不采用稍后变化的PR或head提交。现有非空merge SHA事件路径保持；不新增后台服务或表迁移。重试耗尽沿现有事件重试入口处理，不能把PR从未运行误记为成功。GitHub mergeable=null的异步行为见官方REST pulls文档。

@@ -82,6 +82,38 @@ func testPhaseTwo(t *testing.T, ctx context.Context, cluster testcontainers.Cont
 		if merged.State != run.Succeeded || merged.SHA != strings.Repeat("d", 40) || !strings.Contains(logs(t, merged.Jobs[0]), "event=pull_request sha="+strings.Repeat("d", 40)) {
 			t.Fatal(merged)
 		}
+		// GitHub often sends opened before its background test merge exists.
+		clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "touch", "/fixture-state/pr-merge-pending")
+		pr["action"] = "opened"
+		pr["pull_request"].(map[string]any)["merge_commit_sha"] = nil
+		send("pull_request", "integration-pr-pending", pr)
+		waitFor(t, ctx, "unresolved PR durably waiting", func() bool {
+			var events []run.Event
+			must(t, json.Unmarshal(request(t, "GET", "/api/events", nil, 200), &events))
+			for _, e := range events {
+				if e.DeliveryID == "integration-pr-pending" {
+					return e.SHA == "" && strings.Contains(e.Error, "not ready")
+				}
+			}
+			return false
+		})
+		if find("integration-pr-pending").ID != "" {
+			t.Fatal("admitted PR without merge SHA")
+		}
+		restartServer(t, ctx, client, httpClient, endpoint)
+		clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "rm", "/fixture-state/pr-merge-pending")
+		var resolved run.Run
+		waitFor(t, ctx, "pending PR resolves after restart", func() bool {
+			resolved = find("integration-pr-pending")
+			return resolved.ID != "" && resolved.State.Terminal()
+		})
+		if resolved.State != run.Succeeded || resolved.SHA != strings.Repeat("d", 40) {
+			t.Fatal(resolved)
+		}
+		send("pull_request", "integration-pr-pending", pr)
+		if repeated := find("integration-pr-pending"); repeated.ID != resolved.ID {
+			t.Fatal("duplicate PR was replayed", repeated)
+		}
 		push["ref"] = "refs/heads/ignored"
 		send("push", "integration-filtered", push)
 		pr["pull_request"].(map[string]any)["head"].(map[string]any)["repo"] = map[string]any{"full_name": "attacker/fork", "fork": true}

@@ -380,3 +380,6 @@ job 内层还设置向上取整后的 CPU limit，供 Node 等工具选择自动
 
 
 管理员可在workflow管理配置选择act镜像分组（阶段11.3已部署并完成真实冷热对照，Tasks冷缓存边界见status），不修改仓库GitHub YAML。选择保存为运行计划中的固定digest目录；未配置组时保留完整镜像目录。分组必须显式包含shell/Testcontainers动态使用的镜像，不能从workflow解析成功推导这些依赖已满足。native/act执行能力与原有权限边界保持分别描述。
+
+
+PR opened/reopened/synchronize/ready_for_review的同仓库事件若测试合并SHA尚未生成，先持久化等待，再通过GitHub API核对原始head/base并固定测试merge SHA。不会退回head SHA。冲突/关闭或head/base变化不执行新的源快照，事件诊断保留；恢复后应使用新事件或明确重试。固定结果先持久化再准入，重启/重复投递不重新解析成其他提交。
