@@ -255,14 +255,16 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 2026-10-29 10:20追加：Tasks22b8b32真实CI06db20fc/image39fb828f及手动PG98b5a9fa全部成功；原172测试文件/断言和job1200秒保留，PG步骤4分26秒、步骤合计9分30秒、含Zot准备11分43秒，实际1个PG18、53包race通过。新发布f683f162的双标签/Action摘要/7个push Checks、独立PG Check及非root只读断网Atlas/迁移smoke通过。make verify、53包原short/race/coverage、完整PG及真实夹具隔离/成功/失败/取消Testcontainers通过；未修改Forgelet生产Go，当前完整k3s1830.233秒沿用本日09:00结果，不冒称重复执行。10.6e/10.6g/10.7b及本轮第三批完成，现有实际CD目标仍为platform-web；阶段10远程reusable/动态matrix/完整artifact v4等保留未完成。
 
 
-## 下一批：用于日常开发（2026-10-29，12.1 代码与自动验证完成，线上验证待执行）
+## 用于日常开发（2026-10-29，12.1/12.2完成）
 
 先以Admin Web形成实际开发闭环，不把更多通用Actions能力、多租户或HA作为使用前置条件。下列代码、自动测试、配置变更和真实验收分别完成后再勾选；不新增spec审批或基线门禁。
 
-- [ ] **12.1 开发分支缓存复用**：可信同仓库当前ref→PR base→默认分支回退读取；默认分支由服务端可信元数据确定。写入保持当前ref，禁止兄弟/子分支反向污染，保持repo/version/平台隔离。补单测、HTTP/SQLite集成和Testcontainers分支/PR回归，用实际新分支验证默认分支缓存命中。
-- [ ] **12.2 单一发布来源与普通PR闭环**：先把platform-web GitOps对齐现网digest，再移除Flux镜像覆盖，验证发布/回滚。以Admin Web做真实功能分支→PR Checks→合并→CI→Zot→GitOps→Flux；选择Forgelet作为试用仓库唯一日常CI/镜像发布来源，保留重新启用GitHub workflow的应急说明。当前托管workflow仍active，不提前称已切换。
+- [x] **12.1 开发分支缓存复用**：可信同仓库当前ref→PR base→默认分支回退读取；默认分支由服务端可信元数据确定。写入保持当前ref，禁止兄弟/子分支反向污染，保持repo/version/平台隔离。补单测、HTTP/SQLite集成和Testcontainers分支/PR回归，用实际新分支验证默认分支缓存命中。
+- [x] **12.2 单一发布来源与普通PR闭环**：先把platform-web GitOps对齐现网digest，再移除Flux镜像覆盖，验证发布/回滚。以Admin Web做真实功能分支→PR Checks→合并→CI→Zot→GitOps→Flux；选择Forgelet作为试用仓库唯一日常CI/镜像发布来源，保留重新启用GitHub workflow的应急说明。两个试用仓库对应托管workflow已明确停用；其他仓库不冒称已切换。
 - [ ] **12.3 覆盖率与自身CI收口**：确认Codecov能识别两个私有仓库后，合并已准备的token/slug引用，验证实际上传回执，不能依赖非阻断步骤绿色。阶段11形成可追溯Git提交；Forgelet自身接入时，拆分verify/全量集成预算并验证Go1.27及嵌套Testcontainers的按需资源。不要求先接入全部业务CD。
 
-本轮已完成的只有token文件保护、两个仓库加密Secret配置、一次Tasks常规CI手动快照及就绪检查；Codecov返回Repository not found，业务YAML补丁未推送，上述12.1–12.3均未完成。
+12.1/12.2实现、提交推送、自动验证及homelab实测已完成；12.3已完成token保护/加密配置和Git提交检查点，但Codecov上传仍返回Repository not found，业务YAML补丁未推送，自身CI预算/执行环境仍待验证。
 
-12.1推进：已实现服务端跨ref读取回退，增加顺序/去重单测和HTTP+SQLite回归（PR base、lookup、前缀优先级、读写隔离、版本/仓库隔离、不可读对象不回退）。原native与act共用runtime blob端点；新增临时k3s多Pod+重启专项PASS324.970秒（两项叶场景，非全量），make verify完整通过（42前端单测、17浏览器）。普通业务分支/PR的homelab验证尚未执行，12.1保留未勾选。12.2/12.3仍待实施；不自动禁用GitHub workflow或移除现网Flux覆盖。
+12.1推进：已实现服务端跨ref读取回退，增加顺序/去重单测和HTTP+SQLite回归（PR base、lookup、前缀优先级、读写隔离、版本/仓库隔离、不可读对象不回退）。原native与act共用runtime blob端点；新增临时k3s多Pod+重启专项PASS324.970秒（两项叶场景，非全量），make verify完整通过（42前端单测、17浏览器）。业务分支0bde91ea与PR befc785a均完整成功且cache-hit=true；12.1完成。12.2已按owner本轮授权完成托管workflow切换、Flux覆盖修正及实际发布/回滚；12.3保留未完成。
+
+12.2收尾：Admin PR#1合并945431dc的普通CI通过，旧默认builder发布明确取消；标准Buildx/cache优化94f9fc6的真实push完成CI→Zot→GitOps→Flux5568a75a。platform原workflow的两次失败保留，da701f5同固定计划198edac8最终48/28测试、cache导出、发布与部署665a0484成功；真实回滚6ee9e663并恢复665a0484、同ID重放不产生重复GitOps提交。首轮cache导出发现“6GiB总量/已存4.044GiB/每次误预留2GiB”阻断，已用实际buffer预留修复并通过单测/HTTP/SQLite/真实k3s超额与重启验证，未增预算或忽略错误。精确时间、失败边界和源提交对应见status收尾段。

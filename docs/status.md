@@ -1,9 +1,9 @@
 # 项目状态
 
-更新：2026-10-29（Asia/Shanghai）。当前：**阶段11.1–11.4已实现、完成自动验证并部署到homelab；真实授权撤销/恢复、按需镜像组、Go/Node冷热缓存与Tasks PG18热缓存、Admin Web发布/失败阻断/健康失败/回滚及重启幂等已验收。Tasks独立ref冷缓存保留原20分钟超时记录，不宣称冷运行整条workflow成功；Codecov上传token已配置，但外部返回Repository not found，尚未成功。**
+更新：2026-10-29（Asia/Shanghai）。当前：**阶段12.1/12.2已实现、完成自动验证并部署；Admin Web真实分支与PR命中main缓存、Checks正确关联head，main CI/镜像/GitOps/Flux已通过；platform-web已去除Flux镜像覆盖，固定计划重试完成原48单测/28浏览器/发布/部署，真实回滚与恢复通过。两个试用仓库已停用对应GitHub托管workflow，Forgelet为唯一日常执行/发布来源。缓存误预留2GiB导致的小对象写入失败已修复，总预算仍6GiB。** Codecov外部上传及Forgelet自身CI接入仍属12.3未完成项。
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
-## 本轮逐仓库验收（2026-10-29，首批固定提交已完成）
+## 阶段10首批逐仓库验收（历史固定提交，后续交付见文末）
 
 以下固定提交代表已经核对的结果，不将后续业务新提交自动视为通过。镜像发布与实际部署分别记录。
 
@@ -1181,4 +1181,43 @@ platform-web b498a426原build成功（48单测、28浏览器、build/smoke）；
 
 配额修复的单测/race/HTTP+SQLite通过，覆盖多个小写满额、并发流、超额失败、取消释放、幂等ACK；make verify PASS（42前端、17浏览器41.5秒，首次新增测试import分组lint失败已修正）。真实Testcontainers专项PASS238.232秒（50.33秒叶场景）：总空闲低于对象上限时两次不同cache保存成功，真实超额任务失败，控制面重启后两份已存cache均可恢复。只执行该专项，非全量重跑。服务器升级及原workflow重跑仍待完成。
 
-公共Node24-alpine与nginx-unprivileged1.27-alpine的实际amd64镜像已缓存到Zot既有公开上游命名空间，未更改ACL或发布业务代码。Node官方根8a32c8cf对应amd64 manifest4eefa1bf，缺失57MiB公共层由本次job自有BuildKit只读提取、SHA256对照官方manifest验证后补齐；初次公网下载约1516秒的成本与早期失败同步日志保留。所有临时port-forward已退出、loopback凭据副本删除；后续构建是否命中镜像源另行实测。
+公共Node24-alpine与nginx-unprivileged1.27-alpine的实际amd64镜像已缓存到Zot既有公开上游命名空间，未更改ACL或发布业务代码。Node官方根8a32c8cf对应amd64 manifest4eefa1bf，缺失约57MB公共层由本次job自有BuildKit只读提取、SHA256对照官方manifest验证后补齐；初次公网下载约1516秒的成本与早期失败同步日志保留。所有临时port-forward已退出、loopback凭据副本删除；后续构建是否命中镜像源另行实测。
+
+
+## 阶段12.1/12.2收尾：日常分支、PR与唯一发布来源已验收（2026-10-29）
+
+### 代码与部署
+
+本批源码已提交并推送至 `chore/homelab-reset-20261023`：fb6e2f4（阶段11已验收实现与分支cache）、f9d2b6d/6a52234（PR异步合并SHA、2026 API merge ref和父提交校验）、e392535（PR head Checks与受限幂等迁移）、147129b（按实际流量预留cache配额）；3ff5f92补标准Buildx/cache与原reusable CI门禁夹具。owner本地AGENTS.md修改保留未提交。
+
+实际server为 `zot.k.mygo.rocks/forgelet/server@sha256:ead5fd43a84938d09f73d37402f6db56c5dcd0a8e342a0f339787a28ecde737a`，对应运行代码147129b。每次升级前保存SQL备份，管理设置、安装授权、执行profile、CPU/内存/临时空间与并发预算保持，活跃任务Pod UID未改变。没有新增常驻服务、PVC、CRD或额外controller；缓存总预算仍6GiB，对象上限仍2GiB。最终本批所有执行Pod已回收，现场etcd firing告警为空；这是收尾时点核对，不是独立性能基线或未来负载保证。
+
+### 真实开发分支与PR
+
+Admin Web的真实文档修正分支8b3295f / push运行0bde91ea，从原main npm缓存恢复且原32测试、check/build/生成文件校验全部成功。PR https://github.com/shitamachi/steam-admin-web/pull/1 的初始真实opened事件merge SHA为null，旧400记录保留；修复后原GitHub签名重投202，固定merge `2a35cf6813352a5001166fbf44cbe2536c83656a`，原始base c5db392、head8b3295f均经API/ref父提交核对，运行befc785a完整success、cache-hit=true。执行仍是merge SHA，GitHub `forgelet / PR / admin-web / check`显示原head上的success，与分支push检查区分；旧merge Check经同App/job/精确SHA校验后迁移，未修改别的Check。操作前cache metadata只有main和旧独立验收ref，没有新分支或PR cache，证明不是先自行暖热同ref。
+
+合并前再次核对base/head/当前merge ref及精确PR Check，squash为945431dc；main普通CI683f9369通过。其旧默认builder发布735ea473由操作者明确取消，原因是它不读取profile的BuildKit镜像源，为避免和替代发布交叉写标签；取消ACK与Pod清理已核对，不能把该运行计为发布成功。
+
+### Main发布与GitOps
+
+Admin Web随后提交标准 `docker/setup-buildx-action@v3` 与 `type=gha,scope=admin-web` cache（94f9fc6）；全部原CI命令和 `needs: check` 保留，未设置ignore-error。新真实main CI87dad40a和image6290501b均success，reusable CI原32测试通过，全部精确GitHub Checks成功。镜像 `sha256:5568a75a9bce38952b276e1c087bb4cc9dbf47faef0e385e52d9530154eff479`，latest与sha-94f9fc6一致；delivery `d09b497da28161541eae79794704130b` 已deployed，实际Deployment与GitOps/Flux一致，HTTP /healthz200。这个最终部署来自94f9fc6，**不是声称先前945431dc的已取消发布成功**。
+
+platform-web先以GitOps acb5fe1对齐现网6ee9e663，再移除Kustomization.spec.images覆盖，原Deployment模板不变。真实0d06918/b498a426的48单测、28 Playwright、构建/smoke通过，但image虽推送、cache导出因配额预留错误失败，CD正确skipped；后续真实da701f5/aa52f253在GitHub凭据网络错误时未执行测试即failure，这些失败均保留。确认main仍da701f5后，同一固定源码、原始完整workflow/Action pins计划重跑 `198edac874dc6cd52f86602ef7977f2a`，原48/28测试、构建、镜像、cache导出、native CD全部success。delivery `e5503e10ef7dbb1a38f70130fbc735c1`，GitOps `febab059d92e8aa6e1c8d5cfc59cb965355fad16`，镜像 `sha256:665a04846d4259e2db7a4d44b129bf4553db8aaaf67d5de5646ea922ef45a9f5`，latest/完整提交标签/精确Checks/实际Deployment/Flux均一致，应用HTTP200。**这是原真实push失败后的固定计划重试，不改记第一轮push成功，也没有修改原platform workflow或删减断言。**
+
+对该platform发布执行真实回滚e90fb897，GitOps78e4517恢复原健康6ee9e663；再回滚该回滚2b501322，GitOps `33b330616a1b8d1bc57c69ec8bbb83d59332b46f`恢复665a0484。两次deployed、Deployment可用、Flux Ready、HTTP200；重复原回滚请求返回同ID且GitOps HEAD不变。最终spec.images为空，GitOps文件是唯一镜像来源，Admin Web保持新5568a75a健康版本。
+
+### 唯一CI来源、镜像缓存与边界
+
+只切换两个试用仓库：Admin Web ci.yml/image.yml及platform-web check.yml均为disabled_manually；对应新提交的GitHub hosted run数为0。两个业务README已记录“先停用Forgelet对应workflow，再启用GitHub workflow”的应急步骤，不能两边同时发布。未声称其他7个业务仓库也已切换。Forgelet内部ci.yml与image.yml复用CI仍是原安全门禁，不把它们的多个内部Check冒充第二个发布者。
+
+公共Node/Nginx镜像已存入Zot，匿名只读、平台digest/层校验通过；新增约83.5MB公共层资产，没有业务镜像内容公开。Admin新builder实际解析到Zot对应Node4eefa1bf与Nginx28d91bdc，基础层约5秒完成，原首轮公网约57MB耗时约1516秒的记录保留。标准setup-buildx会采用profile.BuildkitConfig；默认Docker driver不会自动采用该配置，兼容范围明确。浮动上游tag不自动刷新，更新由管理员显式核对。
+
+本轮遇到的GitHub transport故障后来由既有事件退避恢复；容器内探针确认新HTTP/2连接可请求，不足以认定唯一协议根因。未修改生产HTTP/TLS策略，也未保留试验性的连接池代码或增加不明确的写请求重放。所有临时探针、port-forward和临时凭据副本已清理。
+
+### 自动验证与证据
+
+- 最终运行代码与标准Buildx夹具的make verify通过：真实构建、全Go race/HTTP/SQLite、lint/generate、42前端单测、17浏览器38.6秒；后续文档不改变运行代码。
+- 本批Testcontainers分别记录：CI/CD/大BuildKit/分支cache/重启失败门禁专项825.448秒；PR merge ref/父提交专项202.909秒；PR head Check专项197.612秒；小cache实际预留、超额失败、重启恢复专项238.232秒。各自对应新增行为，**不是本批重新执行全量**；此前阶段11全量2466.697秒记录保持独立。首轮夹具容器名失败及lint失败日志保留，不改记通过。
+- 真实验收与自动测试分开记录：分支/PR原始32测试，两个main CI/镜像，platform原48/28、固定计划重试、实际GitOps/Flux、回滚/恢复、托管CI停用及任务清理均有现场证据。私有 `stage12-delivery-20261029` 保存final-delivery-audit.json、完整脱敏日志、签名delivery、SQL升级备份、镜像/标签/Check匹配及回滚证明，不含明文token回显。
+
+12.1/12.2完成；12.3仍有Codecov私有仓库外部接入（已有上传token但Repository not found）、业务YAML token引用及Forgelet自身CI/完整集成预算/Go1.27环境验证。只把已实际配置的两个业务CD目标计为交付，不扩展为所有仓库已自动部署。
