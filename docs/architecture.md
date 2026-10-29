@@ -333,7 +333,7 @@ workflow 已切换到与 actionlint v1.7.12 一致的 go.yaml.in/yaml/v4 v4.0.0-
 
 调用参数是否依赖运行期状态统一从表达式 AST 引用判断，覆盖 `needs['job']`、整个 inputs 对象与动态索引；整对象访问不能绕过早期执行设置的 deferred 限制。缺失的 workflow job output 求值为空。领取后若凭据因取消被拒绝，执行器用有界 control 查询确认取消后再上报 cancelled；取消期间仍不授予凭据，未确认的身份/权限错误保持失败。该竞态已由真实 Pod、确定性 HTTP 与 SQLite 集成重验。
 
-临时 k3s 可用 FORGELET_TEST_IMAGES（空格分隔、镜像须已在本机 Docker 缓存）一次导入基础设施镜像，避免默认系统 Pod 在外网拉取时阻塞 PVC。固定 k3s v1.34.4+k3s1 的 local-path/helper 镜像来自[官方 local-storage manifest](https://raw.githubusercontent.com/k3s-io/k3s/v1.34.4%2Bk3s1/manifests/local-storage.yaml)；不替换其实现或跳过安装清单。FORGELET_TEST_KEEP_IMAGE=1 仅用于调试复用构建，容器仍清理；默认仍删除测试构建镜像。本轮调试镜像与临时服务在验证结束后清理。集群准备允许等待 10 分钟，整套 context/Go test 分别限 40/45 分钟，业务断言和任务超时不放宽。
+临时 k3s 可用 FORGELET_TEST_IMAGES（空格分隔、镜像须已在本机 Docker 缓存）一次导入基础设施镜像，避免默认系统 Pod 在外网拉取时阻塞 PVC。固定 k3s v1.34.4+k3s1 的 local-path/helper 镜像来自[官方 local-storage manifest](https://raw.githubusercontent.com/k3s-io/k3s/v1.34.4%2Bk3s1/manifests/local-storage.yaml)；不替换其实现或跳过安装清单。FORGELET_TEST_KEEP_IMAGE=1 仅用于调试复用构建，容器仍清理；默认仍删除测试构建镜像。本轮调试镜像与临时服务在验证结束后清理。早期集群准备允许等待10分钟、整套context/Go test限40/45分钟；包含1120MiB真实多轮缓存的当前完整套件分别为80/95分钟，独立功能等待与业务任务超时保持，具体预载参数见deployment文档。
 
 ### 阶段 10.5a：job 执行内核实测与选择（2026-10-25）
 
