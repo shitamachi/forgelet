@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-30（Asia/Shanghai）。当前：**阶段13优先三项已完成代码、自动测试、homelab部署及真实仓库验收：GitOps自动发布防倒退、GitHub凭据获取隔离/恢复、缓存满额淘汰；本批已提交并推送 `461b709`。Tasks 分支冷缓存完整 workflow 已用真实仓库在 `793.5` 秒内通过（原 1200 秒、原测试/断言与 PG18 输入不变），默认分支缓存回退命中。** Admin Web原workflow重跑完成CI→Zot→GitOps→Flux；steam-cm原test/image完整成功；服务端 a05d530e 已上线。完整Testcontainers通过2642.225秒（7项外部可选夹具SKIP），最终发布队列补丁另经专项677.700秒通过。其余仓库CI/CD接管及12.3仍单列未完成；不将本批计为全部业务接管。
+更新：2026-10-30（Asia/Shanghai）。当前：**阶段13优先三项已完成代码、自动测试、homelab部署及真实仓库验收：GitOps自动发布防倒退、GitHub凭据获取隔离/恢复、缓存满额淘汰；本批已提交并推送 `461b709`（修复）与 `0ea2d1d`（冷缓存回归/记录）。Tasks 分支冷缓存完整 workflow 已用真实仓库在 `793.5` 秒内通过（原 1200 秒、原测试/断言与 PG18 输入不变），默认分支缓存回退命中。** Admin Web原workflow重跑完成CI→Zot→GitOps→Flux；steam-cm原test/image完整成功；服务端 a05d530e 已上线。完整Testcontainers通过2642.225秒（7项外部可选夹具SKIP），最终发布队列补丁另经专项677.700秒通过。其余仓库CI/CD接管及12.3仍单列未完成；不将本批计为全部业务接管。
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 阶段10首批逐仓库验收（历史固定提交，后续交付见文末）
@@ -1277,7 +1277,7 @@ steam-cm原test job已完整success，141项通过、0失败、原3项ignored保
 
 ## 阶段13后续：Tasks 分支冷缓存完整 workflow（2026-10-30，已通过）
 
-本批无需新增产品代码：12.1 的“当前 ref→PR base→默认分支”缓存回退已经覆盖此前失败的独立 ref 冷命名空间；本次用真实仓库验证并补齐回归，不延长原 20 分钟、不删除步骤或缩小断言。阶段13修复已提交并推送 `461b709`。
+本批无需新增产品代码：12.1 的“当前 ref→PR base→默认分支”缓存回退已经覆盖此前失败的独立 ref 冷命名空间；本次用真实仓库验证并补齐回归，不延长原 20 分钟、不删除步骤或缩小断言。阶段13修复已提交并推送 `461b709`，冷缓存回归与记录为 `0ea2d1d`。
 
 - **真实运行**：steam-tasks `22b8b3238b85c2164b248fe88bcf48eddd2f2984`，手动 `workflow_dispatch` + `postgres: true`，ref `refs/heads/stage13-cold-20261030`（该 ref 无自身缓存），installation 174462839；原 workflow、原 20 分钟、原测试/断言和 PG18 输入均未修改。run `847c22df2e5f397b9f5ff15199cd34f5` / job `1cb5de20c9f11c0bf7671fb4` **success**：preparing 84.6 秒，executing 793.5 秒（13分13.5秒），cleanup 0.4 秒；原 budget 1200 秒。
 - **缓存命中**：setup-go `cache-hit=true`，从默认分支回退恢复 1,592,817,063 字节；Atlas cache-hit=true（34,939,069 字节）。两个主键命中后 post 不重复保存。该 run 在当前 ref 开始前没有任何 cache 对象，证明走的是跨 ref 回退而不是同 ref 热缓存；写入仍留在当前 ref。
