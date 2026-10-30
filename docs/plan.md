@@ -279,4 +279,6 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 - [x] 13.3 缓存满额：按访问顺序淘汰可重建cache，保留artifact、读流、当前producer与在途字节额度；LRU重启恢复，真实超限仍明确失败。
 - [x] 单测/race、HTTP/SQLite集成、Testcontainers完整回归、最终发布补丁专项、部署后真实仓库与GitOps/Flux验收分别记录。完整回归2642.225秒、最终发布专项677.700秒；7项外部可选夹具SKIP单列。Admin Web/steam-cm原固定workflow重跑成功，旧来源拒绝、缓存满额/重启和实际Flux健康已核对。
 
-后续未完成项：Tasks冷缓存20分钟、其他仓库单一CI来源与业务CD接管；Codecov与自身CI仍见12.3。Rust公网依赖本次CM完整运行未复现原下载超时，外部可用性仍需跟进。不将本批前三项通过算作全部业务接管完成。
+- [x] 13.4 Tasks 分支冷缓存 20 分钟收口：不新增产品代码，使用 12.1 的当前 ref→PR base→默认分支回退；真实 `workflow_dispatch`+PG18 在无自身缓存的独立 ref 上 hit 默认分支 setup-go/Atlas 缓存，executing 793.5 秒完成，原 1200 秒/测试/断言不变。补 workflow_dispatch 冷 ref 单测、HTTP/SQLite 集成和 Testcontainers 1 分钟超时回归（专项 PASS 801.518 秒，叶场景 45.00 秒）。默认分支也未缓存的新依赖集仍按 miss 保留边界。
+
+后续未完成项：其他仓库单一CI来源与业务CD接管；Codecov与自身CI仍见12.3。Rust公网依赖本次CM完整运行未复现原下载超时，外部可用性仍需跟进。不将本批三项及Tasks冷缓存通过算作全部业务接管完成。

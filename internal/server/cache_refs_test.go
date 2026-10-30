@@ -22,6 +22,7 @@ func TestCacheReadRefs(t *testing.T) {
 		want                         []string
 	}{
 		{"branch", "owner/repo", "refs/heads/feature", "push", "", []string{"refs/heads/feature", "refs/heads/trunk"}},
+		{"manual ref with no cache of its own", "owner/repo", "refs/heads/stage13-cold-20261030", "workflow_dispatch", "", []string{"refs/heads/stage13-cold-20261030", "refs/heads/trunk"}},
 		{"default deduplicated", "owner/repo", "refs/heads/trunk", "push", "", []string{"refs/heads/trunk"}},
 		{"PR base before default", "owner/repo", "refs/pull/12/merge", "pull_request", "release/next", []string{"refs/pull/12/merge", "refs/heads/release/next", "refs/heads/trunk"}},
 		{"PR default base", "owner/repo", "refs/pull/12/merge", "pull_request", "trunk", []string{"refs/pull/12/merge", "refs/heads/trunk"}},
@@ -54,13 +55,21 @@ func TestCacheFallbackHTTPIsolationAndWriteScope(t *testing.T) {
 	}
 	h.start()
 	h.server.authorization.Store(&GitHubAuthorization{Catalog: &gh.Catalog{Repositories: []gh.Repository{{Name: "me/repo", DefaultBranch: "trunk"}}}})
-	create := func(ref string) run.Job {
-		code, body := h.admin("POST", "/api/runs", map[string]any{"repository": "me/repo", "sha": testSHA, "ref": ref, "workflow": testWorkflow, "installation_id": 42})
+	createEvent := func(ref, event string) run.Job {
+		source := testWorkflow
+		if event == "workflow_dispatch" {
+			source = strings.Replace(testWorkflow, "on: push", "on: [push, workflow_dispatch]", 1)
+		}
+		body := map[string]any{"repository": "me/repo", "sha": testSHA, "ref": ref, "workflow": source, "installation_id": 42}
+		if event != "" {
+			body["event_name"] = event
+		}
+		code, response := h.admin("POST", "/api/runs", body)
 		if code != 201 {
-			t.Fatal(code, string(body))
+			t.Fatal(code, string(response))
 		}
 		var item run.Run
-		if err := json.Unmarshal(body, &item); err != nil {
+		if err := json.Unmarshal(response, &item); err != nil {
 			t.Fatal(err)
 		}
 		h.tick()
@@ -73,7 +82,9 @@ func TestCacheFallbackHTTPIsolationAndWriteScope(t *testing.T) {
 		}
 		return job
 	}
+	create := func(ref string) run.Job { return createEvent(ref, "") }
 	topic, main := create("refs/heads/topic"), create("refs/heads/trunk")
+	cold := createEvent("refs/heads/stage13-cold-20261030", "workflow_dispatch")
 	version := strings.Repeat("a", 64)
 	seed := func(repo, ref, key, value, v string) {
 		_, err := h.cfg.Blobs.Put(t.Context(), blob.Scope{Repository: repo, Kind: "cache", Namespace: ref, Version: v}, key, "fixture", time.Hour, time.Now(), strings.NewReader(value))
@@ -94,6 +105,7 @@ func TestCacheFallbackHTTPIsolationAndWriteScope(t *testing.T) {
 		want  string
 	}{
 		{topic, "key=dependency-exact", 200, "default"},
+		{cold, "key=dependency-exact", 200, "default"},
 		{topic, "key=missing&restore-key=dependency-", 200, "default-prefix"},
 		{topic, "key=dependency-exact&restore-key=local-", 200, "local-prefix"},
 		{topic, "key=foreign", 404, ""}, {topic, "key=sibling&namespace=refs/heads/sibling", 404, ""},

@@ -177,17 +177,22 @@ jobs:
 			}
 		})
 		t.Run("branch cache fallback and write isolation across restart", func(t *testing.T) {
-			runAt := func(ref, source string) run.Run {
-				var item run.Run
-				must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{
+			runEvent := func(ref, event, source string) run.Run {
+				body := map[string]any{
 					"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": ref, "workflow": source,
-				}, 201), &item))
+				}
+				if event != "" {
+					body["event_name"] = event
+				}
+				var item run.Run
+				must(t, json.Unmarshal(request(t, "POST", "/api/runs", body, 201), &item))
 				done := finishRun(t, ctx, get, item.ID)
 				if done.State != run.Succeeded {
 					t.Fatalf("%s: %+v logs=%s", ref, done, logs(t, done.Jobs[0].ID))
 				}
 				return done
 			}
+			runAt := func(ref, source string) run.Run { return runEvent(ref, "", source) }
 			runAt("refs/heads/main", `on: push
 jobs:
   seed:
@@ -223,6 +228,21 @@ jobs:
       - uses: actions/cache/restore@v4
         with: {key: branch-fallback-main-v1, path: branch-cache, fail-on-cache-miss: true}
       - run: test "$(cat branch-cache/data)" = main-dependency
+`)
+			// A manual run on a ref that never wrote its own cache must also
+			// reuse the trusted default-branch object. This is the branch-cold
+			// path that previously kept a full workload outside its 20-minute
+			// budget: the fetch is bounded and original tests/assertions stay.
+			runEvent("refs/heads/stage13-cold-20261030", "workflow_dispatch", `on: [push, workflow_dispatch]
+jobs:
+  cold:
+    runs-on: homelab
+    timeout-minutes: 1
+    steps:
+      - id: restored
+        uses: actions/cache/restore@v4
+        with: {key: branch-fallback-main-v1, path: branch-cache, fail-on-cache-miss: true}
+      - run: test "$(cat branch-cache/data)" = main-dependency; test '${{ steps.restored.outputs.cache-hit }}' = true
 `)
 		})
 		t.Run("rootless BuildKit pushes immutable digest and cleans failed builders", func(t *testing.T) {

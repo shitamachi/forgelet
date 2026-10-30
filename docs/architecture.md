@@ -677,7 +677,7 @@ v6→v7是显式数据库升级；旧v6程序拒绝新库。部署前保留原v6
 
 管理员在act profile的image_groups中登记组名到image_mirrors别名列表；workflow管理配置用image_groups选择所需组，不扩展GitHub YAML或扫描shell猜依赖。以根workflow为单位为展开后的act子图取并集，native CD控制节点不准备Docker镜像。固定digest目录在准入时解析为Plan.image_mirrors快照并设置image_mirrors_selected；显式空组保持空选择，未配置组保持旧完整目录行为。
 
-启动时复制profile并将已选目录交给既有Pod自有引擎；不修改共享配置，不共享Docker data或宿主socket。重跑保留已固定镜像引用，引用被当前管理员目录撤销/替换时明确诊断，不静默漂移。BuildKit独立镜像源配置、镜像身份核对、取消及清理仍走原路径。动态Docker/Testcontainers依赖必须在管理员分组中明确登记；实际冷/热耗时、Tasks原20分钟冷缓存边界及main热缓存对照见status。
+启动时复制profile并将已选目录交给既有Pod自有引擎；不修改共享配置，不共享Docker data或宿主socket。重跑保留已固定镜像引用，引用被当前管理员目录撤销/替换时明确诊断，不静默漂移。BuildKit独立镜像源配置、镜像身份核对、取消及清理仍走原路径。动态Docker/Testcontainers依赖必须在管理员分组中明确登记；Tasks 分支冷缓存复用默认分支对象的真实 20 分钟验收及 main 热缓存对照见status。
 
 ## 阶段11.4：Admin Web 业务交付（已部署并完成正向/负向/回滚验收）
 
@@ -692,7 +692,7 @@ GitOps复用 `forgelet-homelab-gitops`，新增 `apps/steam-admin-web`；复用�
 
 ### 日常开发分支缓存（12.1）
 
-缓存服务端读取先查计划的当前完整ref，再查已验证PR事件的BaseRef，最后查已保存GitHub安装仓库目录的默认分支；去重后按ref顺序执行原精确key/restore-keys查找。只有ErrNotFound可扩大查找，其他I/O错误保持失败。运行时请求不能传入任意分支来改变授权范围，PUT始终写当前ref；native及act本地v1/v2 facade共用runtime blob端点，无新协议、数据库迁移、外部逐请求I/O或常驻组件。目录未就绪时保留当前ref读取，不猜测默认分支；目录更新后默认分支读取随权威元数据调整，工作负载仍不能读取其他仓库或兄弟分支的缓存。原仓库/版本/平台隔离、TTL、总预算和取消/ACK保持。
+缓存服务端读取先查计划的当前完整ref，再查已验证PR事件的BaseRef，最后查已保存GitHub安装仓库目录的默认分支；去重后按ref顺序执行原精确key/restore-keys查找。只有ErrNotFound可扩大查找，其他I/O错误保持失败。手动workflow_dispatch在从未写缓存的独立ref上同样只会增加默认分支读取，不会写入或读取兄弟分支。运行时请求不能传入任意分支来改变授权范围，PUT始终写当前ref；native及act本地v1/v2 facade共用runtime blob端点，无新协议、数据库迁移、外部逐请求I/O或常驻组件。目录未就绪时保留当前ref读取，不猜测默认分支；目录更新后默认分支读取随权威元数据调整，工作负载仍不能读取其他仓库或兄弟分支的缓存。原仓库/版本/平台隔离、TTL、总预算和取消/ACK保持；默认分支也没有匹配key时保持真实miss。
 
 
 ### PR 测试合并提交异步解析
