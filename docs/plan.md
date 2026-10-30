@@ -268,3 +268,15 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 12.1推进：已实现服务端跨ref读取回退，增加顺序/去重单测和HTTP+SQLite回归（PR base、lookup、前缀优先级、读写隔离、版本/仓库隔离、不可读对象不回退）。原native与act共用runtime blob端点；新增临时k3s多Pod+重启专项PASS324.970秒（两项叶场景，非全量），make verify完整通过（42前端单测、17浏览器）。业务分支0bde91ea与PR befc785a均完整成功且cache-hit=true；12.1完成。12.2已按owner本轮授权完成托管workflow切换、Flux覆盖修正及实际发布/回滚；12.3保留未完成。
 
 12.2收尾：Admin PR#1合并945431dc的普通CI通过，旧默认builder发布明确取消；标准Buildx/cache优化94f9fc6的真实push完成CI→Zot→GitOps→Flux5568a75a。platform原workflow的两次失败保留，da701f5同固定计划198edac8最终48/28测试、cache导出、发布与部署665a0484成功；真实回滚6ee9e663并恢复665a0484、同ID重放不产生重复GitOps提交。首轮cache导出发现“6GiB总量/已存4.044GiB/每次误预留2GiB”阻断，已用实际buffer预留修复并通过单测/HTTP/SQLite/真实k3s超额与重启验证，未增预算或忽略错误。精确时间、失败边界和源提交对应见status收尾段。
+
+
+## 阶段13：现有业务可靠性收口（2026-10-30，优先三项已交付）
+
+本批不增加新产品功能。owner授权修复阻断、测试、部署homelab及真实仓库验证。
+
+- [x] 13.1 自动发布防倒退：来源身份取自持久化run，发布前核对当前来源分支；旧构建/旧计划重跑不得推进GitOps。保持写入丢ACK恢复、取消/重启与显式回滚语义。
+- [x] 13.2 凭据恢复：消除跨仓库token请求的全局网络锁；同scope合并、等待可取消，令牌请求预算小于执行器单次请求；区分永久授权拒绝与暂态失败，保留授权复核与脱敏诊断。
+- [x] 13.3 缓存满额：按访问顺序淘汰可重建cache，保留artifact、读流、当前producer与在途字节额度；LRU重启恢复，真实超限仍明确失败。
+- [x] 单测/race、HTTP/SQLite集成、Testcontainers完整回归、最终发布补丁专项、部署后真实仓库与GitOps/Flux验收分别记录。完整回归2642.225秒、最终发布专项677.700秒；7项外部可选夹具SKIP单列。Admin Web/steam-cm原固定workflow重跑成功，旧来源拒绝、缓存满额/重启和实际Flux健康已核对。
+
+后续未完成项：Tasks冷缓存20分钟、其他仓库单一CI来源与业务CD接管；Codecov与自身CI仍见12.3。Rust公网依赖本次CM完整运行未复现原下载超时，外部可用性仍需跟进。不将本批前三项通过算作全部业务接管完成。

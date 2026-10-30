@@ -23,8 +23,8 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
   const url = new URL(req.url, 'https://localhost');
   const oauthGranted = fs.existsSync(grantsFile);
   const authorizationMode = fs.existsSync('/fixture-state/github-authorization-mode') ? fs.readFileSync('/fixture-state/github-authorization-mode','utf8').trim() : 'normal';
-  if (authorizationMode === 'failed' && url.pathname === '/installation/repositories') return send({message:'temporary fixture failure'},503);
   const send = (body, status = 200) => {res.writeHead(status, {'content-type': 'application/json'}); res.end(JSON.stringify(body));};
+  if (authorizationMode === 'failed' && url.pathname === '/installation/repositories') return send({message:'temporary fixture failure'},503);
   if (url.pathname === '/login/oauth/access_token') {
     let body='';req.on('data',chunk=>{body+=chunk;});req.on('end',()=>{const value=JSON.parse(body);if(value.client_id!=='integration-client'||value.client_secret!=='integration-oauth-client-secret'||!value.code_verifier||value.code_verifier.length<43)return send({error:'invalid_grant'},400);send({access_token:'integration-user-token',token_type:'bearer',scope:'repo,read:user'});});return;
   }
@@ -43,7 +43,18 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
     {id:7,account:{login:'test',type:'User'},repository_selection:'selected',permissions:{contents:'write',checks:'write'},suspended_at:authorizationMode==='suspended'?new Date().toISOString():null},
     ...(fs.existsSync('/fixture-state/github-cross-account')?[{id:8,account:{login:'test-other',type:'Organization'},repository_selection:'selected',permissions:{contents:'read',checks:'write'},suspended_at:null}]:[]),
   ]);
-  if (url.pathname.endsWith('/access_tokens')) return send({token: url.pathname.includes('/installations/8/')?'integration-installation-token-8':'integration-installation-token', expires_at: new Date(Date.now() + 3600000).toISOString()}, 201);
+  if (url.pathname.endsWith('/access_tokens')) {
+    let raw='';req.on('data',chunk=>raw+=chunk);req.on('end',()=>{
+      const b=JSON.parse(raw), file='/fixture-state/credential-failures';
+      if (b.repositories?.[0]==='project' && b.permissions?.contents==='read' && !b.permissions.pull_requests && fs.existsSync(file)) {
+        const n=Number(fs.readFileSync(file,'utf8'));
+        if(n>0){fs.writeFileSync(file,String(n-1));return send({},503);}
+        if(n<0)return send({},403);
+      }
+      send({token:url.pathname.includes('/installations/8/')?'integration-installation-token-8':'integration-installation-token',expires_at:new Date(Date.now()+3600000).toISOString()},201);
+    });return;
+  }
+  if (url.pathname === '/repos/test/project/git/ref/heads/main') return send({object:{sha:fs.existsSync('/fixture-state/source-head')?fs.readFileSync('/fixture-state/source-head','utf8').trim():'a'.repeat(40)}});
   if (!/^(Bearer|token) integration-installation-token(?:-8)?$/i.test(req.headers.authorization || '')) return send({message: 'test auth required'}, 401);
   const businessRepo=url.pathname.match(/^\/repos\/shitamachi\/(steam-admin-web|steam-admin|steam-platform-web|steam-login|steam-api)$/)?.[1];
   if(businessRepo)return send({id:1001,name:businessRepo,full_name:'shitamachi/'+businessRepo,private:true,html_url:'https://github.com/shitamachi/'+businessRepo,default_branch:'main',description:'Original business workflow acceptance',license:null,owner:{login:'shitamachi'}});

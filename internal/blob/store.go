@@ -71,6 +71,9 @@ type Store struct {
 	entries        map[string]Entry
 	used, reserved int64
 	uploads        int
+	readers        map[string]int
+	accessed       map[string]time.Time
+	touched        map[string]time.Time
 }
 
 // Open is called after the database's data-directory lock is held. Only fully
@@ -86,7 +89,7 @@ func Open(directory string, limits Limits) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: directory, limits: limits, entries: map[string]Entry{}}
+	s := &Store{dir: directory, limits: limits, entries: map[string]Entry{}, readers: map[string]int{}, accessed: map[string]time.Time{}, touched: map[string]time.Time{}}
 	for _, f := range files {
 		if strings.HasPrefix(f.Name(), ".upload-") {
 			if err := os.RemoveAll(filepath.Join(directory, f.Name())); err != nil {
@@ -110,6 +113,12 @@ func Open(directory string, limits Limits) (*Store, error) {
 			return nil, fmt.Errorf("incomplete published blob %s", e.ID)
 		}
 		s.entries[e.ID] = e
+		metadata, err := os.Stat(filepath.Join(directory, f.Name(), "metadata.json"))
+		if err != nil {
+			return nil, err
+		}
+		s.accessed[e.ID] = metadata.ModTime()
+		s.touched[e.ID] = metadata.ModTime()
 		s.used += e.Size
 	}
 	return s, nil
@@ -136,17 +145,23 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	objectLimit := s.ObjectLimit(scope.Kind)
 	s.mu.Lock()
 	if old, ok := s.entries[identity(scope, key)]; ok && !now.Before(old.ExpiresAt) {
+		if s.readers[old.ID] > 0 {
+			s.mu.Unlock()
+			return Entry{}, ErrLimit
+		}
 		tomb := filepath.Join(s.dir, ".upload-expired-"+old.ID)
 		if err := os.Rename(filepath.Join(s.dir, old.ID), tomb); err != nil {
 			s.mu.Unlock()
 			return Entry{}, err
 		}
-		delete(s.entries, old.ID)
-		s.used -= old.Size
 		if err := os.RemoveAll(tomb); err != nil {
 			s.mu.Unlock()
 			return Entry{}, err
 		}
+		delete(s.entries, old.ID)
+		delete(s.accessed, old.ID)
+		delete(s.touched, old.ID)
+		s.used -= old.Size
 	}
 	if old, ok := s.entries[identity(scope, key)]; ok && now.Before(old.ExpiresAt) {
 		s.mu.Unlock()
@@ -174,9 +189,9 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	// Count the upload immediately, but reserve bytes as they are written.
 	// Reserving the per-object maximum made even tiny cache writes fail when
 	// free quota was below 2 GiB, despite ample room for the actual object.
-	if len(s.entries)+s.uploads >= s.limits.Objects {
+	if err := s.makeRoom(ctx, 0, 1, owner); err != nil {
 		s.mu.Unlock()
-		return Entry{}, ErrLimit
+		return Entry{}, err
 	}
 	s.uploads++
 	var reserved int64
@@ -204,8 +219,12 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	sink := quotaWriter{writer: io.MultiWriter(f, h), reserve: func(n int64) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if n > s.limits.TotalBytes-s.used-s.reserved {
+		// An oversized object must not evict the entire cache before rejection.
+		if n > objectLimit-reserved {
 			return ErrLimit
+		}
+		if err := s.makeRoom(ctx, n, 0, owner); err != nil {
+			return err
 		}
 		s.reserved += n
 		reserved += n
@@ -250,6 +269,9 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 	if err := ctx.Err(); err != nil {
 		return Entry{}, err
 	}
+	if err := os.Chtimes(filepath.Join(dir, "metadata.json"), now, now); err != nil {
+		return Entry{}, err
+	}
 	if err := syncDir(dir); err != nil {
 		return Entry{}, err
 	}
@@ -257,6 +279,8 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 		return Entry{}, err
 	}
 	s.entries[e.ID] = e
+	s.accessed[e.ID] = now
+	s.touched[e.ID] = now
 	s.reserved -= reserved
 	reserved = 0
 	s.uploads--
@@ -270,7 +294,7 @@ func (s *Store) Put(ctx context.Context, scope Scope, key, owner string, ttl tim
 
 // Get resolves exact keys first, then ordered prefix keys (newest match). Scope
 // is always derived by the server from the authenticated job, never the client.
-func (s *Store) Get(scope Scope, key string, prefixes []string, now time.Time) (Entry, *os.File, error) {
+func (s *Store) Get(scope Scope, key string, prefixes []string, now time.Time) (Entry, *Reader, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.entries[identity(scope, key)]
@@ -295,7 +319,20 @@ func (s *Store) Get(scope Scope, key string, prefixes []string, now time.Time) (
 	if err != nil {
 		return Entry{}, nil, err
 	}
-	return e, f, nil
+	// Persist coarse access time in metadata mtime, at most once per minute.
+	// Reads pin the inode until Close so eviction cannot free only logical space.
+	if now.Sub(s.touched[e.ID]) >= time.Minute {
+		if err := os.Chtimes(filepath.Join(s.dir, e.ID, "metadata.json"), now, now); err != nil {
+			_ = f.Close()
+			return Entry{}, nil, err
+		}
+	}
+	if now.Sub(s.touched[e.ID]) >= time.Minute {
+		s.touched[e.ID] = now
+	}
+	s.accessed[e.ID] = now
+	s.readers[e.ID]++
+	return e, &Reader{File: f, store: s, id: e.ID}, nil
 }
 
 func (s *Store) List(scope Scope, now time.Time) []Entry {
@@ -318,7 +355,7 @@ func (s *Store) Prune(ctx context.Context, now time.Time) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return n, err
 		}
-		if now.Before(e.ExpiresAt) {
+		if now.Before(e.ExpiresAt) || s.readers[id] > 0 {
 			continue
 		}
 		// Rename out of the published namespace before removal. A crash leaves
@@ -327,12 +364,14 @@ func (s *Store) Prune(ctx context.Context, now time.Time) (int, error) {
 		if err := os.Rename(filepath.Join(s.dir, id), tomb); err != nil {
 			return n, err
 		}
-		delete(s.entries, id)
-		s.used -= e.Size
-		n++
 		if err := os.RemoveAll(tomb); err != nil {
 			return n, err
 		}
+		delete(s.entries, id)
+		delete(s.accessed, id)
+		delete(s.touched, id)
+		s.used -= e.Size
+		n++
 	}
 	return n, syncDir(s.dir)
 }
@@ -368,4 +407,75 @@ func (w quotaWriter) Write(data []byte) (int, error) {
 		return 0, err
 	}
 	return w.writer.Write(data)
+}
+
+// Reader pins a published blob. Closing releases its physical-byte reservation.
+type Reader struct {
+	*os.File
+	store *Store
+	id    string
+	once  sync.Once
+	err   error
+}
+
+func (r *Reader) Close() error {
+	r.once.Do(func() {
+		r.err = r.File.Close()
+		r.store.mu.Lock()
+		defer r.store.mu.Unlock()
+		r.store.readers[r.id]--
+		if r.store.readers[r.id] == 0 {
+			delete(r.store.readers, r.id)
+		}
+	})
+	return r.err
+}
+
+// makeRoom is called with mu held. Artifact retention is never shortened.
+// In-flight bytes, active readers and this producer's own published objects are
+// protected; if they exhaust capacity the caller receives an honest quota error.
+func (s *Store) makeRoom(ctx context.Context, bytes int64, objects int, owner string) error {
+	fits := func() bool {
+		return bytes <= s.limits.TotalBytes-s.used-s.reserved && len(s.entries)+s.uploads+objects <= s.limits.Objects
+	}
+	if fits() {
+		return nil
+	}
+	candidates := []Entry{}
+	for _, e := range s.entries {
+		if e.Kind == "cache" && e.Owner != owner && s.readers[e.ID] == 0 {
+			candidates = append(candidates, e)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := s.accessed[candidates[i].ID], s.accessed[candidates[j].ID]
+		if a.Equal(b) {
+			return candidates[i].ID < candidates[j].ID
+		}
+		return a.Before(b)
+	})
+	for _, e := range candidates {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		tomb := filepath.Join(s.dir, ".upload-evicted-"+e.ID)
+		if err := os.Rename(filepath.Join(s.dir, e.ID), tomb); err != nil {
+			return err
+		}
+		// Don't release the accounting until physical removal succeeds.
+		if err := os.RemoveAll(tomb); err != nil {
+			return err
+		}
+		delete(s.entries, e.ID)
+		delete(s.accessed, e.ID)
+		delete(s.touched, e.ID)
+		s.used -= e.Size
+		if err := syncDir(s.dir); err != nil {
+			return err
+		}
+		if fits() {
+			return nil
+		}
+	}
+	return ErrLimit
 }

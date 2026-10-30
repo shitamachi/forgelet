@@ -39,6 +39,40 @@ func testPhaseTwo(t *testing.T, ctx context.Context, cluster testcontainers.Cont
 		waitFor(t, ctx, "phase 2 workflow finishes", func() bool { result = get(t, item.ID); return result.State.Terminal() })
 		return result
 	}
+	t.Run("credential transient recovery and permanent denial", func(t *testing.T) {
+		fixture := func(value string) {
+			clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "/opt/forgelet/node24/bin/node", "-e", `require('fs').writeFileSync('/fixture-state/credential-failures',process.argv[1])`, "--", value)
+		}
+		t.Cleanup(func() { fixture("0") })
+		for _, tc := range []struct {
+			value string
+			state run.State
+		}{{"3", run.Succeeded}, {"-1", run.Failed}} {
+			fixture(tc.value)
+			restartServer(t, ctx, client, httpClient, endpoint)
+			var item run.Run
+			must(t, json.Unmarshal(request(t, "POST", "/api/runs", map[string]any{"repository": "test/project", "sha": strings.Repeat("a", 40), "ref": "refs/heads/main", "installation_id": 7, "workflow": `on: push
+jobs:
+  test:
+    runs-on: homelab
+    steps:
+      - uses: actions/checkout@v4
+        if: false
+      - run: echo credential-recovered-once
+`}, 201), &item))
+			result := finish(t, item)
+			if result.State != tc.state {
+				t.Fatal(result)
+			}
+			output := logs(t, result.Jobs[0])
+			if tc.state == run.Succeeded && strings.Count(output, "credential-recovered-once") != 1 {
+				t.Fatal(output)
+			}
+			if tc.state == run.Failed && (output != "" || result.Jobs[0].Result.Error != "clone credentials unavailable") {
+				t.Fatal(result, output)
+			}
+		}
+	})
 	t.Run("signed push filters and same repository PR merge SHA", func(t *testing.T) {
 		send := func(event, delivery string, payload map[string]any) {
 			body, err := json.Marshal(payload)

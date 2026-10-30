@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -886,7 +887,13 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		}
 		token, err = s.provider.RepositoryToken(r.Context(), item.InstallationID, item.Repository)
 		if err != nil {
-			http.Error(w, "clone credentials unavailable", http.StatusServiceUnavailable)
+			reason, retryable := gh.CredentialFailure(err)
+			slog.Warn("job credential request failed", "job", job.ID, "repository", item.Repository, "reason", reason, "retryable", retryable)
+			status := http.StatusServiceUnavailable
+			if !retryable {
+				status = http.StatusForbidden
+			}
+			http.Error(w, "clone credentials unavailable: "+reason, status)
 			return
 		}
 	}

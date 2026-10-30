@@ -40,13 +40,15 @@ type cachedToken struct {
 // Client talks only to its configured API origin. It never follows redirects or
 // exposes API response bodies, authorization headers, or private keys in errors.
 type Client struct {
-	baseURL *url.URL
-	appID   int64
-	key     *rsa.PrivateKey
-	http    *http.Client
-	now     func() time.Time
-	mu      sync.Mutex
-	tokens  map[tokenKey]cachedToken
+	baseURL    *url.URL
+	appID      int64
+	key        *rsa.PrivateKey
+	http       *http.Client
+	now        func() time.Time
+	mu         sync.Mutex
+	tokens     map[tokenKey]cachedToken
+	flights    map[tokenKey]chan struct{}
+	generation uint64
 }
 
 // New accepts the numeric GitHub App ID and a PKCS#1 or PKCS#8 RSA private key.
@@ -141,11 +143,40 @@ func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, e
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("github: token request: %w", err)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cached, ok := c.tokens[key]; ok && c.now().Before(cached.until) {
-		return cached.value, nil
+	// Never hold the global token cache lock across external I/O. A slow
+	// installation/permission must not stall unrelated cached credentials.
+	for {
+		c.mu.Lock()
+		if cached, ok := c.tokens[key]; ok && c.now().Before(cached.until) {
+			c.mu.Unlock()
+			return cached.value, nil
+		}
+		if pending := c.flights[key]; pending != nil {
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("github: token wait: %w", ctx.Err())
+			case <-pending:
+			}
+			continue
+		}
+		if len(c.flights) >= 256 {
+			c.mu.Unlock()
+			return "", errors.New("github: token requests busy")
+		}
+		if c.flights == nil {
+			c.flights = make(map[tokenKey]chan struct{})
+		}
+		c.flights[key] = make(chan struct{})
+		break
 	}
+	generation := c.generation
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); close(c.flights[key]); delete(c.flights, key); c.mu.Unlock() }()
+	// The executor's HTTP request budget is 15 seconds. Return a retryable
+	// error before that deadline instead of repeatedly cancelling a 30s mint.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	jwt, err := c.jwt()
 	if err != nil {
 		return "", err
@@ -179,6 +210,11 @@ func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, e
 	if cap := c.now().Add(5 * time.Minute); cap.Before(until) {
 		until = cap
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.generation {
+		return response.Token, nil
+	}
 	// Bound the cache even when a large number of installations are configured.
 	if len(c.tokens) >= 256 {
 		clear(c.tokens)
@@ -187,7 +223,10 @@ func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, e
 	return response.Token, nil
 }
 
-type apiError struct{ status int }
+type apiError struct {
+	status      int
+	rateLimited bool
+}
 
 func (e *apiError) Error() string { return fmt.Sprintf("GitHub API returned HTTP %d", e.status) }
 
@@ -230,7 +269,7 @@ func (c *Client) request(ctx context.Context, method, endpoint string, query url
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &apiError{status: response.StatusCode}
+		return &apiError{status: response.StatusCode, rateLimited: response.Header.Get("Retry-After") != "" || response.Header.Get("X-RateLimit-Remaining") == "0"}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -245,4 +284,27 @@ func (c *Client) request(ctx context.Context, method, endpoint string, query url
 		}
 	}
 	return nil
+}
+
+// CredentialFailure classifies sanitized provider errors for operators. It never
+// exposes upstream response bodies, request URLs or authorization headers.
+func CredentialFailure(err error) (string, bool) {
+	var api *apiError
+	if errors.As(err, &api) {
+		if api.rateLimited {
+			return "github_rate_limited", true
+		}
+		switch api.status {
+		case 401, 403, 404, 422:
+			return fmt.Sprintf("github_http_%d", api.status), false
+		}
+		return fmt.Sprintf("github_http_%d", api.status), true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "github_timeout", true
+	}
+	if errors.Is(err, context.Canceled) {
+		return "request_cancelled", true
+	}
+	return "github_unavailable", true
 }

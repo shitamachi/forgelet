@@ -158,6 +158,9 @@ func (c *Client) Publish(ctx context.Context, r delivery.Record) (delivery.Publi
 			}
 			return delivery.Publication{Revision: r.Commit}, nil
 		}
+		if err := c.currentDeliverySource(ctx, r); err != nil {
+			return result, err
+		}
 		err = c.request(ctx, "PATCH", base+"/git/refs/heads/"+r.Target.Branch, nil, token, map[string]any{"sha": r.Commit, "force": false}, nil)
 		if isStatus(err, 409) || isStatus(err, 422) {
 			return result, delivery.ErrConflict
@@ -170,6 +173,9 @@ func (c *Client) Publish(ctx context.Context, r delivery.Record) (delivery.Publi
 	branch := "forgelet/" + r.Target.Name + "/" + r.ID
 	head, err := c.head(ctx, r.Target, branch, token)
 	if isStatus(err, 404) {
+		if err := c.currentDeliverySource(ctx, r); err != nil {
+			return result, err
+		}
 		err = c.request(ctx, "POST", base+"/git/refs", nil, token, map[string]string{"ref": "refs/heads/" + branch, "sha": r.Commit}, nil)
 		if isStatus(err, 422) {
 			head, err = c.head(ctx, r.Target, branch, token)
@@ -203,6 +209,9 @@ func (c *Client) Publish(ctx context.Context, r delivery.Record) (delivery.Publi
 			return result, delivery.ErrConflict
 		}
 		return delivery.Publication{PR: prs[0].Number, URL: prs[0].URL}, nil
+	}
+	if err := c.currentDeliverySource(ctx, r); err != nil {
+		return result, err
 	}
 	var pr struct {
 		Number int    `json:"number"`
@@ -241,4 +250,39 @@ func (c *Client) PullRequest(ctx context.Context, r delivery.Record) (delivery.P
 		return result, delivery.ErrConflict
 	}
 	return delivery.PullRequest{Merged: pr.Merged, Closed: pr.State == "closed", Revision: pr.SHA}, nil
+}
+
+// Check immediately before a new remote publication, AFTER lost-ACK recovery.
+// GitOps updates remain non-forced; the serialized coordinator cannot publish
+// an older build after a newer source has deployed. Manual rollback is explicit.
+func (c *Client) currentDeliverySource(ctx context.Context, r delivery.Record) error {
+	if r.RollbackOf != "" || r.Target.OnSuccess == nil {
+		return nil
+	}
+	if !validSHA(r.SourceSHA) || r.SourceInstallationID <= 0 {
+		return fmt.Errorf("github: automatic delivery lacks verified source identity")
+	}
+	token, err := c.RepositoryToken(ctx, r.SourceInstallationID, r.Target.SourceRepository)
+	if err != nil {
+		return err
+	}
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	err = c.request(ctx, http.MethodGet, "/repos/"+r.Target.SourceRepository+"/git/ref/"+strings.TrimPrefix(r.Target.SourceRef, "refs/"), nil, token, nil, &ref)
+	if isStatus(err, http.StatusNotFound) {
+		return delivery.ErrSuperseded
+	}
+	if err != nil {
+		return err
+	}
+	if !validSHA(ref.Object.SHA) {
+		return fmt.Errorf("github: invalid source ref response")
+	}
+	if ref.Object.SHA != r.SourceSHA {
+		return delivery.ErrSuperseded
+	}
+	return nil
 }

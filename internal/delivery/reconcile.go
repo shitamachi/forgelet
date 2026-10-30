@@ -26,10 +26,18 @@ func (c *Coordinator) Tick(ctx context.Context) error {
 		return err
 	}
 	blocked := map[string]bool{}
+	branches := map[string]string{}
 	latest := map[string]string{}
 	active := map[string]bool{}
 	for _, r := range records {
 		active[r.ID] = true
+		// A queued source may finish after a later target has already taken
+		// its GitOps snapshot. Preserve that preparing writer's ownership,
+		// including after restart, before considering any queued delivery.
+		branch := r.Target.Repository + "\x00" + r.Target.Branch
+		if r.State == Preparing && branches[branch] == "" {
+			branches[branch] = r.ID
+		}
 		if r.State == Delivered || r.State == Deployed {
 			latest[r.Target.Name] = r.ID
 		}
@@ -53,8 +61,12 @@ func (c *Coordinator) Tick(ctx context.Context) error {
 		}
 		// Serialize remote writes per registered target until direct delivery or
 		// PR resolution. A failed rollout does not block a corrective deployment.
-		if blocked[r.Target.Name] && (r.State == Queued || r.State == Preparing) {
+		branch := r.Target.Repository + "\x00" + r.Target.Branch
+		if (blocked[r.Target.Name] || branches[branch] != "" && branches[branch] != r.ID) && (r.State == Queued || r.State == Preparing) {
 			continue
+		}
+		if r.State == Preparing {
+			branches[branch] = r.ID
 		}
 		if r.State == Queued || r.State == Preparing || r.State == AwaitingMerge {
 			blocked[r.Target.Name] = true
@@ -78,6 +90,15 @@ func (c *Coordinator) Tick(ctx context.Context) error {
 				if saveErr := c.save(ctx, current); saveErr != nil {
 					problems = append(problems, saveErr)
 				}
+			}
+		}
+		if r.State == Queued {
+			current, err := c.Store.GetDelivery(ctx, r.ID)
+			if err != nil {
+				branches[branch] = r.ID
+				problems = append(problems, err)
+			} else if current.State == Preparing {
+				branches[branch] = r.ID
 			}
 		}
 	}
@@ -125,6 +146,15 @@ func (c *Coordinator) advance(ctx context.Context, r Record) error {
 		r.State = Preparing
 		return c.save(ctx, r)
 	case Preparing:
+		// Derive source identity from the persisted run, including deliveries
+		// queued before this upgrade. Never accept it from the executor.
+		if r.RollbackOf == "" && r.Target.OnSuccess != nil {
+			source, err := c.Store.GetRun(ctx, r.RunID)
+			if err != nil {
+				return err
+			}
+			r.SourceSHA, r.SourceInstallationID = source.SHA, source.InstallationID
+		}
 		if r.Commit == "" {
 			sha, err := c.Repository.Prepare(ctx, r)
 			if err != nil {
@@ -137,6 +167,10 @@ func (c *Coordinator) advance(ctx context.Context, r Record) error {
 			return c.save(ctx, r)
 		}
 		pub, err := c.Repository.Publish(ctx, r)
+		if errors.Is(err, ErrSuperseded) {
+			r.State, r.Error = Superseded, ErrSuperseded.Error()
+			return c.save(ctx, r)
+		}
 		if errors.Is(err, ErrConflict) {
 			r.State = Conflict
 			r.Error = "GitOps branch changed; retry with a new run"

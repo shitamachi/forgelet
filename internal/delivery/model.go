@@ -17,6 +17,7 @@ import (
 )
 
 var ErrConflict = errors.New("GitOps branch or image changed")
+var ErrSuperseded = errors.New("source branch advanced; automatic deployment superseded")
 var ErrNotFound = errors.New("delivery not found")
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -109,26 +110,28 @@ const (
 )
 
 type Record struct {
-	ID               string    `json:"id"`
-	Target           Target    `json:"target"`
-	RunID            string    `json:"run_id"`
-	JobID            string    `json:"job_id"`
-	Digest           string    `json:"digest"`
-	State            State     `json:"state"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Parent           string    `json:"parent,omitempty"`
-	Commit           string    `json:"commit,omitempty"`
-	Revision         string    `json:"revision,omitempty"`
-	ObservedRevision string    `json:"observed_revision,omitempty"`
-	PreviousDigest   string    `json:"previous_digest,omitempty"`
-	Content          []byte    `json:"content,omitempty"`
-	PR               int       `json:"pr,omitempty"`
-	URL              string    `json:"url,omitempty"`
-	RollbackOf       string    `json:"rollback_of,omitempty"`
-	ExpectedDigest   string    `json:"expected_digest,omitempty"`
-	Error            string    `json:"error,omitempty"`
-	Version          int       `json:"version"`
+	SourceSHA            string    `json:"source_sha,omitempty"`
+	SourceInstallationID int64     `json:"source_installation_id,omitempty"`
+	ID                   string    `json:"id"`
+	Target               Target    `json:"target"`
+	RunID                string    `json:"run_id"`
+	JobID                string    `json:"job_id"`
+	Digest               string    `json:"digest"`
+	State                State     `json:"state"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	Parent               string    `json:"parent,omitempty"`
+	Commit               string    `json:"commit,omitempty"`
+	Revision             string    `json:"revision,omitempty"`
+	ObservedRevision     string    `json:"observed_revision,omitempty"`
+	PreviousDigest       string    `json:"previous_digest,omitempty"`
+	Content              []byte    `json:"content,omitempty"`
+	PR                   int       `json:"pr,omitempty"`
+	URL                  string    `json:"url,omitempty"`
+	RollbackOf           string    `json:"rollback_of,omitempty"`
+	ExpectedDigest       string    `json:"expected_digest,omitempty"`
+	Error                string    `json:"error,omitempty"`
+	Version              int       `json:"version"`
 }
 
 func ID(runID, target string) string {

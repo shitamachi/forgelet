@@ -304,6 +304,21 @@ spec:
 		if !run.ValidDigest(published) || read(delivery.ID(auto.ID, "app")).Digest != published {
 			t.Fatal("publisher digest lost")
 		}
+		// A previously successful source rerun must not roll back a branch
+		// that advanced while the old publisher was executing. Restart with
+		// that newer head persisted, and require no GitOps write.
+		clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "/opt/forgelet/node24/bin/node", "-e", `require('fs').writeFileSync('/fixture-state/source-head','b'.repeat(40))`)
+		stale := launch(source)
+		restartServer(t, ctx, client, httpClient, endpoint)
+		if finished := finishRun(t, ctx, get, stale.ID); finished.State != run.Succeeded {
+			t.Fatal(finished)
+		}
+		waitFor(t, ctx, "old automatic source rejected after restart", func() bool { return read(delivery.ID(stale.ID, "app")).State == delivery.Superseded })
+		if current := read(delivery.ID(auto.ID, "app")); current.State != delivery.Deployed {
+			t.Fatal("old run changed current deployment", current)
+		}
+		clusterCommand(t, ctx, cluster, "kubectl", "-n", "forgelet", "exec", "deployment/forgelet", "-c", "github-test-api", "--", "rm", "/fixture-state/source-head")
+
 		bad := launch(strings.Replace(source, "RUN mkdir -p /www && echo healthy > /www/index.html", "RUN exit 7", 1))
 		failed := finishRun(t, ctx, get, bad.ID)
 		if failed.State != run.Failed || jobByKey(t, failed, "forgelet_deploy_app").State != run.Skipped {

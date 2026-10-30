@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -353,5 +354,77 @@ func TestRemotePollingIsBoundedWithoutDelayingNewDelivery(t *testing.T) {
 	tick(t, c, 1)
 	if s.records[1].State != Delivered {
 		t.Fatal(s.records)
+	}
+}
+
+func TestStaleAutomaticPublicationBecomesTerminalWithoutReplacingDeployment(t *testing.T) {
+	c, s, r, _ := setup(t)
+	s.state = run.Succeeded
+	r.publishErr = ErrSuperseded
+	tick(t, c, 3)
+	if s.records[0].State != Superseded || s.records[0].Error != ErrSuperseded.Error() || r.published != 0 {
+		t.Fatal(s.records, r.published)
+	}
+	// Recreating the coordinator is a normal restart, not a request to retry an
+	// obsolete deployment. Its terminal intent must never be replayed.
+	fresh := &Coordinator{Store: s, Repository: r, Observer: c.Observer, Now: c.Now}
+	r.publishErr = nil
+	tick(t, fresh, 4)
+	if r.published != 0 {
+		t.Fatal("restart replayed obsolete deployment")
+	}
+}
+
+func TestTargetsSharingGitOpsBranchPrepareSerially(t *testing.T) {
+	c, s, r, _ := setup(t)
+	s.state = run.Succeeded
+	second := s.records[0]
+	second.ID = "two"
+	second.Target.Name = "other-app"
+	s.records = append(s.records, second)
+	tick(t, c, 1)
+	if s.records[1].State != Queued {
+		t.Fatal("second target snapshotted stale GitOps parent")
+	}
+	tick(t, c, 3)
+	if s.records[1].State != Preparing || s.records[1].Parent != s.records[0].Commit || r.published != 1 {
+		t.Fatal(s.records, r.published)
+	}
+	tick(t, c, 2)
+	if r.published != 2 {
+		t.Fatal("second target starved", s.records)
+	}
+}
+
+func TestPreparingBranchWriterWinsOverEarlierNewlyReadySourceAfterRestart(t *testing.T) {
+	for _, prepared := range []bool{false, true} {
+		t.Run(fmt.Sprint(prepared), func(t *testing.T) {
+			c, s, r, _ := setup(t)
+			s.state = run.Succeeded
+			later := s.records[0]
+			later.ID, later.Target.Name, later.State = "later", "other-app", Preparing
+			later.Parent, later.Content = r.snap.SHA, manifest(later.Digest)
+			if prepared {
+				later.Commit = strings.Repeat("b", 40)
+			}
+			s.records = append(s.records, later)
+			// No in-memory lock survives a restart. The persisted Preparing
+			// state must keep its snapshot ahead of the earlier queued source.
+			fresh := &Coordinator{Store: s, Repository: r, Observer: c.Observer, Now: c.Now}
+			tick(t, fresh, 1)
+			if s.records[0].State != Queued {
+				t.Fatal("newly ready source overtook existing writer", s.records)
+			}
+			if !prepared {
+				tick(t, fresh, 1)
+			}
+			if s.records[1].State != Delivered || r.published != 1 {
+				t.Fatal("existing writer blocked", s.records)
+			}
+			tick(t, fresh, 1)
+			if s.records[0].State != Preparing || s.records[0].Parent != s.records[1].Commit {
+				t.Fatal("queued source did not refresh GitOps parent", s.records)
+			}
+		})
 	}
 }

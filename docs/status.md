@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-29（Asia/Shanghai）。当前：**阶段12.1/12.2已实现、完成自动验证并部署；Admin Web真实分支与PR命中main缓存、Checks正确关联head，main CI/镜像/GitOps/Flux已通过；platform-web已去除Flux镜像覆盖，固定计划重试完成原48单测/28浏览器/发布/部署，真实回滚与恢复通过。两个试用仓库已停用对应GitHub托管workflow，Forgelet为唯一日常执行/发布来源。缓存误预留2GiB导致的小对象写入失败已修复，总预算仍6GiB。** Codecov外部上传及Forgelet自身CI接入仍属12.3未完成项。
+更新：2026-10-30（Asia/Shanghai）。当前：**阶段13优先三项已完成代码、自动测试、homelab部署及真实仓库验收：GitOps自动发布防倒退、GitHub凭据获取隔离/恢复、缓存满额淘汰。Admin Web原workflow重跑完成CI→Zot→GitOps→Flux；steam-cm原test/image完整成功。最终服务端a05d530e已上线，代码仍为本批未提交工作区。** 完整Testcontainers通过2642.225秒（7项外部可选夹具SKIP），最终发布队列补丁另经专项677.700秒通过。Tasks冷缓存预算、其余仓库CI/CD接管，以及12.3仍单列未完成；不将本批计为全部业务接管。
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 阶段10首批逐仓库验收（历史固定提交，后续交付见文末）
@@ -1221,3 +1221,55 @@ platform-web先以GitOps acb5fe1对齐现网6ee9e663，再移除Kustomization.sp
 - 真实验收与自动测试分开记录：分支/PR原始32测试，两个main CI/镜像，platform原48/28、固定计划重试、实际GitOps/Flux、回滚/恢复、托管CI停用及任务清理均有现场证据。私有 `stage12-delivery-20261029` 保存final-delivery-audit.json、完整脱敏日志、签名delivery、SQL升级备份、镜像/标签/Check匹配及回滚证明，不含明文token回显。
 
 12.1/12.2完成；12.3仍有Codecov私有仓库外部接入（已有上传token但Repository not found）、业务YAML token引用及Forgelet自身CI/完整集成预算/Go1.27环境验证。只把已实际配置的两个业务CD目标计为交付，不扩展为所有仓库已自动部署。
+
+
+## 阶段13阻断修复（2026-10-29，进行中）
+
+当前在实现自动发布防倒退、凭据签发隔离与缓存容量淘汰。第一轮make verify通过（42前端单测、17浏览器39.7秒）；后续补充限流分类/持久化与终态回归后，blob/delivery/provider/storage race通过。真实k3s尚在验证，未部署，不把代码完成算作线上完成。
+
+测试准备中默认Go代理下载慢，随后TUNA镜像403；已恢复此前验证使用的goproxy.cn与Aliyun构建配置，保留失败日志。未修改业务测试或集群资源额度。owner的AGENTS.md修改保留。
+
+
+### 阶段13部署与真实验收进展（2026-10-30，完整回归仍在运行）
+
+服务端已更新为 `zot.k.mygo.rocks/forgelet/server@sha256:db32c7c9b16a47dfb16e38b2e12317963c44160d9ed00931ea80bb6d660b077c`，对应本批未提交工作区二进制SHA前缀 `f0645a67c0da`，不是已有Git提交。升级前保存SQLite备份；auth、管理配置、执行profile、并发2与原资源预算保持。未新增常驻服务。owner的AGENTS.md修改原样保留，尚未自动提交/推送本批。
+
+- **旧来源拒绝**：实际Admin Web旧源码945431dc、既有旧digest f29f6ff3，通过明确的诊断native投递运行 `f10cf9813ccb136167b82d8a`，在当前main为94f9fc6时得到 `superseded`。GitOps HEAD和原线上digest均未改变。此项使用真实仓库、提交和镜像，不是新的真实push，也不是重跑整个旧workflow。
+- **缓存容量压力/恢复**：测试仓库forgelet-e2e-app用固定源码运行明确诊断workflow；临时将总blob额度设为既有占用+4MiB，写入12MiB cache及小artifact。实际仅淘汰一项cache，artifact保留、使用量未超过临时额度。恢复原6GiB配置并重启后，运行 `a4758de3489c0d86567aded1` 从新Pod恢复成功。测试改变的是配额压力，不冒称新增物理磁盘低水位验收。
+- **完整Admin Web发布**：固定原始image workflow和94f9fc6源码重跑 `48b3a3e823b03474168cc7ddea1d5569` 完整success，原32项测试/check/build保持，npm cache-hit=true，Buildx镜像推送和cache导出成功。delivery `de16615f63d102e8b4367c77621b7373` 为deployed，来源身份已持久化；Zot digest `4d8ade69aa62e99acadaf79cb5281a7f917c89c59a410fb2f526a263800ded9d`，GitOps/Flux revision `8c959ceac639613f6dba13042d66563e1bd9f57a`，Deployment可用、healthz HTTP200，精确GitHub Checks成功。此项是原快照重跑，不是新的push。platform-web原digest665a0484保持、无spec.images覆盖、HTTP200。
+- **凭据真实复验进行中**：原steam-cm凭据失败运行的同一150a780源码/原固定计划重跑 `a46c97d8a9c8dd887440cdfebb47ce2e` 已取得凭据进入Rust编译；整条test/image workflow尚未完成，不提前记为通过。
+- **自动验证**：最终生产代码的 `make verify` PASS（Go race/HTTP/SQLite、构建/lint/generate、42前端单测、17浏览器场景39.0秒）。较早专项Testcontainers PASS1020.956秒，覆盖实际k3s新缓存淘汰/跨Pod/重启、分支隔离、BuildKit/Flux/失败/回滚与凭据暂态恢复/永久拒绝；该次早于最终共享GitOps分支串行及额外对象超限用例，不能代替最终全量回归。最终全量仍在运行。
+
+私有证据目录 `~/.config/forgelet/stage13-reliability-20261029` 保存部署/容量配置恢复、旧来源拒绝、运行/日志、GitOps/Flux/HTTP/Checks与现场etcd告警检查。当前检查etcd firing为空，仅代表现场时点，无额外资源基线门禁。
+
+
+阶段13追加边界修正：两个target共用GitOps分支时，必须先恢复既有Preparing记录的分支占用，再处理刚完成CI的较早Queued来源；只按创建顺序临时加锁仍可能让后者抢占已有快照。已补尚未生成commit/已生成commit两种重启回归，delivery/storage race通过；更新后make verify完整通过（42前端、17浏览器38.9秒）。最终服务端更新为 `sha256:a05d530e98ff7795998de2f79486fe3d702af10aba34a6008b8beadc336ba5e2`，二进制SHA `18668e5f55705f443b1c2a424d0e25c6763b0709096e404b0c0e5657e60a99c3`，原steam-cm活跃Pod UID `07192b19-a2ad-4146-bf42-b803fea127a8` 保留并继续执行。最终版本重新进行旧来源投递运行 `4bddb678fc07b52c3c4b3a10`，仍superseded，GitOps和现网未变。
+
+steam-cm原test job已完整success，141项通过、0失败、原3项ignored保留；image job继续编译。自动回归安排为已启动完整套件完成后，顺序运行最终代码的BuildKit/Flux发布/重启/失败/回滚Testcontainers专项（最后变动仅涉及发布队列；凭据与缓存由完整套件覆盖），避免同时创建两个临时k3s争用本机资源。两次结果将在完成后分别追加，不把正在运行当作通过。
+
+
+**真实仓库最终结果（2026-10-30 00:29）**：steam-cm `a46c97d8a9c8dd887440cdfebb47ce2e` /150a780完整success，保留原9步test和原image workflow、原30/45分钟job预算。test合计141通过、0失败、原3 ignored不变；release镜像ID `32935319967b8d27223a0e553b9989d5664361d246fce802199b7b33222d0bd3`，构建6分27.9秒，非root/只读/health/shutdown/redaction smoke成功；managed-test编译3分47.8秒，精确release镜像中两项managed lifecycle测试成功20.6秒。原普通push的publish=false远程发布步骤正确skipped，不连接真实Steam、不部署CM业务。GitHub精确源码的两个Forgelet Checks均success。旧凭据失败 `e45b1bdd8670069a25084539` 保留；本次未复现公网依赖下载超时，但不据此承诺公网依赖永远可用。
+
+收尾现场：Admin仍为4d8ade69、platform-web仍为665a0484，两者Flux Ready/HTTP200；etcd firing为空，forgelet命名空间仅剩控制面Pod，没有遗留本批执行Pod。完整套件和最终补丁专项结果仍待追加。
+
+
+**完整自动回归通过**：`go test -tags=integration ./test/integration -count=1 -v -timeout=95m` PASS **2642.225秒**。新增缓存满额淘汰/对象超限/重启50.05秒，artifact跨Pod/重启41.17秒，分支缓存隔离41.76秒，真实BuildKit/Flux590.71秒（含旧来源拒绝/自动发布依赖/重启/失败门禁187.04秒），凭据暂态恢复/永久拒绝8.80秒；>1GiB BuildKit cache冷热/重启/失败/取消506.92秒，act435.65秒、Rust156.76秒，真实SDK46.70秒，浏览器71.90秒（4个真实页面场景47.2秒），登录授权/重启83.86秒，日志/历史保留19.08秒均通过。完整命令的7个可选SKIP为：Atlas安装器/构建stage、DuckDB工具、reaper工具、Zot ACL，以及两组需要私有业务clone目录的workflow fixture；没有将它们记为通过，真实业务验收另见上文。SDK通过官方checksum验证的预载归档仍运行真实Action，不把预载计为公网下载验证。
+
+完整套件覆盖最终凭据/缓存代码及首版共享分支串行；它启动后补充的“既有Preparing优先”边界由最终make verify和当前新的BuildKit/Flux专项单独验证，不能声称完整套件已经包含后补代码。首个临时k3s已清理，新专项独立顺序启动。
+
+
+## 阶段13优先三项交付完成（2026-10-30）
+
+**实现与验证**分别完成：
+
+- GitOps发布前核对持久化run对应的实际来源head；过时来源为superseded，不推进分支。保留丢ACK恢复和显式回滚；同一GitOps分支串行准备/发布，重启先恢复Preparing占用，避免不同应用互相制造旧parent冲突。
+- GitHub token网络请求不再持有全局锁；按scope合并、等待可取消、10秒签发预算。永久拒绝明确结束，限流/暂态故障沿原窗口重试，诊断脱敏；没有承诺消除所有外部网络故障。
+- 满额时按访问时间淘汰可重建cache，保留artifact、活跃读流、当前producer和在途预留；重启恢复LRU。总额度仍6GiB，没有可回收项或超过单对象限制仍明确失败。
+
+最终代码 `make verify` PASS（Go race/HTTP/SQLite、构建、lint/generate、42前端单测、17浏览器测试38.9秒）。完整Testcontainers **2642.225秒**，k3s **31个通过叶场景**，整个命令7项可选SKIP已逐项列明。最后补充的Preparing优先逻辑另经delivery/storage race、make verify，以及最终代码实际BuildKit/Flux专项 **677.700秒**；CI/CD场景509.14秒，其中自动依赖/重启/旧来源拒绝/失败门禁156.91秒。专项只选择发布相关场景，不冒称第二次全量回归；两个临时k3s顺序执行并正常清理，没有读取用户kubeconfig。
+
+**homelab最终版本**：`zot.k.mygo.rocks/forgelet/server@sha256:a05d530e98ff7795998de2f79486fe3d702af10aba34a6008b8beadc336ba5e2`，二进制18668e5f5570；SQLite已备份，配置/权限/资源预算与并发2保留，升级保留活跃steam-cm Pod UID。Admin Web 48b3a3e8的原workflow完整重跑、缓存恢复/导出及GitOps/Flux部署4d8ade69通过；steam-cm a46c97d8的原workflow完整重跑与GitHub Checks成功。两次都使用原固定源码/计划，不是新增push。最终版本旧来源诊断4bddb678被superseded；测试仓库缓存满额/产物保留/重启恢复通过，临时额度已恢复。真实验证的完整ID、digest、revision、测试结果和边界见上文。
+
+**尚未覆盖的边界**：防倒退针对自动GitOps部署，不为registry的可变latest标签排序；部署继续使用digest。Tasks原20分钟冷缓存完整流程、其余仓库的唯一CI来源和实际业务CD接管仍未完成。CM本次未复现旧公网下载超时，不能因此将外部依赖可用性视为已根治。Codecov外部接入及Forgelet自身CI仍按12.3推进。
+
+本轮源码未自动提交/推送；owner的AGENTS.md修改保持原样。最终补丁、新测试文件、镜像与二进制hash、升级备份、自动验证日志及真实验收证据保存在本机私有 `~/.config/forgelet/stage13-reliability-20261029`，不含对外回显的token。

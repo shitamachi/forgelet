@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func TestDeliveryPersistenceCASAndRestoreQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	r := delivery.Record{ID: "one", RunID: "run", JobID: "job", Target: delivery.Target{Name: "app"}, Digest: "digest", State: delivery.Queued, CreatedAt: now, UpdatedAt: now}
+	r := delivery.Record{SourceSHA: strings.Repeat("a", 40), SourceInstallationID: 7, ID: "one", RunID: "run", JobID: "job", Target: delivery.Target{Name: "app"}, Digest: "digest", State: delivery.Queued, CreatedAt: now, UpdatedAt: now}
 	r, err = s.EnqueueDelivery(t.Context(), r)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +50,7 @@ func TestDeliveryPersistenceCASAndRestoreQuarantine(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 	saved, err := s.GetDelivery(t.Context(), r.ID)
-	if err != nil || saved.State != delivery.Preparing || saved.Version != 2 {
+	if err != nil || saved.State != delivery.Preparing || saved.Version != 2 || saved.SourceSHA != r.SourceSHA || saved.SourceInstallationID != 7 {
 		t.Fatal(saved, err)
 	}
 	if err := PrepareRestore(t.Context(), backup); err != nil {

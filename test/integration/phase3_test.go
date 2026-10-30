@@ -47,7 +47,7 @@ func testPhaseThree(t *testing.T, ctx context.Context, cluster testcontainers.Co
 		return joined.String()
 	}
 	t.Run("CI to CD", func(t *testing.T) {
-		t.Run("small caches reserve actual bytes and survive quota failure restart", func(t *testing.T) {
+		t.Run("small caches reserve actual bytes and evict cold cache across restart", func(t *testing.T) {
 			cm, err := client.CoreV1().ConfigMaps("forgelet").Get(ctx, "forgelet-config", metav1.GetOptions{})
 			must(t, err)
 			original := cm.Data["forgelet.yaml"]
@@ -98,8 +98,8 @@ jobs:
       - uses: actions/cache/save@v4
         with: {key: actual-quota-overflow, path: excess}
 `)
-			if result := finishRun(t, ctx, get, over.ID); result.State != run.Failed {
-				t.Fatal("quota violation was accepted", result)
+			if result := finishRun(t, ctx, get, over.ID); result.State != run.Succeeded {
+				t.Fatal("cache pressure was not reclaimed", result)
 			}
 			restartServer(t, ctx, client, httpClient, endpoint)
 			restored := create(t, `on: push
@@ -108,13 +108,26 @@ jobs:
     runs-on: homelab
     steps:
       - uses: actions/cache/restore@v4
-        with: {key: actual-quota-large, path: large, fail-on-cache-miss: true}
+        with: {key: actual-quota-overflow, path: excess, fail-on-cache-miss: true}
       - uses: actions/cache/restore@v4
         with: {key: actual-quota-small, path: small, fail-on-cache-miss: true}
-      - run: test "$(wc -c < large/data)" -eq 393216; test "$(wc -c < small/data)" -eq 16384
+      - run: test "$(wc -c < excess/data)" -eq 204800; test "$(wc -c < small/data)" -eq 16384
 `)
 			if result := finishRun(t, ctx, get, restored.ID); result.State != run.Succeeded {
 				t.Fatal(result, logs(t, result.Jobs[0].ID))
+			}
+
+			oversized := create(t, `on: push
+jobs:
+  oversized:
+    runs-on: homelab
+    steps:
+      - run: mkdir oversized; dd if=/dev/zero of=oversized/data bs=1024 count=600
+      - uses: actions/cache/save@v4
+        with: {key: actual-quota-oversized, path: oversized}
+`)
+			if result := finishRun(t, ctx, get, oversized.ID); result.State != run.Failed {
+				t.Fatal("per-object limit bypassed by eviction", result)
 			}
 		})
 		t.Run("artifact and cache persist across pods and server restart", func(t *testing.T) {

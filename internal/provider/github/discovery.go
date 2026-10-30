@@ -95,6 +95,7 @@ func (c *Client) Discover(ctx context.Context) (Catalog, error) {
 			key := tokenKey{installation: inst.ID, permission: "metadata"}
 			c.mu.Lock()
 			delete(c.tokens, key)
+			c.generation++
 			c.mu.Unlock()
 			token, e := c.installationToken(ctx, key)
 			if e != nil {
