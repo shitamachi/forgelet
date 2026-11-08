@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-10-30（Asia/Shanghai）。当前：**阶段13优先三项已完成代码、自动测试、homelab部署及真实仓库验收：GitOps自动发布防倒退、GitHub凭据获取隔离/恢复、缓存满额淘汰；本批已提交并推送 `461b709`（修复）与 `0ea2d1d`（冷缓存回归/记录）。Tasks 分支冷缓存完整 workflow 已用真实仓库在 `793.5` 秒内通过（原 1200 秒、原测试/断言与 PG18 输入不变），默认分支缓存回退命中。** Admin Web原workflow重跑完成CI→Zot→GitOps→Flux；steam-cm原test/image完整成功；服务端 a05d530e 已上线。完整Testcontainers通过2642.225秒（7项外部可选夹具SKIP），最终发布队列补丁另经专项677.700秒通过。其余仓库CI/CD接管及12.3仍单列未完成；不将本批计为全部业务接管。
+更新：2026-10-31（Asia/Shanghai）。当前：**阶段14已完成当前自有业务日常接入收口**：其余7仓库10个托管workflow停用，Forgelet为唯一日常CI来源；六个业务新源码真实CI/镜像/原生CD通过。Server/Admin/API/Login/Tasks实际deployed并HTTP200，ETL保持0副本且投递/暂停回滚恢复通过，CM保留受控发布。Tasks完整PG18检查executing754.285秒，含准备约14分54秒，原20分钟/测试断言保留。最终make verify及相关Testcontainers通过；具体源码、失败保留、回滚和边界见文末阶段14。控制面仍a05d530e，无新常驻组件；Codecov/自身CI按12.3另列待办。
 按阶段快速实现，暂停 spec 审批，不设独立基线或性能审核；计划、代码、自动测试与实际环境接入分别记录。
 
 ## 阶段10首批逐仓库验收（历史固定提交，后续交付见文末）
@@ -1285,3 +1285,123 @@ steam-cm原test job已完整success，141项通过、0失败、原3项ignored保
 - **保留失败**：首个同计划 run `fcc4130d9fa5a47d722bc47b` 在 short/race 步骤 failure，仅 `TestEnginePausesWithoutChargingTheBudgetOnResourceFaults`（`internal/online/engine/engine_test.go:662`）在 50ms 观察窗口内只记录 3 次调用；业务测试/断言未修改，PG18 与 Codecov 步骤 skipped。同一固定计划重跑通过，属于业务测试时序抖动，不归因于冷缓存或平台，也不改写原失败。
 - **回归与本轮检查**：新增 `cacheReadRefs` 的 `workflow_dispatch` 独立 ref 单测；HTTP/SQLite 集成新增手动冷 ref 读取默认分支；Testcontainers 分支回退场景新增“无自身缓存的 `workflow_dispatch` ref 在 1 分钟 job timeout 内恢复默认分支对象”，并保留重启与写入隔离断言。目标 Testcontainers 专项 **PASS 801.518 秒**（叶场景 45.00 秒，含临时 k3s/镜像准备），临时资源已清理；完整 `go test -race ./...` PASS，`golangci-lint` 0 issues。未修改生产代码，homelab 服务端无需再次部署。
 - **边界**：本次证明“分支/手动 ref 冷命名空间”可复用默认分支已有对象；若默认分支也从未缓存过该 key（新依赖集或新仓库），仍按真实 cache miss 处理，不伪造命中，也不保证任意全新冷构建都在 20 分钟内。默认分支缓存仍受阶段13容量淘汰和 6GiB 总预算约束。
+
+
+## 阶段14：其余业务日常接入完成（2026-10-31）
+
+本轮完成Tasks检查预算收口、其余7仓库唯一日常CI来源及六个业务的GitOps镜像接管。Owner确认CM保留受控生产发布；允许整合并推送本地已提交业务代码，原ETL/Tasks等工作目录的未提交改动未纳入。没有新增常驻服务或修改控制面生产Go代码。
+
+**实际源码与交付**：下表六个新源码的真实push均完成原检查→镜像发布→native CD。五个运行应用已核对新digest、更新副本/代际、Flux最新revision和HTTP健康；ETL原replicas=0保持，不能称为运行中或deployed。
+
+| 仓库 | 最新已验证源码 | 真实 push run | 镜像 digest 前缀 | 最终交付 |
+|---|---|---|---|---|
+| steam-platform-server | `fefdb541` | `cd8184a83363a0403501d88f` | `8f13edf1254b` | deployed，1/1，HTTP200 |
+| steam-platform-etl | `7e2176ca` | `8ddebed6e6b3fc7594203a43` | `042366ee4fb3` | delivered，Flux Ready，保持0副本 |
+| steam-admin | `e2667b35` | `8b7c5e03bff97c4356d9fded` | `72debb09acdc` | deployed，1/1，HTTP200 |
+| steam-api | `98ccf8b5` | `f7a8a16ee5823aaf807b5bdf` | `82d8e36ed24f` | deployed，1/1，HTTP200 |
+| steam-login | `6c017290` | `27ccf1dfc5af849cae9b2e84` | `d892e95b339b` | deployed，1/1，HTTP200 |
+| steam-tasks | `9fd729f6` | `e15dcc13972d80674a07f2df` | `5918438a12b1` | deployed，1/1，HTTP200 |
+
+对应delivery：Server `490c6927c8d7e324eeb2e6276d7df5bd`、ETL原投递 `d4304fb2f10aa7014bc86d5f6dbd0193`（回滚恢复后以 `079479fda72229d5313b16c89aeba4e3` 为当前记录）、Admin `ff021d695f5ad83f76209e42b834d0d9`、API `b2a363d399facd813c17a63347a242ac`、Login原投递 `579144841711118cb684f3710dafdbea`（恢复后 `f35fe0951db2239fc70407e263e89390`）、Tasks `7cc5f63e544301a075a4c9beca23a372`。最终共享GitOps HEAD/六个Flux revision均为 `739e4e3096105bcc2c5312657d33f854ba15f57d`；原交付revision保持各自实际commit，不伪造相同发布时间。
+
+**Tasks 20分钟检查**：`9fd729f6` 的reliability子job `eceafa8e3e82a59721fb5796` success，preparing **139.192秒**、executing **754.285秒（12分34秒）**、cleanup0.306秒；含准备约 **14分54秒**。原job1200秒、全部测试/断言、`-race`、`-count=1`、PG包串行`-p=1`与内层15分钟均保留。Go/Atlas cache-hit=true；完整PG18 **53包通过**，测试命令4分57.733秒、整步300.265秒。发布入口显式调用`postgres: true`，失败不放行publisher；开发检查保留快路径。PG新增独立`coverage-pg.out`，与前一步unit使用相同race+coverage编译模式复用构建，原unit coverage.out及上传入口保留。此前a725的PG步594.40秒，新值是本次观测，源码和负载不同，不将差值全部归因于编译参数。
+
+Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源，原全部应用程序构建通过，`sha-9fd729f`/`latest`/Action输出均为 `sha256:5918438a12b158edef33f44cd0356bd27f010e0fb228fc9e600fe67f1fe73859`；GHA构建缓存首次导出成功323.6秒。Flux按原Recreate策略更新，最终仅一个新Pod、零重启、/ready HTTP200，原运行配置逐字段保留。**20分钟指原reliability检查job，独立镜像构建/缓存导出及CD不计入该job预算**；本次没有额外重跑Tasks镜像热构建。
+
+**唯一CI来源与源码安全**：7个追加仓库的10个GitHub hosted workflow均为disabled_manually，Forgelet入口/授权仍启用；最终逐个复查，恢复命令在私有`ci-switch-proof.json`。此前两个Web试用仓库状态保持。本次六个源码共16个精确SHA的Forgelet Checks均completed/success。CM本轮414e881原test的9步通过；额外image验收曾因资源Pending而主动取消，不将该run记为完整成功。其Rust/image输入相对阶段13完整通过的150a780未变，414的新变动为Go operator/部署文档；本轮不部署CM、不触发生产发布。
+
+在独立checkout合并本地已提交与较新远端源码，普通fast-forward push，无force push。Tasks保留上游managed-scope/DuckLake扩展，冲突的Atlas校验文件由官方CLI重算；原工作目录未执行checkout/reset。接管期间识别其他开发者将Tasks现网从0396推进到32b87bd6，停止旧镜像复制，改按当前32b87bd6等价迁移，未以旧快照倒退。Server/ETL补发布入口，ETL从go.mod解析公开SDK命名build context；Admin image依赖reusable CI，Login保留GHCR并拆分Zot publisher，Tasks main不再重复独立ci入口。
+
+**权限与运行配置**：现网六个镜像逐一复制到Zot且原始/目标raw manifest digest相同；每应用独立publisher/read-only reader，11个新增账户只授权对应路径，既有Tasks publisher保留。GitOps仅存selector/labels、镜像和pull Secret名称，无运行env或凭据。独立Flux SA仅管理指定Deployment、读取ReplicaSet，prune=false/Orphan；完整现网spec先保存独立SSA归属，备份并移除旧client-side apply迁移注解。初次缺selector被Flux dry-run拒绝，没有写入现网。完整运行字段除预期image/pull Secret外均逐字段一致。
+
+**实际回滚/恢复**：Login业务源码未变化，真实回滚至已复制的58935481（b83f08f9）并HTTP200，再恢复d892e95b（f35fe095）并HTTP200；同ID重放未产生重复GitOps写入或回退。ETL在0副本下回滚至92b4f691（a3d5c401），再恢复042366ee（079479fd），两次均delivered/Flux Ready且始终0副本，没有启动CDC。没有对Tasks/其他有数据服务做未经兼容性确认的试验性生产回退。
+
+**本轮阻断修复与失败保留**：
+
+- ETL19a85ec7原make check成功，新增SDK脚本因执行镜像无Python失败；7e2176ca改用Go原生download/list，不再为公开SDK注入额外token，后续完整成功。
+- API359661bc原Redis测试被首次公网下载耗尽45秒；改用含Redis的postgres镜像组，后续原测试3.86秒。HTTP/2断言失败来自历史工具镜像全局`GODEBUG=http2client=0`，同Linux/Go1.26原测试在该flag下失败、清空后通过。修正工具镜像配置、保持全部文件系统层digest不变；API98ccf8b仅在go mod download步骤保留代理绕行，原HTTP/2断言通过0.01秒，未修改业务断言。
+- Tasks a725391完整失败保留（executing1104.18秒，publisher/CD skipped），唯一失败为月末保留测试：10月31日减25个月归一化到10月1日，导致原本想构造的窗口外历史落入保留窗口，期望1实际2。0746d7c先锚定月初再减月份，保留全部数量/活跃任务/receipt断言，增加31日及闰年二月用例；生产保留逻辑未改。自己的0746中间运行因采用最终编译复用配置取消，未取消其他开发者运行；9fd最终完整成功。
+
+**自动测试**：最终`make verify` PASS（Go race/HTTP/SQLite、构建、lint/generate、42前端单测、17浏览器40.3秒）。新增六仓库YAML夹具验证发布依赖、PG输入、SDK上下文、下载flag作用域和缓存构建入口。实际BuildKit/Flux专项Testcontainers **709.539秒**，含最小镜像清单接管完整spec比较53.88秒、原失败/回滚/重启/旧来源门禁150.01秒；六应用Zot ACL真实Testcontainers均通过。最终实际工具镜像HTTP/2探针Testcontainers **2.340秒**，Docker API复制二进制，不依赖daemon可见宿主临时目录；未覆盖继承环境来掩盖旧问题。Tasks四组真实PG18+race Testcontainers **27.468秒**（当前日期、10月31日、3月31日、闰年2月29日）。此前Flux专项一次因等待旧ledger超时、一次因官方下载网络超时，失败日志保留；最终等待实际Flux健康/revision，官方v2.6.4可选预载限定固定SHA及4MiB上限。**本轮是相应专项，不冒称新全量Testcontainers**；阶段13完整2642.225秒及最终发布专项677.700秒另见上文。
+
+**homelab收尾**：控制面仍为a05d530e二进制，runner改用 `82a96bb59b1a29ea4997104e4ad929c824ae61b52896b57a1792eb0ce4be0147`。为读取profile重启控制面时活跃执行Pod UID全部保持。Ubuntu解除旧node2限定，supervisor request256→128Mi、limit1Gi；engine仍4Gi request/limit及原CPU预算，并发2保持；node2预留仍不足，不冒称恢复双worker容量，没有迁移Windmill等其他服务或把CI放到etcd节点。最终执行Pod全部清理，仅余控制面；五个运行应用HTTP200、ETL0副本、etcd firing为空。临时复制进程、端口转发、合并认证文件及旧部分镜像缓冲已清理，专用凭据仍仅保存在私有目录/对应Secret。证据目录为`~/.config/forgelet/stage14-adoption-20261030`。
+
+**边界**：13.4已证明独立冷ref读取默认分支缓存，本次main检查也命中；默认分支从未缓存的新依赖仍是真实miss，不承诺任意新仓库全冷构建都在20分钟。Codecov17.634秒步骤绿色仍伴随token警告，不代表外部覆盖率上传成功，12.3保持待办。恢复GitHub hosted只恢复CI/镜像发布，不会运行Forgelet注入的native CD；应急部署仍须显式更新GitOps。原工作区AGENTS.md改动保持，Forgelet本仓库本轮测试/文档没有自动提交或推送。
+
+## 2026-11-08：集群外 runner 调研与规划
+
+- **计划**。拉取微软 WSLC CLI/API、配置和教程原文，核对 GA 公告、session/VHD/网络架构与 WSL 安全边界。参考 GitHub Actions、GitLab Runner 和 Buildkite，设计外部 HTTPS 拉取、事务租约、管理员 profile、Mac/Linux 原生执行与 Windows 每 job 一个 Linux 容器。实施顺序见 [plan.md](plan.md)，详细设计和来源见 [architecture.md](architecture.md)。
+- **代码实现**。本轮交付设计和任务清单，runner 产品代码待阶段15实现。
+- **现有代码验证**。Go 1.27.3 在本机完成 `darwin/arm64` 构建及 `linux/amd64`、`linux/arm64` 交叉构建，覆盖 `./cmd/executor` 和 `./internal/executor`。本机六项既有 executor 用例通过（2.845 秒），覆盖 workspace、固定 SHA checkout、取消及子进程清理、结果 ACK 丢失重试。此结果只验证现有 executor 的可复用基础。
+- **集成与平台验证**。外部 runner 的 HTTP/SQLite、真实临时 k3s 和 Windows/WSL2 验证均待实施，WSLC 结论来自微软文档。现有 homelab 未参与本轮验证。
+
+## 2026-11-08：macOS 桌面 Runner 首批实现
+
+- **计划与 UI**。拉取 Native Shell v0.4.0 `e626a8d` 源码和 macOS、Rust、CLI 开发文档，确定原生 AppKit 窗口、单执行槽和用户手动启停。设计及后续见 [architecture.md](architecture.md#macos-桌面端首批) 和 [plan.md](plan.md)。
+- **实现**。`make runner-macos` 生成 Apple Silicon `.app`。桌面进程管理 Go runner 的生命周期，连接配置和设备凭据通过私有管道传递。控制面 `external_runners` 绑定单仓库、workflow 和 ref，按 SQLite 事务分配与续租，沿用全局并发与原有日志、结果、artifact 和 Checks。SQLite 升级到 v8，备份恢复会废止旧租约。接入命令见 [deployment.md](deployment.md#macos-桌面-runner)。
+- **自动测试**。HTTP/SQLite 及真实 shell 覆盖外部任务、Pod 并发额度、重复领取、租约隔离与过期、停止运行中任务、回传日志与 artifact、能力拒绝、备份恢复。最终 `make verify` 通过，含 Go race、lint、42 个前端单测和 17 个浏览器场景。前一轮现有仓库选择器浏览器用例因一次滚动加载两页失败，专项复验和全量复跑均通过。Rust release 构建、Clippy 和 `.app` 签名核对通过。
+- **本机验收**。打开最终 `.app`，连接本机临时 forgelet HTTP/SQLite 实例，领取工作流，在本机编译并运行 Mach-O arm64 程序，控制面收到成功结果、日志及 artifact。原生窗口显示构建中和上次任务已通过。另验默认暂停、凭据遮罩、启停、同一窗口重启和退出后的进程回收。
+- **真实临时 k3s**。外部 runner 专项通过（全程 100.101 秒，叶场景 20.29 秒）。使用实际安装清单、临时 HTTPS 证书及从项目 Dockerfile 构建的 server/executor 二进制，装入仅含该专项所需工具的测试镜像。两个真实 Pod 占满并发时 Mac job 留在队列，Pod 取消释放额度后外部执行器领到 job，在本机写入 Darwin 工作区，控制面 Pod 重建后原租约仍可续租并成功上报日志和产物。旧探针因工作区路径写错导致租约到期，修正后通过。标准集成镜像构建因上游依赖下载缓慢结束等待，本轮未跑全量 Testcontainers；临时集群正常清理。
+- **待办**。homelab 接入、一次性设备登记、控制面排队诊断、Windows 与 Linux 桌面端仍待实施。Mac 包为本机 ad hoc 签名，当前试点以配置文件中的设备凭据摘要接入。
+
+## 2026-11-08：macOS 桌面 Runner 0.2.0 日常版
+
+- **实现**。按钮改为「开启 / 停止」。NSH AppKit 界面改为系统标题栏、紧凑侧栏、日志与状态分栏、跟随输出和浅深外观，附带原生菜单、Dock 图标、系统剪贴板和保存面板。`⌘R` 启停，`⇧⌘S` 导出。日志从 executor 脱敏且控制面确认的 chunk 镜像，重试只显示一次。保存任务由窗口持有，在后台线程写文件。
+- **自动测试**。`make verify` 通过，含 Go race、lint、42 个前端单测和 17 个浏览器场景（40.0 秒）。增加 ACK 丢失时本机日志镜像不重复及 HTTP/SQLite 回传断言，Rust 两项记录缓冲用例和 Clippy 通过。
+- **真实仓库与原生 UI**。最终 App 连接本机临时 forgelet，通过真实 HTTPS GitHub checkout 固定的 `golang/sync` 提交 `1f920df1e8fcf601d1aaf0f2ea500e1d2ccce105`。Go 1.27.3 darwin/arm64 上 `go test -race -count=1 ./...` 四个包通过，`go build ./...` 成功，`semaphore.test` 识别为 Mach-O arm64，`build-info` 产物由控制面保存。系统保存面板导出的 `.txt` 已读回校验，含任务通过状态、完整提交及构建日志，设备凭据未进入导出。前两次候选包的 checkout 和构建通过，但菜单导出未完成；将请求与异步任务挂到窗口 owner 后，最终实测通过（含人工交互 151.518 秒）。[验收源码](https://github.com/golang/sync/tree/1f920df1e8fcf601d1aaf0f2ea500e1d2ccce105)
+- **发行与接入**。验收后以 `make runner-macos` 生成 `bin/Forgelet Runner.app` v0.2.0，Apple Silicon 双二进制，本机 ad hoc 签名。此次使用本机临时控制面，日常接单需要 homelab 部署支持外部 runner 的控制面并配置设备 profile。[接入步骤](deployment.md#macos-桌面-runner)
+
+## 2026-11-08 Mac 镜像构建和部署现状
+
+- **计划与实现**。管理员在 `external_runners.<profile>.build` 配置镜像仓库和目标平台，控制面将两者固化到任务计划。Mac 上的 `forgelet/build@v1` 通过 Docker Buildx 构建并推送，回传镜像 digest。控制面独立读取 registry 的 manifest 和 config，核对 digest、OS 与架构，之后才允许自动生成的 native 部署任务使用该 digest。镜像层经 registry 交付给 kubelet。原生 App v0.3.0 在任务状态和导出中显示目标平台。[接入配置](deployment.md#从-mac-发布集群镜像)
+- **自动测试**。`make verify` 通过，含 Go race、HTTP/SQLite、lint/generate、42 个前端单测和 17 个浏览器场景。新增 registry、HTTP 和 SQLite 联合回归，覆盖架构匹配放行、架构不符拒绝、结果提交后 registry 不可用时重放。Rust Clippy、两项测试、release 构建和本机 ad hoc 签名核验通过。
+- **实际触发与构建**。签名测试 GitHub push `mac-image-cd-smoke` 被真实 k3s 中的 Forgelet 接收。GitHub App 与 GitOps API 使用独立测试夹具，Mac 的 release `.app` 内置执行器从公共 GitHub 仓库检出 `traefik/whoami` v1.11.0 的 `7e57190724ca7c0a74aa7f878b6cefe13b11994f`。测试 Dockerfile 以 `TARGETOS` 和 `TARGETARCH` 编译真实应用，检查 registry 中镜像配置和容器内二进制的 ELF 架构。[验收源码](https://github.com/traefik/whoami/tree/7e57190724ca7c0a74aa7f878b6cefe13b11994f)
+- **linux/arm64 全链路**。run `82b27e9078cb583b7603b58b` 产出 `sha256:3e14a61375e5c49493142370e5cea91fd6d304feb04de6211aaa71174283a5bd`，二进制为 `EM_AARCH64`。交付 `1a18a83bca0e5e7387637a76875ebe73` 达到 `deployed`，GitOps 提交与 Flux 应用的 revision 同为 `aeb8779ad965d839208dd1adca3464ce705274db`。临时 k3s v1.34.4+k3s1 节点从 registry 按同一 digest 拉取，Deployment 有 1 个可用副本，Pod HTTP 返回 200。
+- **linux/amd64 发布**。run `0167082e1cdb7b4d3cce0a84` 产出 `sha256:8593307f4f8f6382ec207f6c1d89735944c7e69817dca36c3b07f354acbaaa3e`，registry config 确认为 `linux/amd64`，镜像内二进制为 `EM_X86_64`。OrbStack 上模拟的 amd64 k3s 因 seccomp 限制无法启动 Pod sandbox，amd64 节点上的部署仍待验收。
+- **验收边界**。临时 registry 使用匿名 HTTP。默认 Docker driver 委托 daemon 推送时尝试 HTTPS，最终改用独立的 `docker-container` builder 完成测试。真实 k3s、Distribution registry 与 Flux v2.6.4 专项通过（220.012 秒）。本轮的集群验收限于该专项，homelab 与生产私有 registry 待接入。
+
+## 2026-11-08 homelab Mac 到 amd64 试点
+
+- **试点范围**。使用专用私有仓库 `shitamachi/forgelet-e2e-app` 的无状态应用版本，在 `codex/mac-amd64-pilot` 分支登记专用 workflow。GitOps 使用 `shitamachi/forgelet-e2e-gitops` 的独立同名分支，Flux 将服务部署到 `forgelet-mac-pilot`。原 demo 的 `/healthz` 在收尾复查时仍返回 HTTP 200。
+- **控制面升级**。先保存并通过 SQLite v7 快照完整性检查，再部署本地已验证源码构建的 `linux/amd64` 控制面。首个镜像保留了本机 `0700` 的二进制权限，非 root 容器启动被拒绝，Forgelet 入口一度返回 503。重打时显式设为 `0755`，用实际 UID 1000 验证执行后替换。最终镜像为 `zot.k.mygo.rocks/forgelet/server@sha256:6e337ae2864e20352dfb38d66fa018b216c379471e050000eaf110e690a88e04`，Forgelet 入口恢复 HTTP 200，已有管理配置及排队执行 Pod UID 均核对保留。
+- **私有 registry**。在现有 Zot 仅为 `forgelet/pilots/mac-amd64` 增加三个 scoped 身份，分别用于 Mac 推送、控制面核验和 Pod 拉取。Zot 重启加载 ACL 后入口返回 HTTP 200。三个身份访问控制面镜像目录均返回 403，两个只读身份尝试推送均返回 403，试点镜像的匿名 manifest 请求亦被拒绝。
+- **触发与构建**。真实 GitHub webhook `5f684128-db55-11f1-8c81-95728ab28fc6` 触发 run `36a27a144924fcdca4620e93`。Mac 使用 release `.app` 内置执行器，从 GitHub 以短期凭据 checkout 固定提交，`Darwin arm64` 上原应用 race 测试通过。控制面下发 `linux/amd64`，Mac 推送 `zot.k.mygo.rocks/forgelet/pilots/mac-amd64@sha256:2e3e1d3b712e9ab24e44bc025abb81ac8a037c3f1e327fde1de6f73048058c39`，控制面核验后接受成功。独立读取 registry 确认 OCI 平台为 `linux/amd64`，镜像内应用二进制为 x86-64 ELF。构建与交付两个 GitHub Checks 均成功。[源码提交](https://github.com/shitamachi/forgelet-e2e-app/commit/d8925562c958cbc0663caef1360bc825e85ee48c)
+- **部署与健康**。交付 `91a383238f932bccfaadfe09eeb99715` 达到 `deployed`。Flux Source artifact、Kustomization 应用 revision 和 Forgelet 观测 revision 对齐到 `dd03a55f4bb428e418743508879e2d898659e178`。真实 amd64 节点 `node3` 上的 Pod `mac-amd64-pilot-5d97966ccd-67qpq` 实际拉取同一 digest。Deployment 为 1/1，Service 的 `/healthz` 和 `/` 均返回 HTTP 200，后者返回 `healthy: true` 与版本 `mac-amd64-pilot-20261108`。[GitOps 提交](https://github.com/shitamachi/forgelet-e2e-gitops/commit/dd03a55f4bb428e418743508879e2d898659e178)
+- **收尾**。试点服务与配套配置保留，Mac 执行器和专用测试 builder 已停止。本轮运行了实际仓库 race 测试和真实 homelab 闭环。控制面构建来源、升级前快照及运行证据保存在本机私有 `~/.config/forgelet/stage15-mac-pilot-20261108`。
+
+## 2026-11-08 Web Runner 管理与业务日常发布
+
+- **实现**。Web **Runners** 显示 YAML 与 Web 登记的设备、在线状态、当前任务、构建范围及最近连接。管理员可登记、暂停和恢复接单、轮换凭据。暂停保留已有租约，凭据轮换等待当前任务结束。SQLite 保存登记与管理状态，设备凭据只在签发时显示。
+- **自动验证**。`GOFLAGS=-p=2 make verify` 通过，含 Go race、lint、42 个前端单测和 18 个浏览器用例。首轮既有 OAuth 测试等待响应超时，复验通过。临时 k3s Runner 专项通过（87.722 秒），覆盖 Web 登记、暂停、与 Pod 共享额度、重启后续租以及新旧凭据校验。该次执行限于相关专项。
+- **homelab 控制面**。升级前保存并核对 SQLite v8 快照，使用 UID 1000 验证构建产物可执行后发布。实际镜像为 `zot.k.mygo.rocks/forgelet/server@sha256:fb262e95c53e7aaf8c323d4867e3d420bd4768b0c4b6a05806a1b5807e469e11`。原登记与排队 Pod UID 保留。用 Web 管理 API 登记 `macos-admin-web`，现场观察到在线、执行中和当前任务。控制面从已有 Zot 只读身份分别读取试点和业务镜像，Mac 使用已有业务路径专用推送身份。
+- **业务切换**。`steam-admin-web` 的 `main` push 使用 Mac workflow，保留原类型检查、单测、前端构建及生成文件检查。PR 与其他分支检查沿用原 workflow，版本标签和手动构建沿用原镜像 workflow。[主分支切换](https://github.com/shitamachi/steam-admin-web/commit/7fafda2efbd38d2d8f1d3daacfb02285dd20519d)
+- **实际回滚**。首发 `a3beac6cceed008929ebb43c9f6a71e5` 的 Mac 构建和推送成功，新 Pod 因 Nginx 模板文件权限无法启动，旧健康副本继续服务。Forgelet 回滚记录 `4a194c7c2c61372f95f200998da571a8` 达到 `deployed`，Flux 应用 `a6be7f32ebcfa344a61ad447ff6265f5d0f3c7c0`，恢复已知健康的 `sha256:4d8ade69aa62e99acadaf79cb5281a7f917c89c59a410fb2f526a263800ded9d`。[回滚提交](https://github.com/shitamachi/forgelet-homelab-gitops/commit/a6be7f32ebcfa344a61ad447ff6265f5d0f3c7c0)
+- **正式发布**。修正 Nginx 模板为 `0644`，在 Mac 对同一提交运行 32 项单测、构建与 UID 101 的 amd64 容器启动检查。修正后的真实 push 经 Mac Runner 复用已验证构建层并推送 `sha256:aee66e0599e18f00f67231ab68de79aec84ca933ab3fcad8486a04fb84b75c2e`。运行 `2339f1f8bd99e290f5a3e4bb` 的两个 GitHub Checks 成功。交付 `21c425b0e577e7f5ae97b8dd464bccca` 已部署，Flux 应用 `838ec0dbae2bb64ef79b3f442ef46dcda9926973`。真实 `linux/amd64` 节点 `node3` 运行同一 digest，Deployment 1/1。集群 Service、站点首页、主 JS 和 `/healthz` 返回 200，匿名会话 API 经站点代理返回 401。[源码与 Checks](https://github.com/shitamachi/steam-admin-web/commit/d957bd47a25a2cc1218171eadba9fb7155b122e6/checks) · [GitOps 提交](https://github.com/shitamachi/forgelet-homelab-gitops/commit/838ec0dbae2bb64ef79b3f442ef46dcda9926973)
+- **日常操作**。最终发布的上一 digest 是实测回滚的健康镜像，Zot 仍可读取。验收执行器已停止。主分支日常发布前启动 Mac Runner，发布与回滚步骤见 [操作手册](deployment.md#steam-admin-web-日常发布与回滚)。控制面备份、启动脚本、发布和健康证据保存在本机私有 `~/.config/forgelet/stage15-daily-runner-20261108`。
+- **macOS 安装**。沿用 Web 工作台的 F 和蓝色圆点生成应用图标。通过 `make runner-macos` 构建 0.3.0 Apple Silicon release，并安装到 `/Applications/Forgelet Runner.app`。本机安装包通过 ad hoc 签名校验和图标资源核对，从安装路径启动后保持暂停。
+
+## 2026-11-08：Finder 启动 steam-admin-web Runner
+
+- **实现和安装**。Apple Silicon 0.3.1 从当前账号的私有 profile 加载 `macos-admin-web`。点「开启」时从原 `0600` 文件读取设备凭据，经 stdin 传递；现有专用 Docker 配置、OrbStack socket 和 `forgelet-admin-web-mac` builder 进入内置执行器环境。通过 `make runner-macos` 构建并替换「应用程序」内的 App，安装包通过签名核验。
+- **自动验证**。Rust release 三项测试和 Clippy 通过，覆盖私有配置文件权限、符号链接、文件类型和长度检查。原 builder 导出本地 OCI 镜像并验证为 `linux/amd64`，专用 Docker 配置从 Zot 读回现有业务镜像 manifest。
+- **实际接入**。从安装路径启动，点击「开启」后窗口显示「等待任务」，真实 homelab 的 `macos-admin-web` 状态为 `online`，心跳更新。核对内置执行器环境后点击「停止」，窗口回到「已暂停」。本次实测范围为接单连接及本机构建配置，业务发布与 Flux 证据见上节。
+
+## 2026-11-08：Mac Runner 共享队列
+
+- **实现**。控制面用凭据识别设备，按 `runs-on: macos-arm64` 将已启用、已授权仓库的外部任务放入共享队列。SQLite v8 的 job JSON 单独保存执行设备，维持每设备一个租约及全局额度。Web 登记只填设备名。镜像仓库和 OCI 平台由控制面的 `external_builds` 按仓库、workflow 和分支配置。旧设备凭据、已分配租约、工作流标签和镜像策略可兼容读取。
+- **自动验证**。`GOFLAGS=-p=2 make verify` 通过，含 Go race、lint、42 项前端单测和 18 项浏览器测试。HTTP/SQLite 回归实际执行两个仓库的 shell 任务，覆盖同一设备凭据接单、禁用仓库跳过、不同设备续租隔离，以及旧 SQLite 登记。Rust release 测试和 Clippy 通过。
+- **临时 k3s 验证**。Runner 专项通过（118.554 秒，子场景 21.48 秒）。沿用正式安装清单、实际控制面和执行器二进制及 GitHub API 夹具，用精简镜像只装本场景所需工具。同一凭据与真实 Pod 共享容量，控制面重启后成功续租，并在首个仓库完成后领取和执行第二个仓库的任务。暂停及轮换凭据验证通过，临时集群已清理。标准集成镜像构建仍在下载 Debian 依赖时已结束等待，本轮未跑全量 Testcontainers。
+- **本机与 homelab**。已构建签名版 `bin/Forgelet Runner.app` 0.4.0，实测加载原私有连接配置，窗口只显示控制面地址和设备凭据。「应用程序」中的 0.3.1 正在接单，本轮保留其运行。跨仓库调度随新版控制面生效，本轮未发布到实际 homelab。
+
+## 2026-11-08：共享队列正式部署与 Mac 0.4.1
+
+- **控制面**。升级前备份 SQLite v8 并通过完整性检查，快照含 230 次运行。将 `linux/amd64` 镜像 `zot.k.mygo.rocks/forgelet/server@sha256:f38a31609f07af8639bf3d7675f1e3e7de29e7bfcca41d5bb634f5565a4a32d1` 部署到真实 homelab，`node3` 上 1/1 就绪。测试期间临时将全局并发由 2 提到 3，为两个已占槽且等待集群资源的 Pod 之外提供一个槽位。结束后恢复为 2，核对 ConfigMap 数据、管理配置和两个 Pod UID。
+- **Mac 打包和配置**。重新打包 Apple Silicon 0.4.0 后，首轮任务 `de424549e1fb20c9e4cd9b6c` 领取及 checkout 成功，Go 卡在打开 Finder 继承的外置卷缓存，已取消并保留记录。将 Go 缓存移入 Runner 自己的本机缓存目录，重新签名构建 0.4.1 并安装到 `/Applications/Forgelet Runner.app`。使用权限为 `0600` 的 `connection.json` 引用原设备凭据及 Buildx 配置，Finder 启动后可直接点「开启」。
+- **真实跨仓库任务**。从安装版使用 `macos-admin-web` 凭据领取 `shitamachi/forgelet-e2e-app` 的 `macos-arm64` 任务 `623b0c87cae02a9d62440ced4407c10a`，检出固定提交 `d8925562c958cbc0663caef1360bc825e85ee48c`，在 Darwin arm64 上通过 Go 测试并编译 Mach-O arm64。任务记录有实际设备 ID，从控制面下载并核对了证明产物，GitHub Check 为 success。收尾时设备在线、Forgelet 和 Admin Web 的 `/healthz` 均返回 200，Flux `forgelet-admin-web` 为 Ready。[Forgelet 运行](https://forgelet.k.mygo.rocks/runs/623b0c87cae02a9d62440ced4407c10a) · [GitHub Check](https://github.com/shitamachi/forgelet-e2e-app/runs/128712190531)
+- **自动验证**。`GOFLAGS=-p=2 make verify` 通过，含 Go race、lint、42 项前端单测及 18 项浏览器测试。备份、部署及实测证据保存在本机私有 `~/.config/forgelet/stage15-shared-runner-20261108.NLR3j0`。
+
+## 2026-11-08：优先 Runner 与集群回退
+
+- **实现**。`prefer_runner` 默认开启，`runner_fallbacks` 为可移植标签指定 native Pod profile。近期轮询、空闲、未暂停且具备所需 Buildx 平台的设备优先领取；找不到适合设备时用集群 Pod。执行身份在预约时固定。两端使用计划指定的同一 OCI 平台，回退 Pod 按该平台选节点，控制面核验 registry 中的镜像。运行页单独显示镜像平台。
+- **自动验证**。`GOFLAGS=-p=2 make verify` 通过，含 Go race、lint、42 项前端单测和 18 项浏览器测试。覆盖 Runner 暂停、忙碌、离线、平台不匹配和关闭优先策略。BuildKit 参数回归断言 Pod 收到 `linux/amd64` 并拒绝工作流改写平台。两条路径均验证正确平台可以解锁部署，错误的 `linux/arm64` 镜像会阻断部署。
+- **临时 k3s 与打包**。使用正式安装清单、实际二进制和场景精简镜像，Runner 专项通过（118.141 秒）。可移植 shell 任务先由空闲 Runner 执行，暂停设备后由真实 Pod 完成。该专项验证调度及租约，镜像平台由前述参数和 registry 测试验证。Mac Rust release 测试和 0.5.0 签名打包通过。本轮未部署实际 homelab。

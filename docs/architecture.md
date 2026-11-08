@@ -715,3 +715,95 @@ PR执行SHA与Check归属分离：执行计划/checkout始终使用已固定测�
 GitHub token缓存按installation/permission/repository合并正在进行的签发请求。全局mutex仅保护内存，不跨网络；等待同scope可取消。签发最多10秒，低于executor单次HTTP15秒，外层仍以原5分钟预算退避。401/普通403/404/422明确拒绝；429、限流403、5xx和网络故障继续有界重试。日志只保留job/repository和安全错误分类，secret/上游响应体不进入日志。授权刷新期间旧签发结果不重新填入缓存，返回credential前仍复核job UID、取消和仓库授权。
 
 缓存容量不足时按最近访问顺序淘汰已发布cache，保留artifact、正在读取的文件、当前producer已保存对象与所有在途预留；没有可淘汰项时仍返回配额错误。粗粒度访问时间持久化于metadata mtime，重启恢复；活跃reader通过Close解除pin，避免unlink后仍占物理空间却提前释放额度。对象上限/总额度/不可变key与跨仓库/ref/version隔离不变。缓存是可重建数据，淘汰后按miss处理，不把artifact当缓存删除。
+
+
+### 其余业务的镜像接管（阶段14）
+
+沿用单控制面、现有 Zot 和 Flux。每个应用有独立的 exact-path publisher/只读 reader，运行命名空间仅保存该应用的 pull Secret；CM 保留原受控生产发布。GitOps 仅管理 Deployment 的 selector、pod labels、镜像和 pull Secret 名称，使用 Flux SSA Merge；先由 `forgelet-runtime-config` 共同持有完整现网 spec，并备份、移除历史 client-side apply 注解，防止首次最小清单接管裁剪运行字段。运行 env、数据库凭据、调度和副本配置不复制到 Git。接管回归通过真实 Flux 后逐字段比较完整 Deployment spec；现场具体变更与结果另记 status。
+
+每个 Flux Kustomization 使用独立 SA，只可写指定 Deployment、读取 ReplicaSet；prune=false/Orphan。镜像先按当前运行 digest 等价复制到 Zot，再推进源码发布，接管过程中若现网 digest 已改变则重新核对，不用旧快照覆盖新发布。自动策略在测试和 publisher 成功后才创建投递，依然核对当前来源 head 并用 digest 部署；ETL 原 replicas=0 保持，不因接入自动发布恢复 CDC 单写者。其 GitOps 投递成功与实际应用运行健康分别报告。
+
+
+阶段14发现早期homelab工具镜像的全局 `GODEBUG=http2client=0` 会让业务HTTP/2断言失败，已清除此继承环境；所有文件系统层digest保持相同，仅镜像配置变化。新runner固定 `sha256:82a96bb59b1a29ea4997104e4ad929c824ae61b52896b57a1792eb0ce4be0147`，现存执行Pod的镜像保持不变，新Pod按profile选择更新后的固定digest。API将原代理下载绕行局限到 `go mod download` 步骤，不传给应用测试。工具镜像新增可选Testcontainers探针，继承真实镜像环境、在无外网容器内协商TLS HTTP/2，不能用强制覆盖探针环境掩盖旧问题。探针经Docker API复制，不依赖守护进程可见宿主机临时目录。该修正取代上文早期临时全局HTTP/2绕行；不承诺公网代理永久可靠。
+
+应急恢复GitHub hosted workflow只恢复CI和镜像发布；Forgelet注入的native CD节点不会出现在托管runner中。应急部署应显式更新现有GitOps配置，不将重新启用GitHub workflow当作自动CD已恢复。
+
+## 阶段15拟议设计：集群外 runner（2026-11-08）
+
+在现有控制面增加一种按 `runs-on` 选择的执行后端。forgelet 仍负责 GitHub 事件、固定 SHA 的工作流计划、SQLite 队列、日志、产物、Checks 和 GitOps。Mac 设备主动连入共享队列，领取任一已启用、已授权仓库通过准入的 macOS job，并在本机启动一次性执行环境。一个 attempt 绑定一个设备身份与一份 workspace。现有 Kubernetes profile 继续由 Pod 执行。
+
+```mermaid
+flowchart LR
+  GH[GitHub] <-->|事件和 Checks| S[forgelet 控制面]
+  S <--> DB[(SQLite、日志、artifact/cache)]
+  S -->|创建和观测| P[k3s 执行 Pod]
+  M[Mac 或 Linux 桌面端] -->|私网 HTTPS 领任务和续租| S
+  W[Windows 桌面端] -->|私网 HTTPS 领任务和续租| S
+  M -->|启动| E[独立进程和临时 workspace]
+  W -->|wslc.exe| C[每 job 一个 Linux 容器]
+  E -->|attempt 凭据、日志和结果| S
+  C -->|attempt 凭据、日志和结果| S
+  S -->|GitOps| F[Flux]
+```
+
+### 成熟方案与本项目的取舍
+
+| 参考 | 采用的机制 |
+|---|---|
+| GitHub Actions | runner 主动向控制面发出 HTTPS 请求，管理员限定可用仓库；持久注册的设备仍为每个 job 创建独立执行环境。[通信与 ephemeral runner](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)、[runner groups](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/manage-access) |
+| GitLab Runner | agent 生命周期与 shell、容器等执行方式分开。几台机器先用带退避和抖动的短轮询，确有规模需求时可在原协议上加有界长轮询。[Executors](https://docs.gitlab.com/runner/executors/)、[长轮询](https://docs.gitlab.com/ci/runners/long_polling/) |
+| Buildkite | 以显式队列分配工作，agent 拉取任务、回报输出和产物。forgelet 用已有 `runs-on` profile 表达相同路由，沿用单 SQLite 和原有日志、产物接口语义。[Agent](https://buildkite.com/docs/agent)、[Queues](https://buildkite.com/docs/agent/queues) |
+
+### 执行环境与 WSLC
+
+| 示例 `runs-on` | 桌面端所在位置 | job 实际运行位置 |
+|---|---|---|
+| `macos-arm64` | Mac 专用非管理员账号下的桌面 App | 原生 Darwin arm64 进程。首轮跑源码编译、单测和产物，可用实测验证后再接入 Xcode 等特定工具链。 |
+| `linux-amd64-external` | 物理 Linux 或 WSL2 distro 内 | 原生 Linux amd64 进程。WSL2 使用专用 distro、Linux 文件系统和最小挂载；同协议可另建 arm64 profile。 |
+| `linux-amd64-wslc` | Windows 专用非管理员账号下的桌面 App | `wslc.exe` 按固定 OCI digest 启动 Linux 容器，运行 Linux 版 `forgelet-executor`。容器内 `runner.os` 为 `Linux`，`runner.arch` 来自实际执行架构。 |
+
+微软在 2026-09-29 宣布 WSLC GA，当前文档要求 WSL ≥ 2.9.3。`wslc.exe` 经 `wslservice.exe` 使用 WSL 虚拟机，`wslcsession.exe` 代表调用用户管理容器、挂载与网络。镜像和容器状态在每 session 的 VHD 中，删除容器可丢弃其临时文件系统。CLI session 的 CPU、内存、磁盘和空闲关停由 `%LOCALAPPDATA%\wslc\settings.yaml` 管理。容器网络经 Windows 网络栈接入，实际私网 DNS、VPN 路由和证书信任仍要从容器内验证。[微软 GA 公告](https://blogs.windows.com/windowsdeveloper/2026/09/29/wsl-containers-now-generally-available/)、[WSLC 架构](https://devblogs.microsoft.com/commandline/wslc-architecture-deep-dive/)、[固定提交的配置文档](https://github.com/MicrosoftDocs/WSL/blob/526e57752f7241dc7e98f14b1033905e8e675587/WSL/wsl-container-settings.md)
+
+Windows 端先用 CLI 做薄适配。用唯一 attempt 名称和 forgelet 所有权标记执行 create/start、inspect、stop 和 remove，启动响应丢失时先核对容器再决定下一步。用容器自己的文件系统保存工作区，凭据通过私有启动通道进入容器，命令行和容器配置元数据中无明文。Windows 桌面 App 在用户启用接单期间管理 agent，WSLC VM 可在容器退出后空闲关停。首轮以专用用户前台启动，实测停止接单、关闭 App、睡眠唤醒和 Windows 重启。若 CLI 无法可靠传递启动凭据或观测退出，再考虑官方 SDK 的 `Session`、`Container` 和 `Process` 接口。[固定提交的 CLI 与 API 文档](https://github.com/MicrosoftDocs/WSL/blob/526e57752f7241dc7e98f14b1033905e8e675587/WSL/wsl-container.md)、[WSL API reference](https://wsl.dev/api-reference/)
+
+WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按微软 WSL 安全模型处理。Windows job 只允许可信源码，容器使用非 root、普通权限，避免挂 Windows 用户目录、开发工作区、宿主 socket 或凭据目录。Linux/WSL2 同样使用专用账号；WSL2 的关闭互操作和自动挂载属于环境收紧。Mac 的专用目录、进程组与清理只用于可信 job，尤其同 OS 账号运行时，进程环境过滤不能防止读取该账号能访问的文件。个人登录账号的 SSH key、Keychain 和开发配置留在 runner 账号之外。[微软 WSL 安全模型](https://wsl.dev/technical-documentation/security/)、[GitLab shell runner 信任边界](https://docs.gitlab.com/runner/security/)
+
+### 调度、身份与恢复
+
+- **接入。** 通过 LAN/VPN 上的专用 HTTPS 路由进现有 server。管理员登记设备名称，控制面保存设备凭据摘要，通过凭据识别设备。仓库、工作流与分支准入由 Forgelet 和工作流配置处理。外部路由仅开放 runner 与该 attempt 的执行端点，Kubernetes Pod 继续用 TokenReview 和 Pod UID。登记和机器凭据留在 agent，job 仅拿到当前 attempt 的短时权限。
+- **分配。** 在 SQLite 同一事务内按 `needs`、条件、matrix、并发组、仓库授权、磁盘准入和容量发出任务，并记录领取设备。复用现有图调度和全局 `max_parallel`，外部每台首轮一个 slot。没有匹配在线设备的 job 留在 `queued`，显示原因并允许取消，等待期间不占额度。记录 backend 和执行平台/信任范围，旧记录缺省为 Kubernetes。Pod Tick 只启动、观测和回收 Pod job，runner 续租不依赖 Tick 中可能变慢的 GitHub 或 Flux I/O。
+- **开始。** 领取时发短时 offer，状态进入 `starting` 并占用额度。agent 记录 attempt，幂等确认后才得到启动授权，executor 再凭专用 attempt token claim 计划，进入 `running`。仅当 offer 未获启动授权且已过期时才可回队。启动授权、租约、job 身份及 token 摘要持久化；重试按同一 ID 核对，重复响应不能多启动一个执行环境。首轮可用 10 秒续租、60 秒租期作为试点值，准备阶段另有上限，工作流执行继续受 `timeout-minutes` 约束。
+- **断线与取消。** 只接受当前 attempt 的续租和写入。可在租期内重连原 attempt；启动授权后失联到期则记录 `interrupted` 并释放控制面额度，显式重跑生成新 attempt。用户取消或撤权立即禁止获取新凭据与上传产物，并通过续租/control 通知 agent。agent 在取消或续租失败到本地截止时停止进程组或对应容器，恢复连接和重新接活前先核对、清理孤儿。取消和结果在事务中裁决，取消生效后迟到的成功不推进下游。控制面可拒绝迟到结果，断网或主机挂起时已发生的外部副作用无法撤回，因此不自动重放已获启动授权的任务。
+- **回传。** 复用现有脱敏、日志与进度序号、结果和产物配额。ACK 丢失时重送相同内容，终态只容许已提交结果的精确重放确认。正常控制面重启从 SQLite 核对尚有效的租约，备份恢复使旧登记凭据和执行租约失效。管理端展示在线/忙碌/离线、最近心跳、drain、任务落点和失败原因，drain 停止发新任务并允许已接任务结束。
+
+### 首轮能力边界
+
+首轮仅白名单仓库和 workflow 的受信 ref，跑固定 SHA checkout、编译、测试和有界 artifact。GitHub App 私钥、管理员 token、生产发布和 GitOps 凭据留在控制面或既有受控路径；checkout 使用同仓库短时只读权限。首轮外部 job 不注入仓库 secrets，也不作为现有生产发布的唯一前置检查。外部 cache 接入前按仓库、ref、执行平台和信任范围隔离读写，避免个人机器写入生产 job 可恢复的缓存。
+
+现有依赖 Docker API、services、Testcontainers 或 act 的完整业务 workflow 继续由 k3s 执行。Mac 的 OCI 发布使用显式配置的 Docker Buildx。Linux/WSL2 的按需 BuildKit、Windows WSLC 的构建和缓存分别验收。WSLC 首轮先验证运行固定 digest 的 OCI 镜像。[微软 WSLC 教程](https://learn.microsoft.com/en-us/windows/nodejs/containers)、[BuildKit rootless](https://github.com/moby/buildkit/blob/master/docs/rootless.md)
+
+### macOS 桌面端首批
+
+桌面端用 Native Shell v0.4.0（`e626a8d`）的 Rust 组件和 AppKit 后端。安装包为普通 `.app`，内含原生 UI 和 Go runner。App 启动时暂停，用户点「开启」后才启动 Go 子进程，配置和凭据经 stdin 传入，stdout 发送结构化状态与日志。关闭主窗口、退出 App 或点「停止」会关闭管道，runner 停止领取并取消本地 job，按现有 executor 的有界退出流程提交最终结果。App 退出后由管道 EOF 触发同样的清理。NSH 原生窗口由 `run_app` 管理，开发用 Cargo，本机发行包用 macOS ad hoc 签名。[NSH Rust 文档](https://nsh.dev/docs/rust/)、[NSH macOS 文档](https://nsh.dev/docs/macos/)
+
+界面使用系统标题栏、紧凑侧栏与分栏控制台，按系统浅深外观切换颜色。侧栏显示接单状态和连接配置，主区显示仓库、提交、任务结果和控制面入口。工具栏可切换状态与日志、复制或导出记录，日志可跟随最新输出。NSH 提供 AppKit 菜单、键盘快捷键、系统剪贴板和保存面板。手动输入的凭据使用遮罩并保留在当前窗口。Finder 启动时可加载当前用户的私有 `connection.json`，升级时也能读取旧 `profile.json`。每次开启时从引用的私有文件读取凭据，经 stdin 传递，Docker 配置只进入执行器的进程环境。内置进程运行单个 job，准备独立 workspace，退出时清理。[NSH 桌面菜单](https://nsh.dev/modules/nsh-desktop/)、[Rust 文件对话框](https://nsh.dev/docs/rust/#files-and-folders)
+
+本地日志镜像只接收 executor 已脱敏且控制面已 ACK 的 chunk。同一序号发生重试时只显示一次。桌面保留本窗口最近 1 MiB 构建输出和 64 KiB 状态记录，视图只渲染最近 16 KiB 并标出省略。复制和导出写入当前窗口留存的两类记录，完整构建日志仍由控制面保存。
+
+### Mac 构建与集群镜像交付
+
+管理员在 `external_builds` 按仓库、workflow 和完整分支引用配置 `build.image` 与 `build.platform`，并快照到持久化计划，分别决定发布仓库与最终镜像的 OCI OS/架构。Buildx 以显式 `--platform` 构建，将镜像直接推到 registry，用 exporter 返回的 manifest digest 作为产物标识。Mac 宿主平台仍由原生 executor 报告。
+
+控制面用 registry 客户端读取不可变引用，验证单平台 manifest 的 SHA-256 和经过 digest 校验的 image config。错误平台或缺少镜像会让发布任务失败，暂态 registry 错误走结果重试。已提交结果的相同请求由持久化结果确认。新的依赖使用现有 Docker credentials、Distribution 和 OCI 认证协议，只读取 manifest 与 config，无需控制面容器引擎、镜像层存储或常驻进程。发布凭据由 Mac 的 Docker 配置提供，registry 读凭据由控制面独立配置。
+
+匹配 `on_success` 的 push 生成集群 native 部署任务，依赖整个原工作流并引用已核验的 digest。自动任务使用的镜像仓库与发布计划绑定。现有 delivery coordinator 检查来源 head，更新 GitOps，核对 Flux revision 和 Deployment 健康。集群从 registry 拉取镜像。调度应将单平台镜像放到相应节点。[Docker 多平台构建](https://docs.docker.com/build/building/multi-platform/)、[OCI Image Index](https://github.com/opencontainers/image-spec/blob/main/image-index.md)、[Flux Kustomization](https://fluxcd.io/flux/components/kustomize/kustomizations/)
+
+领取事务即提交启动授权，客户端生成并持有本次领取的随机 token，响应丢失可用相同 token 核对原领取。已获启动授权的任务按失联到期策略结束。计划的 `runs-on` 标签与实际执行设备分别记录，`runner_id` 保存在 SQLite v8 的 job JSON 中。旧任务用原标签恢复已分配的设备，旧登记继续提供旧标签及构建策略。备份恢复时废止租约。
+
+Web 可按设备名称登记并生成一次性显示的设备凭据。SQLite 保存登记、摘要和暂停状态。配置文件登记也可在 Web 暂停、恢复或轮换凭据。暂停阻止该设备新领取并保留已发放租约。轮换与领取互斥，当前有效租约结束后才允许换凭据。正在执行的设备由租约识别，空闲设备由进程内最近轮询识别，重启后重新观测。旧备份恢复会废止任务租约，恢复操作后重新轮换 Web 设备凭据。
+
+### 优先 Runner 与集群回退
+
+`runner_fallbacks` 显式声明可移植标签与对应 native Pod profile，计划持久化该回退 profile。`prefer_runner` 默认开启。控制面用最近 10 秒的轮询、暂停状态和 SQLite 活跃租约判断 Runner 是否空闲，构建任务进一步匹配 Buildx 报告的目标平台。Pod 预约与 Runner 轮询串行选择，并在 SQLite 事务里固定执行身份。等待空闲 Runner 的兼容任务保留当轮可用槽位，设备下次轮询后才真正取得租约。不可用时用原计划创建一个回退 Pod。已发放的租约或 Pod 身份不自动重放到另一端。
+
+两种后端共用计划中固定的镜像仓库和 OCI 平台。Mac 用 Buildx `--platform`，集群用 BuildKit `--opt platform=...`，并把构建 Pod 限定到相应 OS 和架构。控制面都核对实际镜像 digest、系统和架构，再允许后续自动部署。

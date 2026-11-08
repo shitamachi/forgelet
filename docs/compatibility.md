@@ -7,7 +7,11 @@ forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为�
 该历史实验执行官方 Actions，并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry。
 正式 act executor 已在 10.5b 接入；实验、正式临时 k3s 验证和 homelab 原始业务 workflow 验收分别记录，不能互相替代。
 
+已启用仓库的 `runs-on: macos-arm64` job 进入共享桌面队列，由已认证设备领取。支持分支 `push`、管理端手动触发、原生 `actions/checkout@v4` 子集、`bash`/`sh`、artifact v4 内置适配器，以及显式启用的 `forgelet/build@v1`。每个镜像 job 允许一个 build 步骤，`image` 须与控制面按仓库、workflow 和 ref 配置的镜像仓库一致。目标 OCI 平台由控制面配置，支持 `linux/amd64` 和 `linux/arm64`，产出为单平台 manifest。Apple Silicon 设备的 `runner.os` 和 `runner.arch` 仍分别是 `macOS` 与 `ARM64`。匹配 push 的控制面自动部署任务可与外部 job 同 run。仓库 YAML 中的 Pod、act、cache、仓库 secrets、Packages 和直接部署仍超出外部 Runner 能力。[接入与构建](deployment.md#从-mac-发布集群镜像)
+
 ## Workflow 与触发
+
+管理员可通过 `runner_fallbacks` 为可移植标签配置集群内 native profile。默认 `prefer_runner: true` 会让可运行该任务的空闲 Runner 优先领取，否则使用回退 Pod。镜像构建要求两端使用同一个控制面目标平台。显式 macOS 标签与原有 Kubernetes 执行 profile 保留各自的执行语义。
 
 | 能力 | 当前支持 |
 |---|---|
@@ -387,3 +391,6 @@ PR opened/reopened/synchronize/ready_for_review的同仓库事件若测试合并
 PR Check使用原始head SHA并命名为 `forgelet / PR / …`，与分支push检查区分；执行仍是固定测试merge SHA，终态摘要列出两个提交。分支保护如需配置，应选择PR检查名称。旧merge Check仅在同App/同job和精确执行SHA匹配时迁移；不能将分支push成功当作PR完成。
 
 管理员配置的 `act.buildkit_config` 通过标准 `docker/setup-buildx-action` 传入独立builder；没有该步骤的默认Docker driver不会自动采用这个镜像源。Admin Web已补标准初始化与GHA层cache，原CI门禁保持；不以私有镜像源设置承诺任意Docker命令或未缓存浮动tag的行为。
+
+
+阶段14运行环境修正：homelab Ubuntu工具镜像取消历史全局 `GODEBUG=http2client=0`，业务Go程序恢复正常HTTP/2协商；网络代理绕行如需保留，显式限定在仓库的依赖下载step。现存执行Pod不回写镜像，新Pod按profile选择固定digest。API的真实Redis测试需要 `postgres` 镜像组（含Redis别名），否则短测试预算可能被首次公网拉取耗尽；不扩大测试预算或跳过断言。

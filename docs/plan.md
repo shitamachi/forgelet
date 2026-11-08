@@ -1,6 +1,6 @@
 # 实施计划
 
-更新：2026-10-29。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
+更新：2026-11-08。按 owner 要求分阶段快速实现，多个任务并发从首版支持。
 不使用 spec/accepted 审批，不安排独立基线、资源测量或审核阶段。
 用单测、集成测试、Testcontainers 随实现验证，完成后更新本页和 [status.md](status.md)。
 
@@ -281,4 +281,39 @@ Web 工作台已完成自动验证与 homelab 实际部署，镜像和运行/发
 
 - [x] 13.4 Tasks 分支冷缓存 20 分钟收口：不新增产品代码，使用 12.1 的当前 ref→PR base→默认分支回退；真实 `workflow_dispatch`+PG18 在无自身缓存的独立 ref 上 hit 默认分支 setup-go/Atlas 缓存，executing 793.5 秒完成，原 1200 秒/测试/断言不变。补 workflow_dispatch 冷 ref 单测、HTTP/SQLite 集成和 Testcontainers 1 分钟超时回归（专项 PASS 801.518 秒，叶场景 45.00 秒）。默认分支也未缓存的新依赖集仍按 miss 保留边界。
 
-后续未完成项：其他仓库单一CI来源与业务CD接管；Codecov与自身CI仍见12.3。Rust公网依赖本次CM完整运行未复现原下载超时，外部可用性仍需跟进。不将本批三项及Tasks冷缓存通过算作全部业务接管完成。
+阶段13当时遗留的其他仓库单一CI来源与业务CD接管已在阶段14完成；Codecov与自身CI仍见12.3。Rust公网依赖本次CM完整运行未复现原下载超时，外部可用性仍需跟进。不将本批三项及Tasks冷缓存通过算作全部业务接管完成。
+
+
+## 阶段14：其余业务日常接入（2026-10-31，完成）
+
+Owner授权对齐并推送本地已提交业务代码；未提交改动保留原项目。CM只统一CI，生产池沿用受控发布，不接自动CD。
+
+- [x] 核对Tasks已有13.4验收，保留20分钟和真实miss边界。
+- [x] 其余7仓库唯一CI来源配置：Forgelet入口/授权保持，10个GitHub hosted workflow已停用，原状态和恢复命令保存；新源码完整CI结果单独验收。
+- [x] Server/ETL/Admin/API/Tasks/Login的现网GitOps镜像接管：原digest等价迁Zot、完整运行配置保留，最小权限Flux身份、prune=false；ETL原0副本保持。
+- [x] 对齐并推送已提交业务代码，补Server/ETL发布入口、Admin CI门禁、Login明确publisher；Tasks发布依赖完整PG18。
+- [x] 六仓库新源码真实CI→镜像→GitOps→Flux：五个运行应用新digest/HTTP200通过，ETL保持0副本并完成投递、暂停下回滚/恢复；Tasks完整检查754.285秒、含准备约14分54秒，原20分钟/断言保留。
+- [x] 配置、代码、单测/集成/Testcontainers和实际验收分别记录；最终make verify、相关专项通过。CM维持受控发布，不把取消的额外image验收计为通过。
+
+## 阶段15：集群外 runner（拟实施）
+
+从本机 Mac、Linux/WSL2、Windows WSLC 卸载编译与测试。首轮让一台机器只执行一个可信 job。执行路由、身份、租约和能力边界见 [architecture.md](architecture.md#阶段15拟议设计集群外-runner2026-11-08)。
+
+- [ ] **15.1 控制面和本机 Mac。** 先交付 NSH 原生 macOS 桌面端、单设备 profile 和事务化租约。用专用账号运行固定 SHA 的编译/测试 fixture，页面显示本机状态和执行落点，日志、Check 与产物关联同一 attempt。覆盖 Pod 与 runner 竞争全局额度、离线 runner 不占额度、重复领任务、掉线取消、撤权、正常重启与备份恢复。一次性登记、设备管理及控制面排队诊断随试点完善。交互、打包和实施细节见 [macOS 桌面端](architecture.md#macos-桌面端首批)。
+- [ ] **15.2 Linux 和 WSL2。** 复用协议和原生 executor。实测 Linux/WSL2 编译、同 job workspace、取消清理、连接中断、distro 重启和磁盘压力。试点 Linux amd64；按实际 `GOOS/GOARCH` 和工具版本报告能力，再登记其他组合。
+- [ ] **15.3 Windows WSLC。** 在有目标版本的 Windows 机器上尽早验证同一专用账号的 CLI 调用、固定 digest、私网 DNS/TLS、启动凭据传递、退出码、超时、stop/remove、进程强退后的容器核对，以及空闲 VM 关停。确认后用 NSH Windows 桌面端接入公共租约协议，验证启停、关窗清理和睡眠唤醒，记录 WSL、`wslc.exe` 和 Windows 版本。外部 HTTP/SQLite 和临时 k3s 自动测试覆盖协议，WSLC 生命周期用真实 Windows 验收。
+- [ ] **15.4 按实际构建需求扩展。** 在专用 Linux/WSL2 验收按需 BuildKit、目标平台、固定输出 digest、跨设备缓存隔离和受限测试 registry，再评估 OCI 发布。为 Windows WSLC 的 OCI 构建与需要 Docker API 的业务 job 分别做能力验证。生产发布资格与测试 runner 分开配置。
+
+15.1 首批实现了 Apple Silicon 桌面端、预配设备凭据与单槽位外部调度。设备登记、控制面排队诊断和 homelab 试点继续待办，验证见 [status.md](status.md)。
+
+- [x] **15.1 桌面日常版**。交付 macOS 分栏 UI、原生菜单和保存面板、状态与日志导出。使用 `golang/sync` 固定提交完成本机 checkout、race 测试、编译、产物回传和文件导出，随后构建 0.2.0 release `.app`。
+- [x] **15.4 Mac 镜像构建与 GitOps 闭环**。控制面下发单平台 Linux 镜像计划并独立核验 registry digest 和平台。用真实公开仓库的固定提交和签名测试 webhook 验证 Mac 推送 `linux/amd64`、`linux/arm64`，并在临时 `linux/arm64` k3s 完成 GitOps、Flux 和应用健康验证。交付 0.3.0 release `.app`。
+- [x] **15.4 homelab 试点**。以专用测试仓库独立分支接入 Mac profile 和现有私有 Zot，真实 GitHub push 后完成镜像推送、digest 核验、GitOps 更新和 Flux 部署。真实 `linux/amd64` 节点 `node3` 运行同一 digest，Service 健康检查通过。试点保留独立 GitOps 分支及命名空间。[实测记录](status.md#2026-11-08-homelab-mac-到-amd64-试点)
+- [x] **15.5 Web 管理与日常发布**。控制台支持 Runner 登记、状态、当前任务、暂停接单、恢复和轮换凭据。通过真实 k3s 验证登记、重启、暂停和轮换。将无状态业务 `steam-admin-web` 的主分支发布接入 Mac，实际核对 Zot、Flux 和业务服务，并完成一次旧 digest 回滚。[日常操作](deployment.md#steam-admin-web-日常发布与回滚)
+- [x] **macOS 日常安装包**。使用 Forgelet 品牌图形生成应用图标，构建 Apple Silicon release 并在本机「应用程序」目录验证签名和启动。
+- [x] **从 Finder 接单**。安装 0.3.1，复用 `macos-admin-web` 已登记设备及专用 Docker 配置，验证从「应用程序」开启后在 homelab 显示在线。
+- [x] **Mac Runner 共享队列**。设备仅凭凭据接单，`macos-arm64` 任务跨仓库调度，镜像策略独立配置。兼容原登记和任务标签。控制面发布单独记录。
+- [x] **共享队列 homelab 验收**。部署新版控制面并安装 Mac 0.4.1，使用原设备凭据和无 Profile 的连接配置，从 Finder 启动后完成另一个私有仓库的真实任务，核对 Go 测试、产物和 GitHub Check。
+- [x] **Runner 优先与集群回退**。为可移植任务提供默认开启的 Runner 优先策略和 native Pod 回退。两端使用同一控制面镜像平台，核对 registry 后放行自动部署。真实临时 k3s 验证双路径，实际 homelab 发布另行记录。
+
+各项随实现运行 `make verify` 及相关 `make test-integration` 场景。真实临时 k3s 同时运行 Pod 和外部 agent，覆盖控制面重启、网络故障、取消和失效凭据。Mac、WSL2 和 WSLC 的平台验收分别记录。

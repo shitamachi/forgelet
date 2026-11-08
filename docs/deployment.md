@@ -44,6 +44,123 @@ GitHub App API 使用测试 HTTPS sidecar；不会创建真实 GitHub Check。�
 10.6b 可设置 `FORGELET_TEST_BUSINESS_DIR` 验证两个固定提交的原业务 workflow；快照准备、隔离发布和 skip 边界见 [原业务测试说明](../test/fixtures/steam-business/README.md)。
 上述 Docker 用于开发测试；native 执行 Pod 不挂载 Docker socket。10.5b 可选 profile 见本文末尾。容器测试结果以实际运行输出为准。
 
+## macOS 桌面 Runner
+
+在装有 Go 1.27+、Rust 和 Xcode Command Line Tools 的 Apple Silicon Mac 上构建。生成的本机试点包使用 ad hoc 签名，运行要求 macOS 14+。
+
+```sh
+make runner-macos
+open 'bin/Forgelet Runner.app'
+```
+
+在 Web 的 **Runners** 为设备填写名称并登记，保存一次性显示的设备凭据。也可以由管理员在 YAML 登记，只保存凭据摘要。每台设备使用独立凭据，设备名称用于识别心跳和执行记录。
+
+```sh
+runner_token="frr_$(openssl rand -hex 32)"
+printf '%s' "$runner_token" | shasum -a 256
+printf '%s' "$runner_token" | pbcopy
+unset runner_token
+```
+
+```yaml
+external_runners:
+  build-mac:
+    token_sha256: '<上一步得到的 64 位十六进制摘要>'
+```
+
+在 Forgelet 中启用仓库及对应工作流。工作流使用 `runs-on: macos-arm64` 进入共享队列，任何在线设备都可接单。受信分支 push 和管理端手动触发支持 shell、原生 checkout 和 artifact。内网入口将 `/runner/v1/` 转发到 Forgelet，并使用 Mac 信任的 HTTPS 证书。外部 Runner 的 loopback HTTP 仅用于本机开发。
+
+在专用 macOS 账号下打开应用，填入控制面地址和设备凭据，然后点「开启」。同一窗口内可反复启停，`⌘R` 在运行菜单中执行当前的开启或停止操作。点击停止、关闭窗口或退出会取消本机当前任务。App 每次重新打开默认暂停。
+
+需要从 Finder 直接启用已登记的 Runner 时，在 `~/Library/Application Support/io.forgelet.runner/connection.json` 配置 `url` 和 `token_file`。可选的 `docker` 对象包含 `config`（Docker 配置目录）、`host` 和 `builder`。`token_file` 和 `docker.config` 使用绝对路径，配置文件和凭据文件均使用权限 `0600`。App 打开时载入配置，每次点「开启」时读取凭据文件。升级时可继续使用原 `profile.json`，其中的旧字段可用于连接旧控制面。
+
+桌面执行器的 Go 构建缓存和模块缓存默认位于 `~/Library/Caches/io.forgelet.runner`，方便从 Finder 启动时直接使用本机可访问的路径。
+
+右侧切换「日志」和「状态」。点「复制记录」将两类记录复制到系统剪贴板，点「导出…」或按 `⇧⌘S` 可通过系统保存面板输出 `.txt`。窗口保留最近 1 MiB 构建日志，超出保留范围会标出省略。用「查看运行」打开控制面查看完整日志和产物。
+
+### 从 Mac 发布集群镜像
+
+在控制面 YAML 的 `external_builds` 为来源仓库、workflow 和分支配置镜像仓库及目标平台。平台可选 `linux/amd64` 或 `linux/arm64`。状态栏及导出记录显示当前任务的目标平台。
+
+```yaml
+external_builds:
+  - repository: owner/project
+    workflow: .github/workflows/mac-build.yml
+    ref: refs/heads/main
+    build:
+      image: registry.example.com/owner/project
+      platform: linux/amd64
+```
+
+同一 macOS 账号须能使用 `docker buildx`。加入共享队列的构建设备需要支持任务使用的 Linux 平台，Docker 凭据需要覆盖该设备要推送的镜像路径。同一 registry 可用一个身份为多个获准路径授予推送权限。控制面使用 HTTPS 读取 registry，私有仓库需给控制面单独的只读凭据，例如挂载 Docker `config.json` 并设置 `DOCKER_CONFIG` 为其目录。Kubernetes 工作负载使用部署侧的拉取凭据。临时匿名 HTTP registry 可显式设置 `insecure_registry: true`，并选用支持 BuildKit exporter 直接推送的 builder，例如 `docker-container` driver。
+
+升级时原 YAML 或 SQLite 登记里的设备凭据仍可使用，原来绑定的 workflow 标签和镜像策略也可继续使用。迁移工作流时先添加对应的 `external_builds`，再将 `runs-on` 改为 `macos-arm64`。旧的 YAML 登记字段可在旧任务结束后清理。
+
+```yaml
+on: push
+jobs:
+  image:
+    runs-on: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - id: publish
+        uses: forgelet/build@v1
+        with:
+          image: registry.example.com/owner/project
+```
+
+Forgelet 随任务下发目标平台，Mac 通过 Buildx 的 `--platform` 构建并推送。多阶段 Dockerfile 可用 `FROM --platform=$BUILDPLATFORM` 运行编译阶段，并使用 `TARGETOS` 和 `TARGETARCH` 交叉编译。步骤提供 `image`（`repository@sha256:…`）和 `digest`，任务结果保留 `forgelet_image_digest`。控制面按 digest 读取 registry 的 manifest 和 image config，核对系统与架构后才接受成功。
+
+自动部署沿用 [GitOps、Flux 观测和回滚](#gitopsflux-观测和回滚)。部署目标的 `image` 须与该 workflow 的构建策略一致，`on_success` 指定此 workflow、`job: image` 和集群内 native profile。匹配的 push 会生成等待原工作流成功的部署任务，使用核验后的 digest 更新 GitOps。Flux 应用 revision 并确认健康后，交付记录显示 `deployed`。镜像层由 registry 交付给集群，SQLite 保存构建状态、digest 和日志。
+
+### 优先 Runner 与集群回退
+
+控制面配置 `prefer_runner` 默认开启。`runner_fallbacks` 将可以在 macOS 和 Linux 执行的 `runs-on` 标签映射到集群内的 native profile。下面的配置将 `portable-build` 映射到 `builder`。
+
+```yaml
+prefer_runner: true
+runner_fallbacks:
+  portable-build: builder
+external_builds:
+  - repository: owner/project
+    workflow: .github/workflows/image.yml
+    ref: refs/heads/main
+    build:
+      image: registry.example.com/owner/project
+      platform: linux/amd64
+```
+
+对于镜像任务，`builder` 的 `build.images` 须包含同一镜像仓库，Pod 构建凭据须有对应的推送权限。已有发布工作流也可把现用的可移植标签加入映射，例如 `macos-admin-web: builder`。切换前先升级控制面、提供回退的 Pod executor 镜像和 Mac Runner，回退映射随新任务计划生效。
+
+Runner 必须近期轮询、空闲且未暂停，镜像任务还要求其 Buildx 报告支持配置的目标平台。找不到合适 Runner 时使用映射的 Pod。设为 `prefer_runner: false` 时，配置了回退的任务直接进入 Pod。显式的 `macos-arm64` 用于依赖 macOS 的任务；原集群 profile 也可继续独立使用。两种执行路径共用全局并发额度，已经领取的任务保留原执行身份。
+
+发布镜像的目标是工作负载运行节点所需的平台。例如 amd64 节点部署 `linux/amd64`，即使 Mac Runner 本机是 Apple Silicon。回退 Pod 的构建节点按目标 OS 和架构选择，BuildKit 同样显式收到目标。控制面校验两条路径返回的镜像 digest 和平台。本机 `go test` 或未交叉编译的 `go build` 仍报告 Darwin arm64。
+
+### Web 管理 Runner
+
+管理员在左侧 **Runners** 查看配置文件与 Web 登记的设备、最近连接和当前任务。最近 30 秒内有成功轮询或续租时，空闲设备显示「在线」。执行中的状态来自当前任务租约。控制面重启后，最近连接时间会在设备下一次连接时更新。
+
+点「登记 Runner」并输入设备名称。设备凭据只在登记或轮换时显示。把控制面地址和凭据填入 Mac 应用后点「开启」。Web 登记、暂停状态和轮换后的凭据摘要保存在 SQLite。使用旧备份恢复后，轮换 Web 管理的设备凭据，确保恢复出来的旧凭据失效。
+
+「暂停接单」保留设备已领取的任务与租约，其他在线设备仍可接单。需要中断当前发布时，从 Runner 的「查看当前任务」进入运行记录并取消相应 run。轮换凭据需等当前任务结束，轮换后在 Mac 应用中替换旧凭据。
+
+### steam-admin-web 日常发布与回滚
+
+主分支 push 使用 `.github/workflows/image-mac.yml`。现有 `runs-on: macos-admin-web` 通过升级兼容继续路由到共享 macOS 队列。本机先确保 OrbStack 可用，再从 Finder 的「应用程序」打开 Forgelet Runner，点「开启」。本机连接配置引用原设备凭据、`forgelet-admin-web-mac` builder，以及有权推送 `zot.k.mygo.rocks/forgelet/apps/steam-admin-web` 的专用 Docker 配置。若控制台暂停了该设备，从 Web 恢复接单。轮换凭据后，将新凭据写入原私有文件并保持 `0600`，然后在 App 重新开启。
+
+合并或推送到 `main` 后，在 Forgelet 的运行记录中查看「Mac daily release」。Mac 在镜像构建阶段执行类型检查、单测、前端构建和生成文件一致性检查。Forgelet 核验 Zot digest 后创建 GitOps 提交。发布页显示「已部署」后，核对 Flux revision 和 `https://steam-admin.k.mygo.rocks/`。Mac 离线时，已触发的任务留在队列。PR 检查沿用 `ci.yml`，版本标签和手动构建沿用 `image.yml`。
+
+```sh
+kubectl -n flux-system get kustomization forgelet-admin-web
+kubectl -n steam rollout status deployment/steam-admin-web
+kubectl -n steam get deployment steam-admin-web -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+curl -fsS https://steam-admin.k.mygo.rocks/healthz
+```
+
+回滚服务镜像时，先停用 `.github/workflows/image-mac.yml` 的触发并处理该工作流中仍在排队或执行的运行，确认没有同目标的发布仍在推进。打开 **发布** 中当前 `admin-web` 的部署记录，核对「上一 digest」，再点「回滚到上一版本」。Forgelet 创建新的 GitOps 提交。等待该回滚记录显示「已部署」，确认 `forgelet-admin-web` 已应用回滚 revision，并核对 `steam/steam-admin-web` 的镜像、就绪副本与站点 HTTP。若页面报告冲突，先打开最新发布记录，核对其 digest 与当前 GitOps HEAD 后再选择回滚。
+
+若需要恢复由集群构建的主分支发布，在 Forgelet 停用 `.github/workflows/image-mac.yml` 并处理该工作流中仍在排队或执行的运行，再把 `admin-web` 的自动部署来源改回 `.github/workflows/image.yml` 的 `build-push`。在业务仓库用 `git restore --source=94f9fc6 -- .github/workflows/ci.yml .github/workflows/image.yml` 恢复原触发配置，提交并推送到 `main`。该 push 由集群 workflow 构建并提交 GitOps。仅需恢复服务时，优先按上一 digest 回滚。
+
 ## 镜像与安装文件
 
 在构建机执行；镜像架构必须与目标节点相符。默认构建的是构建机架构，不会自动生成多架构镜像。
