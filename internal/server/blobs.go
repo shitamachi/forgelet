@@ -32,6 +32,10 @@ func (s *Server) runtimeBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := chi.URLParam(r, "kind")
+	if job.Plan.External && kind != "artifact" {
+		http.Error(w, "external runners support only artifacts", http.StatusForbidden)
+		return
+	}
 	q := r.URL.Query()
 	key := q.Get("key")
 	if kind != "artifact" && kind != "cache" || len(key) == 0 || len(key) > 512 {

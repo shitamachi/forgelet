@@ -470,7 +470,7 @@ func TestRemoteBatchesSmallMaskedUnicodeWrites(t *testing.T) {
 
 func TestRemoteNeverExtendsAnAttemptedSequenceAfterLostACK(t *testing.T) {
 	var mu sync.Mutex
-	var attempts []run.Log
+	var attempts, observed []run.Log
 	var result run.Result
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -505,6 +505,7 @@ func TestRemoteNeverExtendsAnAttemptedSequenceAfterLostACK(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	})
+	options.OnLog = func(entry run.Log) { observed = append(observed, entry) }
 	if RunRemote(ctx, options) == nil {
 		t.Fatal("cancelled execution succeeded")
 	}
@@ -512,6 +513,9 @@ func TestRemoteNeverExtendsAnAttemptedSequenceAfterLostACK(t *testing.T) {
 	defer mu.Unlock()
 	if len(attempts) != 3 || attempts[0] != attempts[1] || attempts[2].Seq != 2 || attempts[1].Data+attempts[2].Data != message || result.LastLogSeq != 2 || result.State != run.Cancelled {
 		t.Fatalf("retry mutated or lost output: %+v result=%+v", attempts, result)
+	}
+	if len(observed) != 2 || observed[0] != attempts[1] || observed[1] != attempts[2] {
+		t.Fatalf("observer received repeated or unacknowledged chunks: %+v", observed)
 	}
 }
 

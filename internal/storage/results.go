@@ -21,8 +21,8 @@ func (s *Store) AppendLog(ctx context.Context, id, uid string, entry run.Log) er
 		if err != nil {
 			return err
 		}
-		if uid == "" || job.PodUID != uid {
-			return fmt.Errorf("log Pod identity: %w", ErrConflict)
+		if !validExecution(job, uid) {
+			return fmt.Errorf("log execution identity: %w", ErrConflict)
 		}
 		var old run.Log
 		err = tx.QueryRowContext(ctx, "SELECT seq,step_id,data FROM logs WHERE job_id=? AND seq=?", id, entry.Seq).Scan(&old.Seq, &old.StepID, &old.Data)
@@ -105,8 +105,8 @@ func (s *Store) Finish(ctx context.Context, id, uid string, result run.Result) e
 		if err != nil {
 			return err
 		}
-		if uid == "" || job.PodUID != uid {
-			return fmt.Errorf("result Pod identity: %w", ErrConflict)
+		if !validExecution(job, uid) {
+			return fmt.Errorf("result execution identity: %w", ErrConflict)
 		}
 		if job.State.Terminal() {
 			old, err := json.Marshal(job.Result)
@@ -124,6 +124,9 @@ func (s *Store) Finish(ctx context.Context, id, uid string, result run.Result) e
 		}
 		if job.State != run.Running {
 			return fmt.Errorf("only a claimed attempt can finish: %w", ErrConflict)
+		}
+		if job.Plan.External && job.CancelRequested && result.State != run.Cancelled {
+			return fmt.Errorf("only cancellation can finish this attempt: %w", ErrConflict)
 		}
 		var last int64
 		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(max(seq),0) FROM logs WHERE job_id=?", id).Scan(&last); err != nil {

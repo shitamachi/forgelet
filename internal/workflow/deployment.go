@@ -73,18 +73,25 @@ func AttachDeployments(plans []run.Plan, bindings []DeploymentBinding) ([]run.Pl
 			return nil, fmt.Errorf("automatic deployment publisher %q requires one docker/build-push-action or forgelet/build step", b.Job)
 		}
 		p := &out[publisher]
-		if len(p.Outputs) >= 100 {
-			return nil, fmt.Errorf("automatic deployment publisher output limit exceeded")
-		}
 		output := key + "_digest"
+		var externalTarget, externalImage string
+		if p.ExternalBuild != nil {
+			output = run.ExternalImageDigestOutput
+			externalTarget, externalImage = b.Target, p.ExternalBuild.Image
+		}
+		value := fmt.Sprintf("${{ steps['%s'].outputs.digest }}", step)
 		if _, exists := p.Outputs[output]; exists {
-			return nil, fmt.Errorf("automatic deployment output %q conflicts with workflow", output)
+			if p.ExternalBuild == nil || p.Outputs[output] != value {
+				return nil, fmt.Errorf("automatic deployment output %q conflicts with workflow", output)
+			}
+		} else if len(p.Outputs) >= 100 {
+			return nil, fmt.Errorf("automatic deployment publisher output limit exceeded")
 		}
 		p.Outputs = maps.Clone(p.Outputs)
 		if p.Outputs == nil {
 			p.Outputs = map[string]string{}
 		}
-		p.Outputs[output] = fmt.Sprintf("${{ steps['%s'].outputs.digest }}", step)
+		p.Outputs[output] = value
 		deploy, err := action.Reference("forgelet/deploy@v1")
 		if err != nil {
 			return nil, fmt.Errorf("deployment action: %w", err)
@@ -92,6 +99,7 @@ func AttachDeployments(plans []run.Plan, bindings []DeploymentBinding) ([]run.Pl
 		deploy.Inputs = map[string]string{"target": b.Target, "digest": fmt.Sprintf("${{ needs['%s'].outputs['%s'] }}", p.Key, output)}
 		sum := sha256.Sum256([]byte(p.RunID + "\x00" + key))
 		out = append(out, run.Plan{
+			AutomaticDeployment: externalTarget, ExternalDeploymentImage: externalImage,
 			JobID: hex.EncodeToString(sum[:])[:24], RunID: p.RunID, Key: key, Group: key, Name: "Deploy " + b.Target,
 			Repository: p.Repository, SHA: p.SHA, Ref: p.Ref, EventName: p.EventName, BaseRef: p.BaseRef,
 			WorkflowName: p.WorkflowName, SourceWorkflow: p.SourceWorkflow, Event: append([]byte(nil), p.Event...),

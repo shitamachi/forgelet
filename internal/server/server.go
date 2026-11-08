@@ -57,7 +57,7 @@ type Store interface {
 	GetRun(context.Context, string) (run.Run, error)
 	GetJob(context.Context, string) (run.Job, error)
 	Reserve(context.Context, int) ([]run.Job, error)
-	ReserveAuthorized(context.Context, int, []string) ([]run.Job, error)
+	ReserveAuthorized(context.Context, int, []string, ...storage.RunnerCapacity) ([]run.Job, error)
 	CancelRepository(context.Context, string, string) (int, error)
 	RecordPod(context.Context, string, string) error
 	Claim(context.Context, string, string) (run.Plan, error)
@@ -114,6 +114,10 @@ type Config struct {
 	MaxParallel      int
 	Repositories     []string
 	Workflows        []string
+	ExternalRunners  map[string]ExternalRunner
+	ExternalBuilds   []ExternalBuildPolicy
+	PreferRunner     *bool
+	RunnerFallbacks  map[string]string
 	Profiles         map[string]kube.Profile
 	RepositoryTokens RepositoryTokens
 	DataDir          string
@@ -134,6 +138,11 @@ type Server struct {
 	now                  func() time.Time
 	nextMaintenance      time.Time
 	disk                 *diskGuard
+	external             externalStore
+	runnerMu             sync.Mutex
+	runners              map[string]runnerRegistration
+	runnerSeen           map[string]time.Time
+	runnerReady          map[string]runnerAvailability
 }
 
 func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, error) {
@@ -217,7 +226,23 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 		}
 	}
 	cfg.Profiles = cloneProfiles(cfg.Profiles)
-	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace)}, nil
+	cfg.ExternalRunners = maps.Clone(cfg.ExternalRunners)
+	external, _ := store.(externalStore)
+	if err := validateExternalRunners(cfg, external); err != nil {
+		return nil, err
+	}
+	if err := validateExternalBuilds(cfg.ExternalBuilds); err != nil {
+		return nil, err
+	}
+	cfg.ExternalBuilds = slices.Clone(cfg.ExternalBuilds)
+	for label, fallback := range cfg.RunnerFallbacks {
+		p, ok := cfg.Profiles[fallback]
+		if external == nil || label == run.MacRunnerLabel || !runnerName.MatchString(label) || !ok || p.Act != nil || cfg.Profiles[label].Act != nil {
+			return nil, fmt.Errorf("runner fallback %q requires a portable label and a native Pod profile", label)
+		}
+	}
+	cfg.RunnerFallbacks = maps.Clone(cfg.RunnerFallbacks)
+	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, external: external, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace), runnerSeen: make(map[string]time.Time), runnerReady: make(map[string]runnerAvailability)}, nil
 }
 
 func cloneProfiles(in map[string]kube.Profile) map[string]kube.Profile {
@@ -265,6 +290,10 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/github/run", s.githubRun)
 		r.Get("/api/management", s.managementAPI)
 		r.Put("/api/management", s.managementAPI)
+		r.Get("/api/runners", s.listRunners)
+		r.Post("/api/runners", s.registerRunner)
+		r.Put("/api/runners/{runnerID}/pause", s.pauseRunner)
+		r.Post("/api/runners/{runnerID}/rotate", s.rotateRunner)
 		r.Post("/api/management/inspect", s.inspectWorkflows)
 		r.Get("/api/status", s.status)
 		r.Post("/api/runs/{runID}/checks/retry", func(w http.ResponseWriter, r *http.Request) {
@@ -320,6 +349,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/blobs/{kind}", s.runtimeBlob)
 		r.Post("/deployments", s.requestDelivery)
 	})
+	s.runnerRoutes(r)
 	r.NotFound(webui.Handler().ServeHTTP)
 	return r
 }
@@ -652,9 +682,12 @@ func (s *Server) resolveActions(ctx context.Context, plans []run.Plan) error {
 }
 
 func (s *Server) validateProfiles(plans []run.Plan) error {
+	if err := s.validateExternalPlans(plans); err != nil {
+		return err
+	}
 	for index := range plans {
 		p := &plans[index]
-		if p.Control != "" {
+		if p.Control != "" || p.External {
 			continue
 		}
 		if p.Permissions != nil && p.Permissions["contents"] != "read" {
@@ -783,28 +816,36 @@ func (s *Server) rerun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func (s *Server) authenticate(r *http.Request) (run.Job, kube.Identity, error) {
+type executionIdentity struct {
+	id          string
+	terminating bool
+}
+
+func (s *Server) authenticate(r *http.Request) (run.Job, executionIdentity, error) {
+	if r.Context().Value(externalJobRoute{}) != nil {
+		return s.authenticateExternal(r)
+	}
 	raw := r.Header.Get("Authorization")
 	if !strings.HasPrefix(raw, "Bearer ") {
-		return run.Job{}, kube.Identity{}, kube.ErrIdentity
+		return run.Job{}, executionIdentity{}, kube.ErrIdentity
 	}
 	identity, err := s.runtime.Authenticate(r.Context(), strings.TrimPrefix(raw, "Bearer "))
 	if err != nil {
-		return run.Job{}, kube.Identity{}, kube.ErrIdentity
+		return run.Job{}, executionIdentity{}, kube.ErrIdentity
 	}
 	job, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
 	if err != nil {
-		return run.Job{}, kube.Identity{}, kube.ErrIdentity
+		return run.Job{}, executionIdentity{}, kube.ErrIdentity
 	}
-	if job.ID != identity.JobID || job.PodName != identity.PodName || (job.PodUID != "" && job.PodUID != identity.PodUID) {
-		return run.Job{}, kube.Identity{}, kube.ErrIdentity
+	if job.Plan.External || job.ID != identity.JobID || job.PodName != identity.PodName || (job.PodUID != "" && job.PodUID != identity.PodUID) {
+		return run.Job{}, executionIdentity{}, kube.ErrIdentity
 	}
-	return job, identity, nil
+	return job, executionIdentity{id: identity.PodUID, terminating: identity.Terminating}, nil
 }
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	job, who, err := s.authenticate(r)
-	if err != nil || who.Terminating {
+	if err != nil || who.terminating {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
 		return
 	}
@@ -817,13 +858,13 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
-	p, err := s.store.Claim(r.Context(), job.ID, who.PodUID)
+	p, err := s.store.Claim(r.Context(), job.ID, who.id)
 	p.ProgressVersion = 1
 	respond(w, p, err)
 }
 func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 	job, who, err := s.authenticate(r)
-	if err != nil || who.Terminating {
+	if err != nil || who.terminating {
 		http.Error(w, "invalid workload identity", http.StatusUnauthorized)
 		return
 	}
@@ -863,7 +904,7 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		serverError(w, stateErr)
 		return
 	}
-	if current.State != run.Running || current.CancelRequested || current.PodUID != who.PodUID {
+	if current.State != run.Running || current.CancelRequested || !matchesExecution(current, who.id) {
 		http.Error(w, "job is no longer running", http.StatusConflict)
 		return
 	}
@@ -902,7 +943,7 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		serverError(w, stateErr)
 		return
 	}
-	if current.State != run.Running || current.CancelRequested || current.PodUID != who.PodUID {
+	if current.State != run.Running || current.CancelRequested || !matchesExecution(current, who.id) {
 		http.Error(w, "job is no longer running", http.StatusConflict)
 		return
 	}
@@ -925,7 +966,7 @@ func (s *Server) appendLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid log", http.StatusBadRequest)
 		return
 	}
-	err = s.store.AppendLog(r.Context(), job.ID, who.PodUID, entry)
+	err = s.store.AppendLog(r.Context(), job.ID, who.id, entry)
 	respond(w, map[string]int64{"seq": entry.Seq}, err)
 }
 func (s *Server) result(w http.ResponseWriter, r *http.Request) {
@@ -939,7 +980,14 @@ func (s *Server) result(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid result", http.StatusBadRequest)
 		return
 	}
-	err = s.store.Finish(r.Context(), job.ID, who.PodUID, result)
+	if !s.verifyExternalResult(w, r, job, &result) {
+		return
+	}
+	err = s.store.Finish(r.Context(), job.ID, who.id, result)
+	if job.Plan.ExternalBuild != nil {
+		respond(w, map[string]any{"saved": err == nil, "state": result.State}, err)
+		return
+	}
 	respond(w, map[string]bool{"saved": err == nil}, err)
 }
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
@@ -1210,6 +1258,14 @@ func (s *Server) Tick(ctx context.Context) error {
 		return err
 	}
 	for _, job := range active {
+		if job.Plan.External {
+			if now := s.now(); s.external != nil && !now.Before(job.LeaseUntil) {
+				if err = s.external.ExpireExternal(ctx, job.ID, now); err != nil {
+					problems = append(problems, err)
+				}
+			}
+			continue
+		}
 
 		if s.now().Before(job.RuntimeRetryAt) {
 			continue
@@ -1259,7 +1315,7 @@ func (s *Server) Tick(ctx context.Context) error {
 	if s.disk.snapshot().Paused {
 		limit = 0
 	}
-	jobs, err := s.store.ReserveAuthorized(ctx, limit, authorized)
+	jobs, err := s.reservePods(ctx, limit, authorized)
 	if err != nil {
 		return err
 	}
@@ -1341,6 +1397,12 @@ func (s *Server) start(ctx context.Context, job run.Job) error {
 	profile, ok := s.cfg.Profiles[job.Profile]
 	if !ok {
 		return s.store.Interrupt(ctx, job.ID, "execution profile no longer exists")
+	}
+	if job.Plan.FallbackProfile != "" {
+		profile, err = s.fallbackPodProfile(job.Plan)
+		if err != nil {
+			return s.store.Interrupt(ctx, job.ID, err.Error())
+		}
 	}
 	if job.Plan.ImageMirrorsSelected {
 		if profile.Act == nil {

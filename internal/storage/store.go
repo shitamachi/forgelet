@@ -122,7 +122,7 @@ func openStore(ctx context.Context, path string, restoring bool) (*Store, error)
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fail(fmt.Errorf("read schema version: %w", err))
 	}
-	if version > 7 {
+	if version > 8 {
 		return fail(fmt.Errorf("unsupported schema version %d: %w", version, ErrConflict))
 	}
 	if version == 0 {
@@ -178,6 +178,11 @@ PRAGMA user_version=4;`)
 	if version < 7 {
 		if err := s.migrateV7(ctx); err != nil {
 			return fail(fmt.Errorf("migrate progress schema: %w", err))
+		}
+	}
+	if version < 8 {
+		if err := s.migrateV8(ctx); err != nil {
+			return fail(fmt.Errorf("migrate runner schema: %w", err))
 		}
 	}
 	return s, nil
@@ -391,6 +396,10 @@ func PrepareRestore(ctx context.Context, path string) error {
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM metadata WHERE key='restore_required'"); err != nil {
 			return fmt.Errorf("complete restore preparation: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET body=json_remove(body,'$.lease_until')
+ WHERE json_extract(body,'$.plan.external')=1 AND json_extract(body,'$.lease_until') IS NOT NULL`); err != nil {
+			return fmt.Errorf("revoke restored execution leases: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM auth_sessions; DELETE FROM auth_flows;"); err != nil {
 			return fmt.Errorf("revoke restored authentication: %w", err)

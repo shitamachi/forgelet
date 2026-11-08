@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/shitamachi/forgelet/internal/delivery"
+	"github.com/shitamachi/forgelet/internal/run"
 )
 
 // consoleConfig exposes only the operational configuration needed by the UI.
@@ -16,6 +17,7 @@ func (s *Server) consoleConfig(w http.ResponseWriter, _ *http.Request) {
 		ImageGroups []string `json:"image_groups,omitempty"`
 		Name        string   `json:"name"`
 		Image       string   `json:"image"`
+		Fallback    string   `json:"fallback_profile,omitempty"`
 		Build       bool     `json:"build"`
 	}
 	profiles := make([]profile, 0, len(s.cfg.Profiles))
@@ -27,7 +29,22 @@ func (s *Server) consoleConfig(w http.ResponseWriter, _ *http.Request) {
 			}
 			sort.Strings(groups)
 		}
-		profiles = append(profiles, profile{Name: name, Image: p.Image, Build: p.Build != nil, ImageGroups: groups})
+		profiles = append(profiles, profile{Name: name, Image: p.Image, Build: p.Build != nil, ImageGroups: groups, Fallback: s.cfg.RunnerFallbacks[name]})
+	}
+	for label, fallback := range s.cfg.RunnerFallbacks {
+		if _, exists := s.cfg.Profiles[label]; !exists {
+			p := s.cfg.Profiles[fallback]
+			profiles = append(profiles, profile{Name: label, Image: p.Image, Build: p.Build != nil, Fallback: fallback})
+		}
+	}
+	if _, pod := s.cfg.Profiles[run.MacRunnerLabel]; s.external != nil && !pod {
+		build := len(s.cfg.ExternalBuilds) > 0
+		s.runnerMu.Lock()
+		for _, runner := range s.runnerPoliciesLocked() {
+			build = build || runner.Build != nil
+		}
+		s.runnerMu.Unlock()
+		profiles = append(profiles, profile{Name: run.MacRunnerLabel, Image: "macOS arm64", Build: build})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
 	managed := s.management()
@@ -43,9 +60,9 @@ func (s *Server) consoleConfig(w http.ResponseWriter, _ *http.Request) {
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 	writeJSON(w, http.StatusOK, map[string]any{
 		"repositories": repositories, "profiles": profiles, "targets": targets,
-		"max_parallel": s.cfg.MaxParallel,
-		"features":     map[string]bool{"github": s.provider != nil, "secrets": len(s.cfg.SecretKey) == 32, "artifacts": s.cfg.Blobs != nil, "delivery": s.cfg.Delivery != nil},
-		"retention":    map[string]int64{"history": int64(s.cfg.Retention.History.Seconds()), "logs": int64(s.cfg.Retention.Logs.Seconds()), "events": int64(s.cfg.Retention.Events.Seconds()), "backups": int64(s.cfg.Retention.Backups.Seconds())},
+		"max_parallel": s.cfg.MaxParallel, "prefer_runner": s.preferRunner(),
+		"features":  map[string]bool{"github": s.provider != nil, "secrets": len(s.cfg.SecretKey) == 32, "artifacts": s.cfg.Blobs != nil, "delivery": s.cfg.Delivery != nil},
+		"retention": map[string]int64{"history": int64(s.cfg.Retention.History.Seconds()), "logs": int64(s.cfg.Retention.Logs.Seconds()), "events": int64(s.cfg.Retention.Events.Seconds()), "backups": int64(s.cfg.Retention.Backups.Seconds())},
 	})
 }
 

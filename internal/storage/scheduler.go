@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,19 +69,19 @@ func validateGraph(runID string, plans []run.Plan) error {
 // Reserve with zero capacity still reconciles conditions, failure propagation
 // and concurrency cancellation, without moving any queued job to starting.
 func (s *Store) Reserve(ctx context.Context, maxParallel int) ([]run.Job, error) {
-	return s.reserveAuthorized(ctx, maxParallel, nil)
+	return s.reserveAuthorized(ctx, maxParallel, nil, nil, nil)
 }
 
 // ReserveAuthorized leaves unconfirmed repositories queued without taking a
 // slot; an empty allowlist pauses all new execution, not cancellation cleanup.
-func (s *Store) ReserveAuthorized(ctx context.Context, maxParallel int, repositories []string) ([]run.Job, error) {
+func (s *Store) ReserveAuthorized(ctx context.Context, maxParallel int, repositories []string, runners ...RunnerCapacity) ([]run.Job, error) {
 	allowed := make(map[string]bool, len(repositories))
 	for _, repo := range repositories {
 		allowed[strings.ToLower(repo)] = true
 	}
-	return s.reserveAuthorized(ctx, maxParallel, allowed)
+	return s.reserveAuthorized(ctx, maxParallel, allowed, nil, slices.Clone(runners))
 }
-func (s *Store) reserveAuthorized(ctx context.Context, maxParallel int, allowed map[string]bool) ([]run.Job, error) {
+func (s *Store) reserveAuthorized(ctx context.Context, maxParallel int, allowed map[string]bool, external *ExternalReservation, runners []RunnerCapacity) ([]run.Job, error) {
 	if maxParallel < 0 {
 		return nil, fmt.Errorf("parallelism must be positive: %w", ErrLimit)
 	}
@@ -89,9 +90,22 @@ func (s *Store) reserveAuthorized(ctx context.Context, maxParallel int, allowed 
 		if err := reconcileJobConcurrency(ctx, tx); err != nil {
 			return err
 		}
+		if external != nil {
+			replayed, busy, err := external.existing(ctx, tx)
+			if replayed.ID != "" {
+				reserved = []run.Job{replayed}
+			}
+			if err != nil || busy {
+				return err
+			}
+		}
 		var active int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM jobs WHERE state IN (?,?)", run.Starting, run.Running).Scan(&active); err != nil {
 			return fmt.Errorf("count active jobs: %w", err)
+		}
+		slots := maxParallel - active
+		if external != nil {
+			slots = min(slots, 1)
 		}
 		// Page run identities, loading at most one bounded job graph at a time.
 		// Waiting jobs never consume the quota or prevent examining later runs.
@@ -114,12 +128,14 @@ func (s *Store) reserveAuthorized(ctx context.Context, maxParallel int, allowed 
 				if err != nil {
 					return err
 				}
-				next, err := reserveGraph(ctx, tx, jobs, maxParallel-active)
+				next, err := reserveGraph(ctx, tx, jobs, &slots, external, &runners)
 				if err != nil {
 					return err
 				}
 				reserved = append(reserved, next...)
-				active += len(next)
+				if external != nil && len(next) > 0 {
+					return nil
+				}
 				afterTime, afterID = row.created, row.id
 			}
 		}
@@ -156,18 +172,19 @@ func queuedRunPage(ctx context.Context, tx *sql.Tx, afterTime int64, afterID str
 	return page, rows.Err()
 }
 
-func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([]run.Job, error) {
+func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots *int, external *ExternalReservation, runners *[]RunnerCapacity) ([]run.Job, error) {
 	if err := applyFailFast(ctx, tx, jobs); err != nil {
 		return nil, err
 	}
 	byKey := dependencyGroups(jobs)
 	var reserved []run.Job
+	var held map[string]bool
 	// Skipping one job can make its children decidable in this same transaction.
 	for changed := true; changed; {
 		changed = false
 		for i := range jobs {
 			job := &jobs[i]
-			if job.State != run.Queued || job.CancelRequested || !dependenciesTerminal(job.Plan, byKey) {
+			if job.State != run.Queued || held[job.ID] || job.CancelRequested || !dependenciesTerminal(job.Plan, byKey) {
 				continue
 			}
 			eval := dependencyContext(job, byKey)
@@ -195,7 +212,7 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 			} else if planErr := claimPlanLimit(job.Plan); planErr != nil {
 				job.Plan.NeedsContext = nil
 				job.State, job.Result = run.Failed, &run.Result{State: run.Failed, Error: planErr.Error()}
-			} else if slots > 0 {
+			} else if *slots > 0 && external.matches(*job) {
 				if !matrixSlot(*job, jobs) {
 					continue
 				}
@@ -206,9 +223,28 @@ func reserveGraph(ctx context.Context, tx *sql.Tx, jobs []run.Job, slots int) ([
 				if !available {
 					continue
 				}
+				if external == nil && job.Plan.FallbackProfile != "" {
+					// Keep capacity for the next poll without committing a lease.
+					if index := slices.IndexFunc(*runners, func(r RunnerCapacity) bool { return r.supports(job.Plan) }); index >= 0 {
+						*runners = slices.Delete(*runners, index, index+1)
+						if held == nil {
+							held = map[string]bool{}
+						}
+						held[job.ID] = true
+						*slots--
+						continue
+					}
+					job.Profile = job.Plan.FallbackProfile
+					job.Plan.External = false
+				}
 				job.State = run.Starting
 				job.ReservedAt = time.Now().UTC()
-				slots--
+				if external != nil {
+					job.RunnerID = external.RunnerID
+					job.AttemptID = external.AttemptID
+					job.LeaseUntil = job.ReservedAt.Add(run.ExternalLease)
+				}
+				*slots--
 			} else {
 				continue
 			}

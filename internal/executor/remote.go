@@ -28,17 +28,21 @@ type RemoteOptions struct {
 	JobID               string
 	PodUID              string
 	TokenFile           string
+	AttemptToken        string
 	Workspace           string
 	Client              *http.Client
 	RetryTimeout        time.Duration
 	PollInterval        time.Duration
 	FlushTimeout        time.Duration
+	OnResult            func(run.State)
+	OnLog               func(run.Log) // Receives each acknowledged, masked chunk once.
 }
 
 type remoteClient struct {
 	base         *url.URL
 	client       *http.Client
 	tokenFile    string
+	attemptToken string
 	retryTimeout time.Duration
 }
 
@@ -54,17 +58,38 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	if err := client.request(ctx, http.MethodPost, "/claim", nil, &plan); err != nil {
 		return fmt.Errorf("executor: claim: %w", err)
 	}
-	if plan.JobID != options.JobID || plan.RunID == "" {
+	if plan.JobID != options.JobID || plan.RunID == "" || plan.External != (options.AttemptToken != "") {
 		return errors.New("executor: claimed plan identity mismatch")
 	}
 	flushTimeout := options.FlushTimeout
 	if flushTimeout <= 0 {
 		flushTimeout = 20 * time.Second
 	}
+	var acceptedState run.State
+	report := func(reportCtx context.Context, result run.Result) error {
+		var reply struct {
+			State run.State `json:"state"`
+		}
+		var output any
+		if plan.ExternalBuild != nil {
+			output = &reply
+		}
+		if err := client.request(reportCtx, http.MethodPost, "/result", result, output); err != nil {
+			return err
+		}
+		acceptedState = result.State
+		if reply.State.Terminal() {
+			acceptedState = reply.State
+		}
+		if options.OnResult != nil {
+			options.OnResult(acceptedState)
+		}
+		return nil
+	}
 	finish := func(result run.Result) error {
 		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), flushTimeout)
 		defer cancel()
-		return client.request(flushCtx, http.MethodPost, "/result", result, nil)
+		return report(flushCtx, result)
 	}
 	var credentials struct {
 		CloneURL     string            `json:"clone_url"`
@@ -137,6 +162,9 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		}
 		if response.Seq != entry.Seq {
 			return errors.New("executor: log acknowledgement mismatch")
+		}
+		if options.OnLog != nil {
+			options.OnLog(entry)
 		}
 		return nil
 	}
@@ -284,7 +312,7 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	if errors.Is(executeErr, errActCleanup) {
 		return fmt.Errorf("executor: waiting for Pod-owned engine termination: %w", executeErr)
 	}
-	if err := client.request(flushCtx, http.MethodPost, "/result", result, nil); err != nil {
+	if err := report(flushCtx, result); err != nil {
 		return fmt.Errorf("executor: report result: %w", err)
 	}
 	if watchErr != nil {
@@ -293,8 +321,8 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	if executeErr != nil {
 		return fmt.Errorf("executor: execute: %w", executeErr)
 	}
-	if result.State != run.Succeeded {
-		return fmt.Errorf("executor: job finished with state %s", result.State)
+	if acceptedState != run.Succeeded {
+		return fmt.Errorf("executor: job finished with state %s", acceptedState)
 	}
 	return nil
 }
@@ -347,10 +375,17 @@ func newRemoteClient(options RemoteOptions) (*remoteClient, error) {
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, errors.New("executor: invalid control-plane URL")
 	}
-	if !remoteIDPattern.MatchString(options.JobID) || options.TokenFile == "" || options.Workspace == "" {
-		return nil, errors.New("executor: job ID, token file and workspace are required")
+	if !remoteIDPattern.MatchString(options.JobID) || (options.TokenFile == "") == (options.AttemptToken == "") || options.Workspace == "" {
+		return nil, errors.New("executor: job ID, one credential source and workspace are required")
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/internal/jobs/" + options.JobID
+	prefix := "/internal/jobs/"
+	if options.AttemptToken != "" {
+		if run.ExternalAttempt(options.AttemptToken) == "" {
+			return nil, errors.New("executor: invalid attempt token")
+		}
+		prefix = "/runner/v1/jobs/"
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + prefix + options.JobID
 	httpClient := &http.Client{Timeout: 15 * time.Second}
 	if options.Client != nil {
 		copyClient := *options.Client
@@ -364,7 +399,7 @@ func newRemoteClient(options RemoteOptions) (*remoteClient, error) {
 	if retryTimeout <= 0 {
 		retryTimeout = 5 * time.Minute
 	}
-	return &remoteClient{base: u, client: httpClient, tokenFile: options.TokenFile, retryTimeout: retryTimeout}, nil
+	return &remoteClient{base: u, client: httpClient, tokenFile: options.TokenFile, attemptToken: options.AttemptToken, retryTimeout: retryTimeout}, nil
 }
 
 type runtimeHTTPError struct{ status int }
@@ -415,19 +450,30 @@ func (c *remoteClient) request(ctx context.Context, method, endpoint string, bod
 
 var errRuntimeTransport = errors.New("executor: control-plane transport failed")
 
-func (c *remoteClient) requestOnce(ctx context.Context, method, endpoint string, data []byte, output any) error {
+func (c *remoteClient) workloadToken() (string, error) {
+	if c.attemptToken != "" {
+		return c.attemptToken, nil
+	}
 	file, err := os.Open(c.tokenFile)
 	if err != nil {
-		return errors.New("executor: read workload token failed")
+		return "", errors.New("executor: read workload token failed")
 	}
 	tokenBytes, readErr := io.ReadAll(io.LimitReader(file, 16385))
 	closeErr := file.Close()
 	if readErr != nil || closeErr != nil || len(tokenBytes) > 16384 {
-		return errors.New("executor: invalid workload token file")
+		return "", errors.New("executor: invalid workload token file")
 	}
 	token := strings.TrimSpace(string(tokenBytes))
 	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return errors.New("executor: invalid workload token")
+		return "", errors.New("executor: invalid workload token")
+	}
+	return token, nil
+}
+
+func (c *remoteClient) requestOnce(ctx context.Context, method, endpoint string, data []byte, output any) error {
+	token, err := c.workloadToken()
+	if err != nil {
+		return err
 	}
 	u := *c.base
 	u.Path += endpoint

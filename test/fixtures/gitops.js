@@ -42,6 +42,12 @@ https.createServer({key:fs.readFileSync('/tls/tls.key'),cert:fs.readFileSync('/t
     let body={};try{const data=Buffer.concat(chunks);if(data.length)body=JSON.parse(data);}catch{return send({error:'json'},400);}
     try {
       if(u.pathname==='/healthz')return send({ok:true});
+      if(u.pathname==='/image-only' && req.method==='POST') {
+        const old=exists('refs/heads/main');
+        const tr=tree(old,[{path:'apps/deployment.yaml',content:JSON.stringify(body)}]);
+        const sha=git(['commit-tree',tr,'-p',old],{input:'adopt existing runtime image fields\n'});
+        git(['update-ref','refs/heads/main',sha,old]);return send({sha});
+      }
       if(u.pathname.startsWith('/merge/') && req.method==='POST') {
         const pr=prs[Number(u.pathname.split('/').pop())-1],ref='refs/heads/'+pr.base.ref,old=exists(ref);
         const tr=git(['show','--format=%T','-s',pr.head.sha]);

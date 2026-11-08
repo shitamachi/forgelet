@@ -34,6 +34,11 @@ func (s *Server) attachDeployments(plans []run.Plan, e run.Event) ([]run.Plan, e
 		}
 		bindings = append(bindings, workflow.DeploymentBinding{Target: t.Name, Job: t.OnSuccess.Job, Profile: t.OnSuccess.Profile})
 	}
+	if len(bindings) > 0 {
+		if err := s.validateExternalPlans(plans); err != nil {
+			return nil, err
+		}
+	}
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].Target < bindings[j].Target })
 	return workflow.AttachDeployments(plans, bindings)
 }

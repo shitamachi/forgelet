@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,6 +42,27 @@ func TestFluxManifestDownload(t *testing.T) {
 			}
 			if !tc.wantError && string(data) != "kind: Namespace\n" {
 				t.Fatalf("unexpected manifest: %q", data)
+			}
+		})
+	}
+}
+
+func TestCachedFluxManifestRejectsChangedOrOversizedInput(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		message string
+	}{
+		{"changed", []byte("untrusted manifest"), "checksum differs"},
+		{"oversized", make([]byte, (4<<20)+1), "exceeds 4 MiB"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "install.yaml")
+			if err := os.WriteFile(file, tc.data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cachedFluxManifest(file); err == nil || !strings.Contains(err.Error(), tc.message) {
+				t.Fatal(err)
 			}
 		})
 	}

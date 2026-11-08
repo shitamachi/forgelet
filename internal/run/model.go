@@ -110,6 +110,11 @@ type CallInput struct {
 	Value    any    `json:"value"`
 }
 type Plan struct {
+	External                bool           `json:"external,omitempty"`
+	FallbackProfile         string         `json:"fallback_profile,omitempty"`
+	ExternalBuild           *ExternalBuild `json:"external_build,omitempty"`
+	AutomaticDeployment     string         `json:"automatic_deployment,omitempty"`
+	ExternalDeploymentImage string         `json:"external_deployment_image,omitempty"`
 	// Explicitly selected mirrors are a fixed administrator-owned snapshot.
 	ImageMirrorsSelected bool              `json:"image_mirrors_selected,omitempty"`
 	ImageMirrors         map[string]string `json:"image_mirrors,omitempty"`
@@ -171,6 +176,9 @@ type Plan struct {
 }
 
 type Job struct {
+	AttemptID       string             `json:"attempt_id,omitempty"`
+	RunnerID        string             `json:"runner_id,omitempty"`
+	LeaseUntil      time.Time          `json:"lease_until,omitzero"`
 	CancelReason    string             `json:"cancel_reason,omitempty"`
 	ReservedAt      time.Time          `json:"reserved_at,omitzero"`
 	ClaimedAt       time.Time          `json:"claimed_at,omitzero"`

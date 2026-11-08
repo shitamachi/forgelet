@@ -35,8 +35,8 @@ func (s *Store) AppendProgress(ctx context.Context, id, uid string, e run.Progre
 		if err != nil {
 			return err
 		}
-		if uid == "" || job.PodUID != uid {
-			return fmt.Errorf("progress Pod identity: %w", ErrConflict)
+		if !validExecution(job, uid) {
+			return fmt.Errorf("progress execution identity: %w", ErrConflict)
 		}
 		var old []byte
 		err = tx.QueryRowContext(ctx, "SELECT digest FROM progress_events WHERE job_id=? AND seq=?", id, e.Seq).Scan(&old)

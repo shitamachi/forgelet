@@ -158,3 +158,47 @@ func TestBuildUsesExporterDigestAndConfiguredDestination(t *testing.T) {
 		t.Fatal("unregistered destination")
 	}
 }
+
+func TestPodBuildUsesControllerPlatform(t *testing.T) {
+	workspace := t.TempDir()
+	writeActionFile(t, workspace, "Dockerfile", "FROM scratch\n")
+	binary := filepath.Join(t.TempDir(), "buildctl")
+	digest := "sha256:" + strings.Repeat("a", 64)
+	script := `#!/bin/sh
+platform=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    platform=*) platform="$1";;
+    --metadata-file) shift; printf '%s' '{"containerimage.digest":"` + digest + `"}' > "$1";;
+  esac
+  shift
+done
+test "$platform" = platform=linux/amd64
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const image = "ghcr.io/test/app"
+	plans, err := workflow.Compile([]byte(`on: push
+jobs:
+  build:
+    runs-on: test
+    steps:
+      - uses: forgelet/build@v1
+        with: {image: ghcr.io/test/app}
+`), run.Event{Repository: "o/r", SHA: strings.Repeat("a", 40), Ref: "refs/heads/main"}, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := plans[0]
+	plan.ExternalBuild = &run.ExternalBuild{Image: image, Platform: "linux/amd64"}
+	opts := Options{Workspace: workspace, Buildctl: binary, BuildAddress: "unix:///tmp/test.sock", BuildImages: []string{image}}
+	result, err := Execute(t.Context(), plan, opts)
+	if err != nil || result.State != run.Succeeded {
+		t.Fatal(result, err)
+	}
+	plan.Steps[0].Action.Inputs["build-args"] = "TARGETARCH=arm64"
+	if result, err := Execute(t.Context(), plan, opts); err == nil && result.State == run.Succeeded {
+		t.Fatal("workflow overrode the controller-owned platform")
+	}
+}

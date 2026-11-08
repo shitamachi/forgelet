@@ -17,6 +17,6 @@ func (s *Server) appendProgress(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid progress event", http.StatusBadRequest)
 		return
 	}
-	err = s.store.AppendProgress(r.Context(), job.ID, who.PodUID, e)
+	err = s.store.AppendProgress(r.Context(), job.ID, who.id, e)
 	respond(w, map[string]int64{"seq": e.Seq}, err)
 }

@@ -60,7 +60,7 @@ https.createServer({key: fs.readFileSync('/tls/tls.key'), cert: fs.readFileSync(
   if(businessRepo)return send({id:1001,name:businessRepo,full_name:'shitamachi/'+businessRepo,private:true,html_url:'https://github.com/shitamachi/'+businessRepo,default_branch:'main',description:'Original business workflow acceptance',license:null,owner:{login:'shitamachi'}});
   if (url.pathname === '/installation/repositories') {
     if (/integration-installation-token-8$/i.test(req.headers.authorization || '')) return send({total_count:1,repositories:[{id:21,full_name:'test-other/project',default_branch:'main'}]});
-    const repositories=[...(authorizationMode==='removed'?[]:[{id:11,full_name:'test/project',default_branch:'main'}]),{id:12,full_name:'test/console',default_branch:'main'},{id:13,full_name:'test/onboarding',default_branch:'main'},...(oauthGranted?[{id:14,full_name:'test/oauth',default_branch:'main'}]:[]),...['steam-admin-web','steam-admin','steam-platform-web','steam-login','steam-api'].map((name,i)=>({id:1001+i,full_name:'shitamachi/'+name,default_branch:'main'}))];
+    const repositories=[...(authorizationMode==='removed'?[]:[{id:11,full_name:'test/project',default_branch:'main'}]),{id:12,full_name:'test/console',default_branch:'main'},{id:13,full_name:'test/onboarding',default_branch:'main'},{id:15,full_name:'test/runner-other',default_branch:'main'},...(oauthGranted?[{id:14,full_name:'test/oauth',default_branch:'main'}]:[]),...['steam-admin-web','steam-admin','steam-platform-web','steam-login','steam-api'].map((name,i)=>({id:1001+i,full_name:'shitamachi/'+name,default_branch:'main'}))];
     return send({total_count:repositories.length,repositories});
   }
   if (url.pathname === '/repos/test/project/pulls/12') {

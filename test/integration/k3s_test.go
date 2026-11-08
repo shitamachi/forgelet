@@ -170,7 +170,7 @@ func TestK3sConcurrentExecution(t *testing.T) {
 	httpClient := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: caPool, ServerName: "forgelet.forgelet.svc"}}}
 	defer httpClient.CloseIdleConnections()
 	// Install the actual shipped manifests, replacing only local image/config, test credentials and service exposure.
-	install(t, ctx, client, filepath.Join(root, "deploy/install.yaml"), image, cert, key)
+	install(t, ctx, client, filepath.Join(root, "deploy/install.yaml"), image, cert, key, configureExternalFixture)
 	endpoint, err := cluster.PortEndpoint(ctx, "30080/tcp", "https")
 	must(t, err)
 
@@ -214,6 +214,7 @@ func TestK3sConcurrentExecution(t *testing.T) {
 		return item
 	}
 	testWorkflowCalls(t, ctx, cluster, client, httpClient, endpoint, root, request, get)
+	testExternalRunner(t, ctx, client, httpClient, endpoint, create, get)
 	t.Run("resolved needs plan stays below the claim limit", func(t *testing.T) {
 		producer := func(key string) string {
 			return fmt.Sprintf(`  %s:
@@ -675,7 +676,7 @@ func testCertificate(t *testing.T) ([]byte, []byte) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 }
 
-func install(t *testing.T, ctx context.Context, client *kubernetes.Clientset, path, image string, cert, key []byte) {
+func install(t *testing.T, ctx context.Context, client *kubernetes.Clientset, path, image string, cert, key []byte, configure ...func(*corev1.ConfigMap)) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	must(t, err)
@@ -724,6 +725,9 @@ func install(t *testing.T, ctx context.Context, client *kubernetes.Clientset, pa
 			v.Data["github.js"] = string(script)
 			v.Data["forgelet.yaml"] = strings.Replace(v.Data["forgelet.yaml"], "profiles:\n", fmt.Sprintf("profiles:\n  builder:\n    image: %s\n    build:\n      images: [%s]\n      insecure_registry: true\n      registry_secret: forgelet-registry\n", image, registryImage(t, ctx, client)), 1)
 
+			for _, change := range configure {
+				change(v)
+			}
 			_, configErr := yaml.ToJSON([]byte(v.Data["forgelet.yaml"]))
 			must(t, configErr)
 			_, err = client.CoreV1().ConfigMaps("forgelet").Create(ctx, v, metav1.CreateOptions{})

@@ -5,6 +5,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +93,13 @@ func downloadFluxManifest(ctx context.Context, client *http.Client, url string) 
 
 func installFlux(t *testing.T, ctx context.Context, cluster testcontainers.Container) {
 	t.Helper()
-	data, err := downloadFluxManifest(ctx, &http.Client{Timeout: time.Minute}, "https://github.com/fluxcd/flux2/releases/download/v2.6.4/install.yaml")
+	var data []byte
+	var err error
+	if cached := os.Getenv("FORGELET_TEST_FLUX_MANIFEST"); cached != "" {
+		data, err = cachedFluxManifest(cached)
+	} else {
+		data, err = downloadFluxManifest(ctx, &http.Client{Timeout: time.Minute}, "https://github.com/fluxcd/flux2/releases/download/v2.6.4/install.yaml")
+	}
 	must(t, err)
 	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
 	var manifest bytes.Buffer
@@ -124,6 +132,27 @@ func installFlux(t *testing.T, ctx context.Context, cluster testcontainers.Conta
 	applyInCluster(t, ctx, cluster, manifest.Bytes())
 	clusterCommand(t, ctx, cluster, "kubectl", "-n", "flux-system", "rollout", "status", "deployment/source-controller", "--timeout=180s")
 	clusterCommand(t, ctx, cluster, "kubectl", "-n", "flux-system", "rollout", "status", "deployment/kustomize-controller", "--timeout=180s")
+}
+
+// The optional preload is the unmodified v2.6.4 release asset. Its digest is
+// published by GitHub's release API; never accept an edited installation file.
+func cachedFluxManifest(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open cached Flux manifest: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read cached Flux manifest: %w", err)
+	}
+	if len(data) > 4<<20 {
+		return nil, fmt.Errorf("cached Flux manifest exceeds 4 MiB")
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != "7cd043a823666727b4b9de408346148b28741b47eb0b3e4237ab7259d4ad3ab8" {
+		return nil, fmt.Errorf("cached Flux manifest checksum differs from official v2.6.4 asset")
+	}
+	return data, nil
 }
 
 func testFluxDelivery(t *testing.T, ctx context.Context, cluster testcontainers.Container, client *kubernetes.Clientset, httpClient *http.Client, endpoint, root, image, goodDigest, source string, request func(*testing.T, string, string, any, int) []byte, create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
@@ -205,6 +234,47 @@ spec:
 	if confirmed.Commit == "" || confirmed.ObservedRevision != confirmed.Revision {
 		t.Fatal(confirmed)
 	}
+	t.Run("image-only adoption preserves runtime configuration", func(t *testing.T) {
+		app, err := client.AppsV1().Deployments("forgelet").Get(ctx, "phase3-app", metav1.GetOptions{})
+		must(t, err)
+		app.Spec.Template.Spec.Containers[0].Env = append(app.Spec.Template.Spec.Containers[0].Env, corev1.EnvVar{Name: "ADOPTION_SENTINEL", Value: "preserved"})
+		app, err = client.AppsV1().Deployments("forgelet").Update(ctx, app, metav1.UpdateOptions{})
+		must(t, err)
+		runtime, err := json.Marshal(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]string{"name": "phase3-app", "namespace": "forgelet"}, "spec": app.Spec})
+		must(t, err)
+		must(t, cluster.CopyToContainer(ctx, runtime, "/tmp/adoption-runtime.json", 0600))
+		clusterCommand(t, ctx, cluster, "kubectl", "apply", "--server-side", "--field-manager=forgelet-runtime-config", "-f", "/tmp/adoption-runtime.json")
+		body, err := json.Marshal(map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "phase3-app", "namespace": "forgelet", "annotations": map[string]string{"kustomize.toolkit.fluxcd.io/ssa": "Merge"}}, "spec": map[string]any{"selector": app.Spec.Selector, "template": map[string]any{"metadata": map[string]any{"labels": app.Spec.Template.Labels}, "spec": map[string]any{"containers": []map[string]string{{"name": "app", "image": "app"}}}}}})
+		must(t, err)
+		js := `const https=require('https'),fs=require('fs');const r=https.request({hostname:'localhost',port:9443,path:'/image-only',method:'POST',ca:fs.readFileSync('/tls/tls.crt')},s=>{s.pipe(process.stdout);s.on('end',()=>process.exit(s.statusCode===200?0:1));});r.on('error',()=>process.exit(1));r.end(process.argv[1]);`
+		clusterCommand(t, ctx, cluster, "kubectl", "exec", "-n", "forgelet", "git-fixture", "--", "node", "-e", js, string(body))
+		waitFor(t, ctx, "image-only GitOps revision applied and healthy", func() bool {
+			raw, err := client.RESTClient().Get().AbsPath("/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/forgelet/kustomizations/phase3").DoRaw(ctx)
+			if err != nil {
+				return false
+			}
+			var applied struct {
+				Status struct {
+					Revision   string             `json:"lastAppliedRevision"`
+					Conditions []metav1.Condition `json:"conditions"`
+				} `json:"status"`
+			}
+			if json.Unmarshal(raw, &applied) != nil || delivery.RevisionSHA(applied.Status.Revision) == confirmed.ObservedRevision {
+				return false
+			}
+			for _, condition := range applied.Status.Conditions {
+				if condition.Type == "Ready" && condition.Status == metav1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		})
+		adopted, err := client.AppsV1().Deployments("forgelet").Get(ctx, "phase3-app", metav1.GetOptions{})
+		must(t, err)
+		if !reflect.DeepEqual(adopted.Spec, app.Spec) {
+			t.Fatal("image-only adoption changed existing runtime configuration")
+		}
+	})
 	// Build a valid image whose application fails. CI success must not imply CD health.
 	badSource := strings.Replace(source, `CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]`, `CMD ["false"]`, 1)
 	badBuild := create(t, badSource)

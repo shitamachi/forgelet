@@ -235,7 +235,7 @@ func (s *Store) RecordPod(ctx context.Context, id, uid string) error {
 		if err != nil {
 			return err
 		}
-		if uid == "" || (job.PodUID != "" && job.PodUID != uid) || job.State == run.Queued || (job.State.Terminal() && job.PodUID == "") {
+		if job.Plan.External || uid == "" || (job.PodUID != "" && job.PodUID != uid) || job.State == run.Queued || (job.State.Terminal() && job.PodUID == "") {
 			return fmt.Errorf("record Pod for %s: %w", id, ErrConflict)
 		}
 		job.PodUID = uid
@@ -250,10 +250,13 @@ func (s *Store) Claim(ctx context.Context, id, uid string) (run.Plan, error) {
 		if err != nil {
 			return err
 		}
-		if uid == "" || (job.PodUID != "" && job.PodUID != uid) || (job.State != run.Starting && job.State != run.Running) || job.CancelRequested {
+		if !canClaim(job, uid) || (job.State != run.Starting && job.State != run.Running) || job.CancelRequested {
 			return fmt.Errorf("claim job %s: %w", id, ErrConflict)
 		}
-		job.PodUID, job.State = uid, run.Running
+		if !job.Plan.External {
+			job.PodUID = uid
+		}
+		job.State = run.Running
 		if job.ClaimedAt.IsZero() {
 			job.ClaimedAt = time.Now().UTC()
 		}
@@ -298,15 +301,19 @@ func (s *Store) Interrupt(ctx context.Context, id, reason string) error {
 		if job.State.Terminal() {
 			return nil
 		}
-		var last int64
-		if err := tx.QueryRowContext(ctx, "SELECT COALESCE(max(seq),0) FROM logs WHERE job_id=?", id).Scan(&last); err != nil {
-			return fmt.Errorf("read final log sequence: %w", err)
-		}
-		job.State = run.Interrupted
-		if job.CancelRequested {
-			job.State = run.Cancelled
-		}
-		job.Result = &run.Result{State: job.State, Error: reason, LastLogSeq: last}
-		return saveTerminalJob(ctx, tx, job)
+		return interruptJob(ctx, tx, job, reason)
 	})
+}
+
+func interruptJob(ctx context.Context, tx *sql.Tx, job run.Job, reason string) error {
+	var last int64
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(max(seq),0) FROM logs WHERE job_id=?", job.ID).Scan(&last); err != nil {
+		return fmt.Errorf("read final log sequence: %w", err)
+	}
+	job.State = run.Interrupted
+	if job.CancelRequested {
+		job.State = run.Cancelled
+	}
+	job.Result = &run.Result{State: job.State, Error: reason, LastLogSeq: last}
+	return saveTerminalJob(ctx, tx, job)
 }

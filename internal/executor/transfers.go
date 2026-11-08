@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/shitamachi/forgelet/internal/blob"
@@ -68,9 +67,9 @@ func (c *remoteClient) transferOnce(ctx context.Context, method, kind string, q 
 		defer func() { _ = f.Close() }()
 		body = f
 	}
-	token, err := os.ReadFile(c.tokenFile)
-	if err != nil || len(token) > 16384 {
-		return entry, fmt.Errorf("cannot read workload token")
+	token, err := c.workloadToken()
+	if err != nil {
+		return entry, err
 	}
 	u := *c.base
 	u.Path += "/blobs/" + kind
@@ -79,7 +78,7 @@ func (c *remoteClient) transferOnce(ctx context.Context, method, kind string, q 
 	if err != nil {
 		return entry, err
 	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/x-tar")
 	client := *c.client
 	client.Timeout = 2 * time.Minute

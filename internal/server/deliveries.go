@@ -37,6 +37,10 @@ func (s *Server) requestDelivery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "deployment target is not permitted for this repository/ref/event", http.StatusForbidden)
 		return
 	}
+	if image := job.Plan.ExternalDeploymentImage; image != "" && (target.Name != job.Plan.AutomaticDeployment || target.Image != image) {
+		http.Error(w, "automatic deployment image policy changed", http.StatusConflict)
+		return
+	}
 	now := s.now().UTC()
 	item := delivery.Record{ID: delivery.ID(job.RunID, target.Name), Target: target, RunID: job.RunID, JobID: job.ID, Digest: input.Digest, State: delivery.Queued, CreatedAt: now, UpdatedAt: now}
 	saved, err := s.cfg.Delivery.Store.EnqueueDelivery(r.Context(), item)

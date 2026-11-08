@@ -70,6 +70,11 @@ type config struct {
 	TLSKeyFile           string                     `yaml:"tls_key_file"`
 	CASecret             string                     `yaml:"runtime_ca_secret"`
 	AllowInsecureRuntime bool                       `yaml:"allow_insecure_runtime"`
+
+	ExternalRunners map[string]server.ExternalRunner `yaml:"external_runners"`
+	ExternalBuilds  []server.ExternalBuildPolicy     `yaml:"external_builds"`
+	PreferRunner    *bool                            `yaml:"prefer_runner"`
+	RunnerFallbacks map[string]string                `yaml:"runner_fallbacks"`
 }
 
 func main() {
@@ -321,7 +326,7 @@ func serve(ctx context.Context, path string) error {
 			return err
 		}
 	}
-	app, err := server.New(server.Config{PackageTokens: cfg.PackageTokens, GitHubAPIURL: cfg.GitHubAPIURL, ActionResolver: &action.Resolver{APIURL: cfg.ActionAPIURL}, RepositoryTokens: cfg.RepositoryTokens, Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, DataDir: cfg.DataDir}, db, runtime, provider)
+	app, err := server.New(server.Config{PackageTokens: cfg.PackageTokens, GitHubAPIURL: cfg.GitHubAPIURL, ActionResolver: &action.Resolver{APIURL: cfg.ActionAPIURL}, RepositoryTokens: cfg.RepositoryTokens, Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, ExternalRunners: cfg.ExternalRunners, ExternalBuilds: cfg.ExternalBuilds, PreferRunner: cfg.PreferRunner, RunnerFallbacks: cfg.RunnerFallbacks, DataDir: cfg.DataDir}, db, runtime, provider)
 	if err != nil {
 		return err
 	}

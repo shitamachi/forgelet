@@ -138,7 +138,8 @@ func TestConsoleConfigurationExcludesCredentials(t *testing.T) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Profiles) != 2 || result.Profiles[0].Name != "builder" || !result.Profiles[0].Build || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
+	if len(result.Profiles) != 3 || result.Profiles[0].Name != "builder" || !result.Profiles[0].Build ||
+		result.Profiles[1].Name != run.MacRunnerLabel || result.Profiles[1].Build || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
 		t.Fatalf("config: %s", body)
 	}
 }
