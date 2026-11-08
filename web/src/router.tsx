@@ -9,6 +9,7 @@ const NewRun = lazy(() => import('./pages/new-run'))
 const Deployments = lazy(() => import('./pages/deployments'))
 const DeploymentDetail = lazy(() => import('./pages/deployment-detail'))
 const Repositories = lazy(() => import('./pages/repositories'))
+const Runners = lazy(() => import('./pages/runners'))
 const Configuration = lazy(() => import('./pages/configuration'))
 const Account = lazy(() => import('./pages/account'))
 const System = lazy(() => import('./pages/system'))
@@ -118,6 +119,15 @@ const routes = [
     component: () => (
       <Suspense fallback={<Loading />}>
         <Repositories />
+      </Suspense>
+    ),
+  }),
+  createRoute({
+    getParentRoute: () => root,
+    path: '/runners',
+    component: () => (
+      <Suspense fallback={<Loading />}>
+        <Runners />
       </Suspense>
     ),
   }),

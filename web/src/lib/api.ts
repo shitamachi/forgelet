@@ -7,6 +7,8 @@ import type {
   LogChunk,
   ManualRun,
   Run,
+  Runner,
+  RunnerCredential,
 } from './types'
 
 export class APIError extends Error {
@@ -104,6 +106,13 @@ export const api = {
       body: JSON.stringify({ repository, sha }),
     }),
   config: (signal?: AbortSignal) => request<Configuration>('/config', { signal }),
+  runners: (signal?: AbortSignal) => request<Runner[]>('/runners', { signal }),
+  registerRunner: (name: string) =>
+    request<RunnerCredential>('/runners', { method: 'POST', body: JSON.stringify({ name }) }),
+  pauseRunner: (name: string, paused: boolean) =>
+    request(`/runners/${part(name)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
+  rotateRunner: (name: string) =>
+    request<RunnerCredential>(`/runners/${part(name)}/rotate`, { method: 'POST', body: '{}' }),
   status: (signal?: AbortSignal) => request<{ disk: DiskStatus }>('/status', { signal }),
   runs: async (signal?: AbortSignal) => (await request<Run[] | null>('/runs', { signal })) ?? [],
   run: (id: string, signal?: AbortSignal) => request<Run>(`/runs/${part(id)}`, { signal }),

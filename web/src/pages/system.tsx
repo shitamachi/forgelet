@@ -143,6 +143,11 @@ export default function System() {
         <section className="panel detail-panel">
           <h2>执行环境</h2>
           <p className="section-note">全局最多 {config.data?.max_parallel ?? '—'} 个并发任务。</p>
+          {config.data?.prefer_runner != null && (
+            <p className="section-note">
+              {config.data.prefer_runner ? '兼容任务优先交给 Runner' : '兼容任务由集群执行'}
+            </p>
+          )}
           {config.data?.profiles.map((p) => (
             <div className="profile-item" key={p.name}>
               <div className="split">
@@ -150,6 +155,7 @@ export default function System() {
                 {p.build && <span className="tag">BuildKit</span>}
               </div>
               <code>{p.image}</code>
+              {p.fallback_profile && <p>集群回退 {p.fallback_profile}</p>}
             </div>
           ))}
         </section>

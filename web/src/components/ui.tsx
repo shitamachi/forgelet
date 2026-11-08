@@ -32,9 +32,13 @@ const statusLabels: Record<string, string> = {
   superseded: '已被替代',
   conflict: '发布冲突',
   pending: '未开始',
+  online: '在线',
+  offline: '离线',
+  busy: '执行中',
+  paused: '暂停接单',
 }
 export function Status({ state, small = false }: { state: string; small?: boolean }) {
-  const Icon = ['success', 'deployed'].includes(state)
+  const Icon = ['success', 'deployed', 'online'].includes(state)
     ? CircleCheck
     : ['failure', 'conflict', 'interrupted', 'timed_out'].includes(state)
       ? CircleX

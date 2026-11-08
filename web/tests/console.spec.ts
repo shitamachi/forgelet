@@ -5,6 +5,72 @@ test.beforeEach(async ({ request }) => {
   await request.post('/__test/reset')
 })
 
+test('runner inventory shows live jobs and manages credentials and intake', async ({ page }) => {
+  let registered = false
+  let paused = false
+  const token = 'frr_' + 'a'.repeat(64)
+  await page.route('**/api/runners**', async (route) => {
+    const request = route.request()
+    if (request.method() === 'GET') {
+      await route.fulfill({
+        json: [
+          {
+            name: 'lab-mac',
+            source: 'yaml',
+            status: 'busy',
+            paused: false,
+            run_id: 'run-success',
+          },
+          ...(registered
+            ? [
+                {
+                  name: 'new-mac',
+                  source: 'web',
+                  status: paused ? 'paused' : 'offline',
+                  paused,
+                },
+              ]
+            : []),
+        ],
+      })
+    } else if (request.method() === 'PUT') {
+      paused = request.postDataJSON().paused
+      await route.fulfill({ json: { paused } })
+    } else {
+      if (!request.url().endsWith('/rotate'))
+        expect(request.postDataJSON()).toEqual({ name: 'new-mac' })
+      registered = true
+      await route.fulfill({ json: { name: 'new-mac', token } })
+    }
+  })
+  await page.goto('/runners')
+  const busy = page.getByRole('article', { name: 'lab-mac' })
+  await expect(busy.getByText('执行中')).toBeVisible()
+  await expect(busy.getByRole('link', { name: '查看当前任务' })).toHaveAttribute(
+    'href',
+    '/runs/run-success',
+  )
+  await expect(busy.getByRole('button', { name: '轮换凭据' })).toBeDisabled()
+  await page.getByRole('button', { name: '登记 Runner' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('设备名称').fill('new-mac')
+  await dialog.getByRole('button', { name: '登记 Runner' }).click()
+  await expect(dialog.getByLabel('仅显示一次')).toHaveValue(token)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  const row = page.getByRole('article', { name: 'new-mac' })
+  await expect(row.getByText('离线')).toBeVisible()
+  await row.getByRole('button', { name: '暂停接单' }).click()
+  await dialog.getByRole('button', { name: '暂停接单' }).click()
+  await expect(row.getByRole('button', { name: '恢复接单' })).toBeVisible()
+  await row.getByRole('button', { name: '轮换凭据' }).click()
+  await dialog.getByRole('button', { name: '轮换凭据' }).click()
+  await expect(dialog.getByLabel('仅显示一次')).toHaveValue(token)
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(page.getByLabel('仅显示一次')).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
 test('overview, URL filters, deep-link refresh and responsive navigation', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))

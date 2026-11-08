@@ -179,6 +179,8 @@ export default function RunDetail() {
                     <Status state={job.state} small />
                     <span>
                       {job.profile}
+                      {job.runner_id ? ` · ${job.runner_id}` : ''}
+                      {job.plan.external_build ? ` · 镜像 ${job.plan.external_build.platform}` : ''}
                       {job.plan.needs?.length ? ` · needs: ${job.plan.needs.join(', ')}` : ''}
                     </span>
                   </button>

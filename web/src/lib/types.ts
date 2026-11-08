@@ -55,6 +55,7 @@ export interface Job {
   name: string
   profile: string
   pod_name: string
+  runner_id?: string
   pod_uid?: string
   state: RunState
   cancel_reason?: string
@@ -64,6 +65,7 @@ export interface Job {
   logs_expired?: boolean
   plan: {
     control?: string
+    external_build?: { platform: string }
     key: string
     group?: string
     workflow_name?: string
@@ -137,11 +139,33 @@ export interface Delivery {
   url?: string
   rollback_of?: string
 }
+export interface Runner {
+  name: string
+  source: 'yaml' | 'web'
+  status: 'online' | 'offline' | 'busy' | 'paused'
+  paused: boolean
+  last_seen?: string
+  job_id?: string
+  run_id?: string
+}
+
+export interface RunnerCredential {
+  name: string
+  token: string
+}
+
 export interface Configuration {
   repositories: string[]
-  profiles: { name: string; image: string; build: boolean; image_groups?: string[] }[]
+  profiles: {
+    name: string
+    image: string
+    build: boolean
+    image_groups?: string[]
+    fallback_profile?: string
+  }[]
   targets: Target[]
   max_parallel: number
+  prefer_runner?: boolean
   features: { github: boolean; secrets: boolean; artifacts: boolean; delivery: boolean }
   retention: { history: number; logs: number; events: number; backups: number }
 }

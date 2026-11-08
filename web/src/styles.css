@@ -1216,6 +1216,56 @@ select {
 .field-label {
   margin-top: 20px;
 }
+.runner-list {
+  padding: 0 20px;
+}
+.runner-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: start;
+  padding: 20px 0;
+  overflow-wrap: anywhere;
+}
+.runner-row + .runner-row {
+  border-top: 1px solid var(--border);
+}
+.runner-row h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.runner-row p {
+  margin: 6px 0;
+  color: #5f6e86;
+}
+.runner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.status-online {
+  color: #137453;
+  background: #e9f8f0;
+}
+.status-busy {
+  color: #2750ac;
+  background: #edf3ff;
+}
+.status-paused {
+  color: #925a17;
+  background: #fff4e3;
+}
+@media (max-width: 950px) {
+  .runner-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .runner-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+}
 .field-hint {
   font-size: 11px;
   color: #5f6e86;
