@@ -1,0 +1,25 @@
+name: admin-api
+on:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ['v*']
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: '1.72.0'
+      - run: make generate
+      - run: git diff --exit-code -- api openapi buf.lock
+      - run: make check
+      - run: make build
