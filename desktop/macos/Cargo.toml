@@ -1,0 +1,12 @@
+[package]
+name = "forgelet-desktop"
+version = "0.5.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3", default-features = false }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3", default-features = false }
+nsh-platform-macos = { git = "https://github.com/longbridge/nsh", rev = "e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

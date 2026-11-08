@@ -60,3 +60,7 @@ images:
 
 clean:
 	rm -rf "$(BIN_DIR)"
+
+.PHONY: runner-macos
+runner-macos:
+	sh desktop/macos/package.sh
