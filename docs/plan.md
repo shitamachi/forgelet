@@ -315,5 +315,8 @@ Owner授权对齐并推送本地已提交业务代码；未提交改动保留原
 - [x] **Mac Runner 共享队列**。设备仅凭凭据接单，`macos-arm64` 任务跨仓库调度，镜像策略独立配置。兼容原登记和任务标签。控制面发布单独记录。
 - [x] **共享队列 homelab 验收**。部署新版控制面并安装 Mac 0.4.1，使用原设备凭据和无 Profile 的连接配置，从 Finder 启动后完成另一个私有仓库的真实任务，核对 Go 测试、产物和 GitHub Check。
 - [x] **Runner 优先与集群回退**。为可移植任务提供默认开启的 Runner 优先策略和 native Pod 回退。两端使用同一控制面镜像平台，核对 registry 后放行自动部署。真实临时 k3s 验证双路径，实际 homelab 发布另行记录。
+- [x] **设备视图与按余量分配**。Runners 页按设备展示状态、上次在线、队列标签、系统与执行后端、内存与负载，以及运行中任务的标题和时长。设备每 30 秒以少量系统调用自述，离线保留上次报告；多台空闲设备时余量更多者优先接单，其余让行一轮后重试。真实 homelab 用两台 Windows 设备验证展示、并行分配与离线保留；跨主机负载差异下的让行目前只有单测覆盖（本机两台设备共享宿主指标）。设备可在 Web 移除，配置文件登记与持有租约的设备受保护。
+- [x] **配对码接入与去 profile**。桌面端显示一次性配对码，Web 批准后自动取得凭据；删除 `external_runners` 配置文件登记与 per-device policy，一台机器一个 runner。Runners 页改为暂停/开始加三点菜单，状态文案统一为空闲/运行中/离线/已暂停。真实 homelab 重配 Windows 设备并完成 `steam-admin-web` 任务；Windows 应用配对界面已逐屏核对。macOS 源码已同步改造，但本机无 macOS 工具链，待 Mac 上构建验证。
+- [ ] **15.3 Windows WSLC 桌面端（代码已实现，待真实 Windows 验收）**。NSH Windows 应用、Go WSLC 监督进程、Linux 容器执行器和 `wslc build` 镜像配方已交付。轮询声明 `linux-<arch>-wslc` 能力标签，控制面按标签路由，不再由 Mac 领走 Linux 容器任务。容器按 attempt 命名并带所有权标签，配置和 CA 经 stdin 传入，取消先关 stdin 再 stop，强退遗留容器下次启动清理。Windows 本机已通过：Windows/Linux/Darwin 三目标 `go build`、`wslc` 与标签单测、NSH 应用编译与 4 项 Rust 单测、`wslc build` 实际镜像、真实容器成功/取消专项（`go test -tags=wslc`），以及 Linux 容器内 `go test ./internal/storage ./internal/server`。待真实 Windows 专用账户完成私网 DNS/TLS、固定 digest、启停与睡眠唤醒验收，并跑临时 k3s 外部 Runner 协议场景。
 
 各项随实现运行 `make verify` 及相关 `make test-integration` 场景。真实临时 k3s 同时运行 Pod 和外部 agent，覆盖控制面重启、网络故障、取消和失效凭据。Mac、WSL2 和 WSLC 的平台验收分别记录。

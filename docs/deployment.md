@@ -53,26 +53,11 @@ make runner-macos
 open 'bin/Forgelet Runner.app'
 ```
 
-在 Web 的 **Runners** 为设备填写名称并登记，保存一次性显示的设备凭据。也可以由管理员在 YAML 登记，只保存凭据摘要。每台设备使用独立凭据，设备名称用于识别心跳和执行记录。
+一台机器就是一个 Runner，不再需要在配置文件中登记。打开应用只填控制面地址，点「开始」后应用显示一个配对码；在 Web 的 **Runners → 等待批准** 里核对主机名并点「批准」，设备随即取得凭据并开始领取任务。凭据由执行器保存在本机缓存目录，无需手写配置；管理员移除或轮换凭据后，设备会重新显示配对码。
 
-```sh
-runner_token="frr_$(openssl rand -hex 32)"
-printf '%s' "$runner_token" | shasum -a 256
-printf '%s' "$runner_token" | pbcopy
-unset runner_token
-```
+在 Forgelet 中启用仓库及对应工作流。工作流使用 `runs-on: macos-arm64` 进入共享队列，任何在线设备都可接单。受信分支 push 和管理端手动触发支持 shell、原生 checkout 和 artifact。内网入口将 `/runner/v1/` 转发到 Forgelet，并使用设备信任的 HTTPS 证书。外部 Runner 的 loopback HTTP 仅用于本机开发。
 
-```yaml
-external_runners:
-  build-mac:
-    token_sha256: '<上一步得到的 64 位十六进制摘要>'
-```
-
-在 Forgelet 中启用仓库及对应工作流。工作流使用 `runs-on: macos-arm64` 进入共享队列，任何在线设备都可接单。受信分支 push 和管理端手动触发支持 shell、原生 checkout 和 artifact。内网入口将 `/runner/v1/` 转发到 Forgelet，并使用 Mac 信任的 HTTPS 证书。外部 Runner 的 loopback HTTP 仅用于本机开发。
-
-在专用 macOS 账号下打开应用，填入控制面地址和设备凭据，然后点「开启」。同一窗口内可反复启停，`⌘R` 在运行菜单中执行当前的开启或停止操作。点击停止、关闭窗口或退出会取消本机当前任务。App 每次重新打开默认暂停。
-
-需要从 Finder 直接启用已登记的 Runner 时，在 `~/Library/Application Support/io.forgelet.runner/connection.json` 配置 `url` 和 `token_file`。可选的 `docker` 对象包含 `config`（Docker 配置目录）、`host` 和 `builder`。`token_file` 和 `docker.config` 使用绝对路径，配置文件和凭据文件均使用权限 `0600`。App 打开时载入配置，每次点「开启」时读取凭据文件。升级时可继续使用原 `profile.json`，其中的旧字段可用于连接旧控制面。
+在专用 macOS 账号下打开应用，点「开始」。同一窗口内可反复开始和暂停，`⌘R` 执行当前操作。点「暂停」、关闭窗口或退出会取消本机当前任务。App 每次重新打开默认暂停。
 
 桌面执行器的 Go 构建缓存和模块缓存默认位于 `~/Library/Caches/io.forgelet.runner`，方便从 Finder 启动时直接使用本机可访问的路径。
 
@@ -94,7 +79,7 @@ external_builds:
 
 同一 macOS 账号须能使用 `docker buildx`。加入共享队列的构建设备需要支持任务使用的 Linux 平台，Docker 凭据需要覆盖该设备要推送的镜像路径。同一 registry 可用一个身份为多个获准路径授予推送权限。控制面使用 HTTPS 读取 registry，私有仓库需给控制面单独的只读凭据，例如挂载 Docker `config.json` 并设置 `DOCKER_CONFIG` 为其目录。Kubernetes 工作负载使用部署侧的拉取凭据。临时匿名 HTTP registry 可显式设置 `insecure_registry: true`，并选用支持 BuildKit exporter 直接推送的 builder，例如 `docker-container` driver。
 
-升级时原 YAML 或 SQLite 登记里的设备凭据仍可使用，原来绑定的 workflow 标签和镜像策略也可继续使用。迁移工作流时先添加对应的 `external_builds`，再将 `runs-on` 改为 `macos-arm64`。旧的 YAML 登记字段可在旧任务结束后清理。
+升级时原 SQLite 登记里的设备凭据仍可使用，原来绑定的 workflow 标签和镜像策略也可继续使用。迁移工作流时先添加对应的 `external_builds`，再将 `runs-on` 改为 `macos-arm64`。旧的 `external_runners` 配置文件登记已移除；控制面启动时不会再读取该字段。
 
 ```yaml
 on: push
@@ -160,6 +145,49 @@ curl -fsS https://steam-admin.k.mygo.rocks/healthz
 回滚服务镜像时，先停用 `.github/workflows/image-mac.yml` 的触发并处理该工作流中仍在排队或执行的运行，确认没有同目标的发布仍在推进。打开 **发布** 中当前 `admin-web` 的部署记录，核对「上一 digest」，再点「回滚到上一版本」。Forgelet 创建新的 GitOps 提交。等待该回滚记录显示「已部署」，确认 `forgelet-admin-web` 已应用回滚 revision，并核对 `steam/steam-admin-web` 的镜像、就绪副本与站点 HTTP。若页面报告冲突，先打开最新发布记录，核对其 digest 与当前 GitOps HEAD 后再选择回滚。
 
 若需要恢复由集群构建的主分支发布，在 Forgelet 停用 `.github/workflows/image-mac.yml` 并处理该工作流中仍在排队或执行的运行，再把 `admin-web` 的自动部署来源改回 `.github/workflows/image.yml` 的 `build-push`。在业务仓库用 `git restore --source=94f9fc6 -- .github/workflows/ci.yml .github/workflows/image.yml` 恢复原触发配置，提交并推送到 `main`。该 push 由集群 workflow 构建并提交 GitOps。仅需恢复服务时，优先按上一 digest 回滚。
+
+## Windows 桌面 Runner（WSLC）
+
+Windows 设备不直接在 Windows 账户执行 job：桌面端调用 `wslc.exe`，每次 attempt 启动一个 Linux 容器，容器内的执行器完成领取后的 checkout、步骤、日志和产物。要求 Windows 10 1809+ 或 Windows 11、WSL 2.9.3+（`wsl --version` 或 `wslc.info` 显示的版本），以及到控制面的私网 HTTPS。构建机另需 Go 1.27+ 和 Rust（MSVC 工具链）。
+
+在 Windows 构建机生成应用和 Linux 执行镜像：
+
+```powershell
+pwsh -File desktop/windows/package.ps1
+```
+
+产物是单个 `dist\Forgelet Runner.exe`（Go 执行器由构建脚本编译并内嵌，首次启动写入 `%LOCALAPPDATA%\io.forgelet.runner\bin`，无需安装其他文件），同目录的 `SHA256SUMS.txt` 可用于校验；若未加 `-SkipImage`，还会用 `wslc build` 生成 `forgelet-runner-wslc:dev`。只重建执行镜像时可执行 `make runner-windows-image`；镜像来自 `desktop/windows/image/Dockerfile`，以非 root 用户运行，内含 bash、git、CA 和常用解压工具。
+
+把镜像推送到 Windows 设备可拉取的 registry，并固定 digest：
+
+```powershell
+wslc login zot.k.mygo.rocks -u <用户> --password-stdin
+wslc push zot.k.mygo.rocks/forgelet/runner-wslc:20261109
+wslc inspect --type image zot.k.mygo.rocks/forgelet/runner-wslc:20261109
+```
+
+基础镜像为 `node:24-bookworm`（已含 git、bash、curl 与构建工具），以非 root 的 `node` 用户在 `/workspace` 运行；需要其他工具链时在 `desktop/windows/image/Dockerfile` 中扩展。2026-11-09 的 homelab 验收使用 `zot.k.mygo.rocks/forgelet/runner-wslc@sha256:92be4aa92d382007d205bf835c6994dd7adfa65375d3eccff6b44dc199a1dbfa` 完成了 `steam-admin-web` 的 `npm ci`/类型检查/单测。
+
+设备接入与 macOS 相同：打开应用填控制面地址和执行镜像，点「开始」，在 Web 的 **Runners → 等待批准** 批准配对码；工作流使用 `runs-on: linux-amd64-wslc`。控制面只把这一个内建标签的 job 发给 Windows 设备，`macos-arm64` 与可移植标签的路由保持不变。
+
+应用把控制面地址、执行镜像、可选的 CPU/内存等设置保存在自己管理的 `%APPDATA%\io.forgelet.runner\settings.json`，配对成功后执行器把凭据写进 `%LOCALAPPDATA%\io.forgelet.runner\credential`；两者都不需要手工编辑。私网 CA 仍可用可选的 `ca_file` 指定 PEM：桌面进程用它作为信任根，同一 PEM 也经容器 stdin 传入并在容器内设置 `SSL_CERT_FILE`。注意 Go 在设置 `SSL_CERT_FILE` 后不再合并系统根证书，该文件需要包含控制面的完整信任链。
+
+如果 `url` 只在 Windows 本机可解析（例如本地端口转发），用可选的 `control_url` 指定容器内可解析的同一控制面地址；未配置时容器沿用 `url`。两个地址都应由同一证书覆盖。Windows 上 `host.wslc.internal` 是容器访问宿主的名称，宿主机一侧不能直接用它连接本机监听端口。
+
+边界与排查：
+
+- 容器内是 Linux 环境和镜像自带工具；首轮不支持需要 Docker API 或 Buildx 的 job，这些任务继续用集群或 Mac Runner。
+- 点击停止、关闭窗口或退出应用会先关闭容器 stdin，容器内执行器按原有有界流程取消；超过宽限期再 `wslc stop`。进程被强退后，下次启动按 `forgelet.owner` 标签清理遗留容器。
+- 容器会话的资源上限、磁盘位置和空闲关停由 `%LOCALAPPDATA%\wslc\settings.yaml` 管理（`wslc settings`），默认空闲 30 秒关停会话。修改 `session.*` 后先用 `wslc system session terminate` 结束当前会话。
+- 睡眠或断网超过租期时，控制面把 attempt 记为 `interrupted`；恢复后显式重跑，不会把同一 attempt 重放到其他设备。
+
+### Runners 页面与空闲设备分配
+
+Runners 页按设备展示：空闲/运行中/离线/已暂停、最近在线、队列标签、设备自述（系统、执行后端与引擎版本、核数、内存）以及正在运行的任务标题、仓库和已运行时长。执行中的时长在页面本地每秒递增，列表每 5 秒刷新；离线设备保留最近一次的系统与内存信息，不显示瞬时负载。每行右侧是「暂停/开始」与三点菜单（轮换凭据、移除）。
+
+设备在轮询时每 30 秒附带一次自述；采样只读少量系统计数，不启动子进程，也不会限制任务执行。多台空闲设备时，控制面优先让余量更多的设备（按负载/核数与内存压力计算，内存仅在已用超过 25% 后计入）接单：其余设备在那一轮直接返回，等对端忙碌或离线后再接手，最坏多等一个轮询周期。可用「暂停」把工作固定到其他设备。
+
+设备可以「移除」：凭据立即失效，历史运行记录保留；持有有效租约的设备要先等任务结束。配对码在 **等待批准** 面板中显示，10 分钟内有效，批准时可直接采用主机名或另取名。
 
 ## 镜像与安装文件
 

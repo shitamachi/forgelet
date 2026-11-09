@@ -770,7 +770,7 @@ WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按
 
 ### 调度、身份与恢复
 
-- **接入。** 通过 LAN/VPN 上的专用 HTTPS 路由进现有 server。管理员登记设备名称，控制面保存设备凭据摘要，通过凭据识别设备。仓库、工作流与分支准入由 Forgelet 和工作流配置处理。外部路由仅开放 runner 与该 attempt 的执行端点，Kubernetes Pod 继续用 TokenReview 和 Pod UID。登记和机器凭据留在 agent，job 仅拿到当前 attempt 的短时权限。
+- **接入。** 通过 LAN/VPN 上的专用 HTTPS 路由进现有 server。设备首次开始时请求一个 10 分钟有效的配对码，管理员在 Web 的 Runners 页核对主机名并批准；控制面保存设备凭据摘要，通过凭据识别设备，一台机器对应一个 runner。仓库、工作流与分支准入由 Forgelet 和工作流配置处理。外部路由仅开放 runner 与该 attempt 的执行端点，Kubernetes Pod 继续用 TokenReview 和 Pod UID。机器凭据留在 agent，job 仅拿到当前 attempt 的短时权限。
 - **分配。** 在 SQLite 同一事务内按 `needs`、条件、matrix、并发组、仓库授权、磁盘准入和容量发出任务，并记录领取设备。复用现有图调度和全局 `max_parallel`，外部每台首轮一个 slot。没有匹配在线设备的 job 留在 `queued`，显示原因并允许取消，等待期间不占额度。记录 backend 和执行平台/信任范围，旧记录缺省为 Kubernetes。Pod Tick 只启动、观测和回收 Pod job，runner 续租不依赖 Tick 中可能变慢的 GitHub 或 Flux I/O。
 - **开始。** 领取时发短时 offer，状态进入 `starting` 并占用额度。agent 记录 attempt，幂等确认后才得到启动授权，executor 再凭专用 attempt token claim 计划，进入 `running`。仅当 offer 未获启动授权且已过期时才可回队。启动授权、租约、job 身份及 token 摘要持久化；重试按同一 ID 核对，重复响应不能多启动一个执行环境。首轮可用 10 秒续租、60 秒租期作为试点值，准备阶段另有上限，工作流执行继续受 `timeout-minutes` 约束。
 - **断线与取消。** 只接受当前 attempt 的续租和写入。可在租期内重连原 attempt；启动授权后失联到期则记录 `interrupted` 并释放控制面额度，显式重跑生成新 attempt。用户取消或撤权立即禁止获取新凭据与上传产物，并通过续租/control 通知 agent。agent 在取消或续租失败到本地截止时停止进程组或对应容器，恢复连接和重新接活前先核对、清理孤儿。取消和结果在事务中裁决，取消生效后迟到的成功不推进下游。控制面可拒绝迟到结果，断网或主机挂起时已发生的外部副作用无法撤回，因此不自动重放已获启动授权的任务。
@@ -786,9 +786,30 @@ WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按
 
 桌面端用 Native Shell v0.4.0（`e626a8d`）的 Rust 组件和 AppKit 后端。安装包为普通 `.app`，内含原生 UI 和 Go runner。App 启动时暂停，用户点「开启」后才启动 Go 子进程，配置和凭据经 stdin 传入，stdout 发送结构化状态与日志。关闭主窗口、退出 App 或点「停止」会关闭管道，runner 停止领取并取消本地 job，按现有 executor 的有界退出流程提交最终结果。App 退出后由管道 EOF 触发同样的清理。NSH 原生窗口由 `run_app` 管理，开发用 Cargo，本机发行包用 macOS ad hoc 签名。[NSH Rust 文档](https://nsh.dev/docs/rust/)、[NSH macOS 文档](https://nsh.dev/docs/macos/)
 
-界面使用系统标题栏、紧凑侧栏与分栏控制台，按系统浅深外观切换颜色。侧栏显示接单状态和连接配置，主区显示仓库、提交、任务结果和控制面入口。工具栏可切换状态与日志、复制或导出记录，日志可跟随最新输出。NSH 提供 AppKit 菜单、键盘快捷键、系统剪贴板和保存面板。手动输入的凭据使用遮罩并保留在当前窗口。Finder 启动时可加载当前用户的私有 `connection.json`，升级时也能读取旧 `profile.json`。每次开启时从引用的私有文件读取凭据，经 stdin 传递，Docker 配置只进入执行器的进程环境。内置进程运行单个 job，准备独立 workspace，退出时清理。[NSH 桌面菜单](https://nsh.dev/modules/nsh-desktop/)、[Rust 文件对话框](https://nsh.dev/docs/rust/#files-and-folders)
+界面使用系统标题栏、紧凑侧栏与分栏控制台，按系统浅深外观切换颜色。侧栏显示运行状态、配对码和连接设置，主区显示仓库、提交、任务结果和控制面入口。工具栏可切换状态与日志、复制或导出记录，日志可跟随最新输出。NSH 提供 AppKit 菜单、键盘快捷键、系统剪贴板和保存面板。手动输入的凭据使用遮罩并保留在当前窗口。Finder 启动时可加载当前用户的私有 `connection.json`，升级时也能读取旧 `profile.json`。每次开启时从引用的私有文件读取凭据，经 stdin 传递，Docker 配置只进入执行器的进程环境。内置进程运行单个 job，准备独立 workspace，退出时清理。[NSH 桌面菜单](https://nsh.dev/modules/nsh-desktop/)、[Rust 文件对话框](https://nsh.dev/docs/rust/#files-and-folders)
 
 本地日志镜像只接收 executor 已脱敏且控制面已 ACK 的 chunk。同一序号发生重试时只显示一次。桌面保留本窗口最近 1 MiB 构建输出和 64 KiB 状态记录，视图只渲染最近 16 KiB 并标出省略。复制和导出写入当前窗口留存的两类记录，完整构建日志仍由控制面保存。
+
+### Windows 桌面端与 WSLC（2026-11-08）
+
+Windows 桌面端沿用同一租约协议，但 job 不在 Windows 账户下直接执行。Go 监督进程在每次 attempt 用一个 `wslc.exe` 容器运行 Linux 版执行器；容器内 `runner.os` 为 Linux，`runner.arch` 由容器平台决定。Windows 只负责领任务、租约续期、镜像准备、生命周期和取消；提交计划、日志、产物和结果的仍是容器内的执行器，因此不影响控制面已有的协议、脱敏、配额和结果裁决。
+
+- **启动通道**。`wslc run --interactive` 的 stdin 接收一行 JSON：控制面 URL、job ID、attempt token、容器内工作区，以及可选的 CA PEM。凭据和地址不出现在命令行参数或容器标签中；`wslc inspect` 只看到镜像、命令和所有权标签。带私网 CA 时执行器把 PEM 写入容器内临时文件并设置 `SSL_CERT_FILE`，不依赖 Windows 用户目录挂载。仅 Windows 本机可解析的控制面地址可用 `wslc.control_url` 单独给容器指定，默认沿用 `url`。
+- **生命周期**。容器名、标签（`forgelet.owner`、`forgelet.job`、`forgelet.attempt`）由 attempt 唯一确定；不使用 `--rm`，退出后先读 `inspect` 的退出码再显式 `remove`。取消先关闭 stdin，让容器内执行器走原有有界停止流程；超过宽限期再 `wslc stop --time`，最后才杀 CLI 进程并核对该容器的归属。桌面进程崩溃后下一次启动按所有权标签列出并清理遗留容器。
+- **引擎与资源**。容器镜像由管理员提供并在应用设置中固定 digest；第一节点的 CPU、内存和 DNS 通过 `wslc run --cpus/--memory/--dns` 传入。初始镜像提供 bash、git、CA 和压缩工具，以非 root 用户和容器内 `/workspace` 运行；业务工具链由镜像维护者扩展。首轮不支持容器内 Docker API 或 Buildx 构建，这两类 job 继续使用 Kubernetes 或 Mac Runner。
+- **能力标签**。轮询请求用 `X-Forgelet-Runner-Labels` 声明设备能服务的 `runs-on` 标签（macOS 为 `macos-arm64`，Windows 为 `linux-<arch>-wslc`）。控制面只把同标签的内建设备 job 发给该设备，避免 Mac 领到 Linux 容器任务或反向误领；可移植标签和未声明能力旧客户端保持原共享队列语义。标签、平台与仓库准入都在 SQLite 事务内固定执行身份。
+
+### Runner 观测与空闲设备分配（2026-11-09）
+
+设备在轮询里附带一份自述，控制面据此展示设备并决定谁先接单。采集刻意保持廉价：每 30 秒读一次 `/proc/loadavg` 与 `/proc/meminfo`（Linux）、`sysctl vm.loadavg` 与 `hw.memsize`（macOS）、`GlobalMemoryStatusEx` 与两次 `GetSystemTimes` 采样（Windows）；不启动子进程、不遍历进程、不采样磁盘或网络。Windows 没有 load average，用两次 CPU 时间差换算成「忙碌核数」，与 Linux/macOS 的量纲一致。任务执行本身不受任何限速，这里的低开销只针对观测。
+
+报告内容：OS、架构、runner 版本、执行后端（`native`/`wslc`）与引擎版本、逻辑核数、物理内存与可用内存、1 分钟负载、报告时间。控制面对字段做上界校验，非法报告整份丢弃。在线时的内存与负载实时用于展示与打分；离线时展示最近一次报告中稳定的部分（平台、引擎、核数、总内存），并标注「上次报告」。最近连接时间每分钟最多落盘一次，因此控制面重启后仍能回答「上次在线」。
+
+分配沿用拉取模型：空闲设备各自轮询，控制面只决定某一轮是否把工作留给别人。打分取 `max(负载/核数, 内存压力)`，内存压力只在已用超过 25% 后从 0 线性升到 1——普通空闲机器被页缓存占用并不算缺内存。分数越小表示余量越多。当一个设备轮询、且队列里有它可接的外置任务时，如果 10 秒就绪窗口内存在另一台空闲设备满足「标签与构建平台都覆盖本设备」并且分数至少好 0.15，本设备这一轮让行并立即返回 204；更好的设备随后按自己的节奏轮询领取。让行的设备仍每 4 秒左右重试，因此对端忙碌、暂停、离线或完成后它立刻接手，不会饿死。让行只发生在空闲设备之间：正在跑任务的设备不参与比较，也不产生额外请求。
+
+控制面可以在 Web 移除设备：凭据立即失效、历史记录保留；持有有效租约的设备会被拒绝（409），避免误删正在运行的机器。
+
+该策略有意不引入按任务声明的资源需求、cgroup 级计量或 runner 常驻采集服务；`runs-on` 之外没有新的调度维度。
 
 ### Mac 构建与集群镜像交付
 
@@ -800,7 +821,7 @@ WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按
 
 领取事务即提交启动授权，客户端生成并持有本次领取的随机 token，响应丢失可用相同 token 核对原领取。已获启动授权的任务按失联到期策略结束。计划的 `runs-on` 标签与实际执行设备分别记录，`runner_id` 保存在 SQLite v8 的 job JSON 中。旧任务用原标签恢复已分配的设备，旧登记继续提供旧标签及构建策略。备份恢复时废止租约。
 
-Web 可按设备名称登记并生成一次性显示的设备凭据。SQLite 保存登记、摘要和暂停状态。配置文件登记也可在 Web 暂停、恢复或轮换凭据。暂停阻止该设备新领取并保留已发放租约。轮换与领取互斥，当前有效租约结束后才允许换凭据。正在执行的设备由租约识别，空闲设备由进程内最近轮询识别，重启后重新观测。旧备份恢复会废止任务租约，恢复操作后重新轮换 Web 设备凭据。
+设备通过配对码在 Web 批准后登记，SQLite 保存摘要、暂停状态与最近一次自述。暂停阻止该设备新领取并保留已发放租约；轮换与领取互斥，当前有效租约结束后才允许换凭据，轮换后设备重新配对。正在执行的设备由租约识别，空闲设备由进程内最近轮询识别，重启后重新观测。旧备份恢复会废止任务租约，恢复操作后重新轮换设备凭据。
 
 ### 优先 Runner 与集群回退
 

@@ -1405,3 +1405,61 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **实现**。`prefer_runner` 默认开启，`runner_fallbacks` 为可移植标签指定 native Pod profile。近期轮询、空闲、未暂停且具备所需 Buildx 平台的设备优先领取；找不到适合设备时用集群 Pod。执行身份在预约时固定。两端使用计划指定的同一 OCI 平台，回退 Pod 按该平台选节点，控制面核验 registry 中的镜像。运行页单独显示镜像平台。
 - **自动验证**。`GOFLAGS=-p=2 make verify` 通过，含 Go race、lint、42 项前端单测和 18 项浏览器测试。覆盖 Runner 暂停、忙碌、离线、平台不匹配和关闭优先策略。BuildKit 参数回归断言 Pod 收到 `linux/amd64` 并拒绝工作流改写平台。两条路径均验证正确平台可以解锁部署，错误的 `linux/arm64` 镜像会阻断部署。
 - **临时 k3s 与打包**。使用正式安装清单、实际二进制和场景精简镜像，Runner 专项通过（118.141 秒）。可移植 shell 任务先由空闲 Runner 执行，暂停设备后由真实 Pod 完成。该专项验证调度及租约，镜像平台由前述参数和 registry 测试验证。Mac Rust release 测试和 0.5.0 签名打包通过。本轮未部署实际 homelab。
+
+## 2026-11-08：Windows 桌面 Runner 与 WSLC 执行后端
+
+- **实现**。新增 `desktop/windows` NSH Win32/Direct2D 应用，沿用同一租约协议、日志/状态分栏和 Windows 菜单；`cmd/runner` 按平台拆分，macOS/Linux 原生执行，Windows 每个 attempt 用 `wslc run --interactive` 启动一个带 `forgelet.owner/job/attempt` 标签的 Linux 容器运行 `forgelet-runner --exec`。控制面 URL、attempt token、容器工作区和可选 CA 只经 stdin 传入，不出现在 argv 或容器元数据；取消先关 stdin，宽限后 `wslc stop`，最后核对归属并 `remove`；启动时按所有权标签清理强退遗留容器。新增 `internal/wslc` 与 `desktop/windows/image/Dockerfile`（非 root、bash/git/CA/解压工具），由 `wslc build` 生成执行镜像。
+- **路由**。轮询新增 `X-Forgelet-Runner-Labels`：Mac 声明 `macos-arm64`，Windows 声明 `linux-<arch>-wslc`，控制面只把同内建标签的 job 发给该设备；可移植标签和未声明能力的旧客户端保持原共享队列。存储层与轮询均增加标签过滤/拒绝断言，Web 控制台同时列出两种设备 profile。
+- **打包与启动**。`pwsh desktop/windows/package.ps1` 完成 Windows runner、NSH release、Linux 执行器和 `wslc build`（镜像层缓存命中后重建，最终 `sha256:8c60a13597b17ea65773458583ac8495858d86c2de270743811b52d6638e43c4`），输出 `bin\Forgelet Runner\Forgelet Runner.exe` 与 `forgelet-runner.exe`。实际启动应用核对窗口标题、菜单栏（文件/编辑/运行/窗口）、暂停初始状态和分栏布局。
+- **WSLC 真实验证**。`go test -tags=wslc ./test/wslc` 通过（13.2 秒，3 个场景）：自签 CA + TLS 假控制面下，Windows 监督进程领取任务，容器内 bash 步骤输出经日志 ACK 回传、结果上报 `success`、容器按标签清理；取消场景在容器 `sleep` 时触发，控制面收到 `cancelled`，容器同样清理；预置带 `forgelet.owner` 标签的遗留容器后启动，监督进程在领任务前清理并报告「已清理 1 个上次遗留的执行容器」。本机 `wslc 3.0.3.0`。容器经 `host.wslc.internal` 回连宿主，宿主侧不能直接解析该名，因此新增 `wslc.control_url` 供只在本机可解析的控制面地址使用。专项同时暴露并修正了 `wslc list` 只命中一个容器时返回对象而非数组的解析差异。
+- **自动验证**。三目标 `go build ./cmd/runner`（windows/amd64、linux/amd64、darwin/arm64）通过；`internal/wslc`、`internal/run` 单测通过；桌面端 4 项 Rust 单测与 release 构建通过；Linux 容器内 `go test ./internal/storage ./internal/server` 通过（41.736 秒 / 57.281 秒）。
+- **未完成**。真实 Windows 专用账户上的私网 DNS/TLS、固定 digest、启停/关窗/睡眠唤醒，以及临时 k3s 外部 Runner 协议和 homelab 设备试点仍需实际验收；本轮不把本机 WSLC 专项计作真实集群完成。
+
+## 2026-11-09：真实 homelab 与 steam-admin-web 的 Windows WSLC 验收
+
+- **控制面**。按当前源码构建 linux/amd64 server（内嵌重新生成的 Web 静态资源），以已部署镜像 `sha256:f38a3160…` 为基座叠加新二进制，用 `wslc build` 生成并推送 Zot，最终部署 `zot.k.mygo.rocks/forgelet/server@sha256:3fdb7e3d868e59a16eb4cb963b870a13a760d01db5e46ad1cc5762232f55b529`（含 Runners 页面文案修正）。部署后 `/healthz` 200，`/api/config` 首次出现 `linux-amd64-wslc`（描述 Windows WSLC (Linux amd64)）。回滚镜像即原 `sha256:f38a3160…`。测试期间为容纳三只既有 Unschedulable Pod job 临时把 `max_parallel` 提到 4，结束后恢复 2 并重启；ConfigMap 其余字段逐项比对未变。
+- **设备与路由**。经管理员会话在 Web 管理 API 登记 `windows-wslc-01`（`POST /api/runners`，凭据只显示一次），设备凭据保存在本机 `%APPDATA%\io.forgelet.runner\token`，`connection.json` 固定执行镜像 `zot.k.mygo.rocks/forgelet/runner-wslc@sha256:3d391b86…`。同一凭据先领取 `linux-amd64-wslc` 的两类真实任务，未出现 Mac 设备误领。
+- **成功路径（真实私有仓库）**。对 `shitamachi/steam-admin-web` 固定提交 `d957bd47a25a2cc1218171eadba9fb7155b122e6` 手动触发 `wslc-check`：容器内检出真实私有源码，`npm ci` 232 包、`biome check` 102 文件、`tsc --noEmit`、`vitest` 14 文件/32 测试、`vite build` 全部通过，`runner.os=Linux runner.arch=X64`、Node v24.22.2；run `8de7b31c40fa9ee59c1d2f3a` 与终验 run `c861a414e8a254370088b754` 均为 success，日志 17 段经控制面确认，容器退出后按标签移除。控制面为提交写入的 GitHub Check `forgelet / wslc-check / check` 为 success（02:45:39Z）。
+- **取消路径**。run `3576159a1366083b76f42eb5` 在容器内 `sleep` 循环期间经管理 API 取消：控制面 `cancelled`，GitHub Check `forgelet / wslc-cancel / wait` 为 cancelled，桌面端只报告 stopped，容器被停止并移除。此前同一路径暴露两个真实缺陷并已修复：监督进程 renew 返回时未取消本地执行上下文；取消终结状态用了桌面词汇导致被当成非终态而追加一条 failed。另修正 `wslc list` 单命中返回对象而非数组的解析，以及把 CLI 固定的 swap 警告当失败原因的问题。
+- **本机回归**。修复后 `internal/runner`、`internal/wslc` 单测与 `go test -tags=wslc ./test/wslc`（3 场景：成功、取消、遗留容器清理）通过；e2e 用独立 `LOCALAPPDATA` 避开本机桌面 runner 的单实例锁。三目标 `go build ./cmd/...` 通过。
+- **边界**。本轮未改写 `steam-admin-web` 仓库与其 workflow：手动运行使用管理端提交的源码，仓库仅新增 GitHub Check 记录。设备与 `max_parallel` 已恢复；执行镜像与 server 镜像保留在 Zot 供后续验收，桌面 runner 已停止，临时管理员会话与设备凭据副本已清理。
+
+## 2026-11-09：Runners 页面文案与设备说明
+
+- **问题**。真实 homelab 的 Runners 页面仍写「在线设备从共享的 macOS 队列接单」，登记、轮换和凭据对话框也只提 Mac 应用；Windows WSLC 设备上线后这些说明与实际能力不符。
+- **修改**。页面描述改为按 `runs-on` 标签从共享队列接单；空态、轮换确认、凭据对话框改为「桌面应用」；登记对话框补充 macOS 设备接 `macos-arm64`、Windows WSLC 设备接 `linux-amd64-wslc`、两者共用全局并发额度，示例名改为 `wslc-build`。
+- **验证**。`tsc -b`、`vitest run`（3 文件 / 42 测试）通过；`prettier --check` 对修改文件通过（Windows 检出为 CRLF，仓库级 format 检查的既有告警不在本轮处理范围）。重新构建 Web 并叠加到控制面镜像，部署 `zot.k.mygo.rocks/forgelet/server@sha256:3fdb7e3d868e59a16eb4cb963b870a13a760d01db5e46ad1cc5762232f55b529` 后 `/healthz` 200；用浏览器会话实际打开 `/runners` 截图核对新文案与三台设备（含 `windows-wslc-01`）。控制面重启后未轮询的设备显示「尚无连接记录」，与该页既有行为一致。
+
+## 2026-11-09：Runner 设备视图与按余量分配任务
+
+- **按设备展示**。Runners 页改为每台设备一块：在线/执行中/离线/暂停、最近连接、`runs-on` 队列标签、设备自述（系统与架构、执行后端与引擎版本、核数、内存、1 分钟负载），以及正在运行任务的标题、仓库和已运行时长（本地每秒递增）。离线设备显示「上次报告」与上次在线时间，不含瞬时内存与负载。
+- **设备自述**。轮询请求新增 `info`：每 30 秒采集一次 OS/架构/版本/后端/引擎/核数/物理与可用内存/负载。Linux 读 `/proc/loadavg` 与 `/proc/meminfo`，macOS 用 `sysctl vm.loadavg` 与 `hw.memsize`，Windows 用 `GlobalMemoryStatusEx` 与两次 `GetSystemTimes` 采样换算忙碌核数；均不启动子进程，任务执行不受限制。控制面校验上界，非法报告整份丢弃；最近连接与自述每分钟最多落盘一次，重启后仍能展示上次在线与上次报告。
+- **分配**。空闲设备维持拉取模型；当队列里存在本设备可接的外置任务，且 10 秒就绪窗口内另一台空闲设备覆盖本设备的标签与构建平台、分数（`max(负载/核数, 已用内存比例)`）至少好 0.15 时，本设备这一轮返回 204 让行，随后每约 4 秒重试，对端忙碌/暂停/离线后立即接手。跑任务的设备不参与比较，也不产生额外请求；不引入按任务资源需求或常驻采集服务。
+- **自动验证**。新增 `run.RunnerInfo.Score/ValidBounds`、`sysinfo.Read`、`storage.HasQueuedExternal` 与四组服务端场景（让行、暂停对端不阻塞、平台不覆盖不阻塞、重启后保留上次报告）单测；Linux 容器内 `go test ./internal/server ./internal/storage ./internal/run` 通过（44.2 / 47.6 秒）；本机 `internal/run`、`internal/sysinfo`、`internal/runner`、`internal/wslc` 通过；Web `tsc -b`、`vitest`（3 文件 / 42 测试）与改动文件 prettier 通过。
+- **真实集群**。部署 `zot.k.mygo.rocks/forgelet/server@sha256:cc070d50ebc90eedf3805f5767992562bec96ffeccd1c16b89f6ba0659199ee3`；两台 Windows 设备（`windows-wslc-01`、临时 `windows-wslc-02`）同时在线并各自报告 `Windows amd64 · wslc 3.0.3.0 · 16 核 · 内存 12.2/31.9 GiB · 负载`；同时提交的两个 `steam-admin-web` 任务分别落到两台设备，页面显示任务标题与递增时长；停止其中一台后，其状态转为离线并保留「上次报告」与上次在线时间（11:46），另一台继续接单并成功完成 `wslc-demo`。测试期间 `max_parallel` 临时由 2 提到 5（三只既有 Unschedulable Pod job 占用全部额度），结束后恢复 2 并重启。`windows-wslc-02` 为一次性验证设备，已暂停接单；控制面无删除设备接口，待需要时补充。
+
+## 2026-11-09：设备移除与分配打分细化
+
+- **移除设备**。新增 `DELETE /api/runners/{runnerID}` 与页面「移除」按钮：删除 Web 登记的设备后凭据立即失效、历史运行记录保留；配置文件登记的返回 422，持有有效租约的返回 409（任务结束后再删）。删除同时清空该设备的内存态（最近连接、就绪、自述、标签），持久化集合为空时写 `{}`。
+- **打分细化**。内存压力改为已用超过 25% 后才从 0 线性升到 1，避免普通空闲机器因页缓存被判为缺内存；CPU 仍取 1 分钟负载/核数。新增三台空闲设备（0.94 / 0.375 / 0.02）按余量排序接单的回归，验证前两台让行、余量最多者领取。
+- **验证**。`internal/run` 单测（含打分边界）、`internal/server` 全量与 `internal/storage` 在 Linux 容器内通过（56.6 / 43.5 秒）；Web `tsc -b`、42 项 vitest、prettier 通过。真实 homelab 部署 `zot.k.mygo.rocks/forgelet/server@sha256:100741d1c1ee2a1dbb53b66cb00ae5ad32186f33a810525a3bb992b75adc43c4`，`/healthz` 200；经管理 API 删除一次性设备 `windows-wslc-02` 成功（200），设备列表仅剩两台 mac 设备与 `windows-wslc-01`；页面「移除」对话框核对通过（配置登记设备不显示该按钮）。
+- **指标开销实测**。`internal/sysinfo` 新增 `BenchmarkRead`：Windows 每次约 11.4 微秒（`GlobalMemoryStatusEx` + 两次 `GetSystemTimes`），Linux 约 95.6 微秒（两次 procfs 读取）；设备每 30 秒调用一次，折算占用低于 0.001% CPU，且不启动子进程、不读取业务文件，任务执行不受影响。
+
+## 2026-11-09：Runner 改为配对码接入，移除配置文件登记
+
+- **接入方式**。桌面端只填控制面地址（Windows 另填执行镜像），点「开始」后请求一次性配对码并显示；管理员在 Web 的 Runners 页核对主机名后批准，设备随即取得凭据并开始工作。配对码 8 位、10 分钟有效、同一地址 5 秒内不可重复申请、最多 32 个待批准；凭据由执行器写入本机缓存目录，应用自身只保存设置，不再需要手写 `connection.json`。重新开始、轮换凭据或被移除后设备会自动重新显示配对码。
+- **移除 profile/配置文件登记**。控制面配置不再读取 `external_runners`，SQLite 登记不再包含 policy；设备即 runner，一台机器一个身份。`runs-on` 仍使用设备自报的内建平台标签（`macos-arm64`、`linux-amd64-wslc`）。镜像平台仍由控制面按 `external_builds` 指派，runner 只负责构建它被指派的目标架构，允许交叉构建。
+- **Runners 页**。右侧改为「暂停/开始」加三点菜单（轮换凭据、移除）；新增「等待批准」面板显示配对码、主机名、系统与有效期。状态文案改为空闲/运行中/离线/已暂停，去掉「接单」「上次报告」等措辞；离线设备仍显示稳定信息与最近在线时间。
+- **验证**。新增配对客户端（请求码、等待批准、过期换码、凭据落盘与校验）与服务端（待批准列表、批准、重名冲突、重复领取拒绝、错误 secret、暂停/轮换/重启、删除）单测；Linux 容器内 `go test ./internal/server ./internal/storage ./internal/run` 通过（60.0 / 47.7 秒）；Web `tsc -b`、42 项 vitest、prettier 通过；Windows 端 `cargo build` 通过。真实 homelab 部署 `zot.k.mygo.rocks/forgelet/server@sha256:b0497d341606ff84d16ceeb3da5669036bef96122b2dbf656bfd6fde100cd241`，线上配置删除 `external_runners` 后正常启动；本机重新配对（码 `YJSY-TBW4`）→ Web 批准 → 设备在线并完成 `steam-admin-web` 的真实 `npm ci`/检查/单测任务；页面待批准面板与三点菜单截图核对。
+- **Windows 界面核对**。实际启动桌面应用：填控制面与执行镜像 → 点「开始」→ 侧栏显示「等待配对」与大号配对码 → Web 批准 → 转为空闲并显示系统信息；截图核对通过。
+- **macOS 桌面端**。源码同步改造：设置由应用写 `~/Library/Application Support/io.forgelet.runner/settings.json`（控制面地址与可选 Docker 配置），旧的 `connection.json` 首次启动自动迁移并把其中的设备凭据写入执行器缓存，旧设备无需重新审批；界面显示配对码，按钮改为开始/暂停。**本机没有 macOS 工具链，`cargo check --target aarch64-apple-darwin` 因缺少 C 交叉编译器失败，因此这部分只做了 rustfmt 语法检查，未编译、未在 Mac 上运行**，需要在 Mac 上 `make runner-macos` 验证。
+- **重新配对**。设备丢失凭据后重新显示配对码：批准时若同名设备处于离线且无租约，直接轮换凭据；在线或运行中的设备返回 409，不会被静默接管。
+
+## 2026-11-09：Windows 单文件发行产物
+
+- **单文件**。Windows 应用改为一个可执行文件：`desktop/windows/build.rs` 在构建时用 `go build` 生成 Windows 执行器并内嵌，`Worker` 启动前把它写入 `%LOCALAPPDATA%\io.forgelet.runner\bin\forgelet-runner.exe`（尺寸相同则复用，写入用临时文件替换，运行中的旧副本不受影响）。用户不再需要把 `forgelet-runner.exe` 放在应用旁边，也没有安装程序或额外目录。
+- **打包**。`desktop/windows/package.ps1` 输出 `dist\Forgelet Runner.exe` 与 `SHA256SUMS.txt`；`-SkipImage` 只构建应用，默认仍用 `wslc build` 生成 Linux 执行镜像。`make runner-windows` 走同一脚本。
+- **验证**。`cargo build --release` 与 3 项 Rust 单测通过；把单文件单独复制到空目录运行，首次启动生成内嵌执行器并显示配对码 `9YJF-7UBS`，Web 批准后设备在线；`dist\Forgelet Runner.exe` 直接启动正常（53.9 MiB，SHA256 `9c1cb040cd6792dac1d65092f330dc40562777257d9c91ccda70810bcb6948f7`）。
+- **边界**。构建机仍需 Go 与 Rust；执行镜像不在单文件内，需要单独 `wslc build`/推送并固定 digest 后填进应用。未生成 MSI/Inno 安装包（本机没有对应工具链）。
+- **无控制台窗口**。用户反馈从资源管理器打开会出现黑色终端：应用此前是控制台子系统，且启动 Go 执行器时未设置进程创建标志。现在应用声明 `#![windows_subsystem = "windows"]`（PE Subsystem=2），执行器用 `DETACHED_PROCESS` 启动（只用管道通信，不需要控制台）。实测启动后不再产生新的 conhost，窗口截图只有应用本身；重新打包后 `dist` 的 SHA256 为 `ad7af2b324cca9142c3092cde4445d817f314eb16610666023bafb0dc8f7e68d`。
+- **启动时的终端闪烁**。点击「开始」仍会闪黑窗，原因是执行器启动时会调用 `wslc --version` 和 `wslc list` 做版本检查与遗留容器清理，这些 CLI 是控制台程序，从无控制台的后台进程启动时会各自弹窗。新增 `internal/proc.Hide`：Windows 上用 `DETACHED_PROCESS` 启动子进程，macOS/Linux 为空操作；`internal/wslc` 的所有 CLI 调用和 `docker buildx inspect` 探测均走它。实测点击「开始」后 8 秒内不再出现新的 conhost，状态正常转为空闲；随后用真实任务验证容器路径仍可用（`wslc run --interactive` 在无控制台下管道通信正常，run/job 均为 success）。`dist` 重新打包，SHA256 `ac884a3bc2d440f967bd26d03f22ee3338d00b7c70cefff884929b2f5d491f9d`。
