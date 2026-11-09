@@ -139,14 +139,44 @@ export interface Delivery {
   url?: string
   rollback_of?: string
 }
+export interface RunnerInfo {
+  os?: string
+  hostname?: string
+  arch?: string
+  version?: string
+  backend?: string
+  engine?: string
+  cpus?: number
+  memory_total_bytes?: number
+  memory_available_bytes?: number
+  load1?: number
+  reported_at?: string
+}
+
 export interface Runner {
   name: string
-  source: 'yaml' | 'web'
   status: 'online' | 'offline' | 'busy' | 'paused'
   paused: boolean
   last_seen?: string
   job_id?: string
   run_id?: string
+  job_name?: string
+  repository?: string
+  started_at?: string
+  duration_seconds?: number
+  labels?: string[]
+  info?: RunnerInfo
+}
+
+export interface RunnerPairing {
+  id: string
+  code: string
+  hostname: string
+  os?: string
+  arch?: string
+  version?: string
+  created_at: string
+  expires_at: string
 }
 
 export interface RunnerCredential {

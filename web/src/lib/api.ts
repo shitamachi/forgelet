@@ -107,12 +107,19 @@ export const api = {
     }),
   config: (signal?: AbortSignal) => request<Configuration>('/config', { signal }),
   runners: (signal?: AbortSignal) => request<Runner[]>('/runners', { signal }),
-  registerRunner: (name: string) =>
-    request<RunnerCredential>('/runners', { method: 'POST', body: JSON.stringify({ name }) }),
+  pairings: (signal?: AbortSignal) =>
+    request<import('./types').RunnerPairing[]>('/runner-pairings', { signal }),
+  approvePairing: (id: string, name: string) =>
+    request(`/runner-pairings/${part(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  rejectPairing: (id: string) => request(`/runner-pairings/${part(id)}`, { method: 'DELETE' }),
   pauseRunner: (name: string, paused: boolean) =>
     request(`/runners/${part(name)}/pause`, { method: 'PUT', body: JSON.stringify({ paused }) }),
   rotateRunner: (name: string) =>
     request<RunnerCredential>(`/runners/${part(name)}/rotate`, { method: 'POST', body: '{}' }),
+  deleteRunner: (name: string) => request(`/runners/${part(name)}`, { method: 'DELETE' }),
   status: (signal?: AbortSignal) => request<{ disk: DiskStatus }>('/status', { signal }),
   runs: async (signal?: AbortSignal) => (await request<Run[] | null>('/runs', { signal })) ?? [],
   run: (id: string, signal?: AbortSignal) => request<Run>(`/runs/${part(id)}`, { signal }),

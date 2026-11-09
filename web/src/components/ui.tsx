@@ -37,7 +37,15 @@ const statusLabels: Record<string, string> = {
   busy: '执行中',
   paused: '暂停接单',
 }
-export function Status({ state, small = false }: { state: string; small?: boolean }) {
+export function Status({
+  state,
+  label,
+  small = false,
+}: {
+  state: string
+  label?: string
+  small?: boolean
+}) {
   const Icon = ['success', 'deployed', 'online'].includes(state)
     ? CircleCheck
     : ['failure', 'conflict', 'interrupted', 'timed_out'].includes(state)
@@ -57,7 +65,7 @@ export function Status({ state, small = false }: { state: string; small?: boolea
         size={small ? 14 : 15}
         className={['running', 'starting', 'preparing'].includes(state) ? 'spin' : ''}
       />
-      <span>{statusLabels[state] || state}</span>
+      <span>{label ?? statusLabels[state] ?? state}</span>
     </span>
   )
 }
