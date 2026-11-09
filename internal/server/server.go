@@ -114,7 +114,6 @@ type Config struct {
 	MaxParallel      int
 	Repositories     []string
 	Workflows        []string
-	ExternalRunners  map[string]ExternalRunner
 	ExternalBuilds   []ExternalBuildPolicy
 	PreferRunner     *bool
 	RunnerFallbacks  map[string]string
@@ -143,6 +142,12 @@ type Server struct {
 	runners              map[string]runnerRegistration
 	runnerSeen           map[string]time.Time
 	runnerReady          map[string]runnerAvailability
+	runnerInfo           map[string]run.RunnerInfo
+	runnerLabels         map[string][]string
+	runnerSaved          map[string]time.Time
+	pairings             map[string]*runnerPairing
+	pairSeen             map[string]time.Time
+	pairInterval         time.Duration
 }
 
 func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, error) {
@@ -226,23 +231,19 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 		}
 	}
 	cfg.Profiles = cloneProfiles(cfg.Profiles)
-	cfg.ExternalRunners = maps.Clone(cfg.ExternalRunners)
 	external, _ := store.(externalStore)
-	if err := validateExternalRunners(cfg, external); err != nil {
-		return nil, err
-	}
 	if err := validateExternalBuilds(cfg.ExternalBuilds); err != nil {
 		return nil, err
 	}
 	cfg.ExternalBuilds = slices.Clone(cfg.ExternalBuilds)
 	for label, fallback := range cfg.RunnerFallbacks {
 		p, ok := cfg.Profiles[fallback]
-		if external == nil || label == run.MacRunnerLabel || !runnerName.MatchString(label) || !ok || p.Act != nil || cfg.Profiles[label].Act != nil {
+		if external == nil || !runnerName.MatchString(label) || !ok || p.Act != nil || cfg.Profiles[label].Act != nil {
 			return nil, fmt.Errorf("runner fallback %q requires a portable label and a native Pod profile", label)
 		}
 	}
 	cfg.RunnerFallbacks = maps.Clone(cfg.RunnerFallbacks)
-	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, external: external, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace), runnerSeen: make(map[string]time.Time), runnerReady: make(map[string]runnerAvailability)}, nil
+	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, external: external, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace), runnerSeen: make(map[string]time.Time), runnerReady: make(map[string]runnerAvailability), runnerInfo: make(map[string]run.RunnerInfo), runnerLabels: make(map[string][]string), runnerSaved: make(map[string]time.Time), pairings: make(map[string]*runnerPairing), pairSeen: make(map[string]time.Time)}, nil
 }
 
 func cloneProfiles(in map[string]kube.Profile) map[string]kube.Profile {
@@ -291,9 +292,12 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/management", s.managementAPI)
 		r.Put("/api/management", s.managementAPI)
 		r.Get("/api/runners", s.listRunners)
-		r.Post("/api/runners", s.registerRunner)
+		r.Get("/api/runner-pairings", s.listPairings)
+		r.Post("/api/runner-pairings/{pairingID}/approve", s.approvePairing)
+		r.Delete("/api/runner-pairings/{pairingID}", s.rejectPairing)
 		r.Put("/api/runners/{runnerID}/pause", s.pauseRunner)
 		r.Post("/api/runners/{runnerID}/rotate", s.rotateRunner)
+		r.Delete("/api/runners/{runnerID}", s.deleteRunner)
 		r.Post("/api/management/inspect", s.inspectWorkflows)
 		r.Get("/api/status", s.status)
 		r.Post("/api/runs/{runID}/checks/retry", func(w http.ResponseWriter, r *http.Request) {

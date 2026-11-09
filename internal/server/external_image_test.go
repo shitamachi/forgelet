@@ -56,15 +56,12 @@ func TestExternalImageGatesAutomaticDeployment(t *testing.T) {
 
 			h := externalHarness(t, 1)
 			h.http.Close()
-			device := h.cfg.ExternalRunners[macProfile]
-			device.Build = &run.ExternalBuild{Image: image, Platform: "linux/amd64", InsecureRegistry: true}
-			if tc.arch == "amd64" || tc.pod {
-				h.cfg.ExternalBuilds = []ExternalBuildPolicy{{
-					Repository: device.Repository, Workflow: device.Workflow, Ref: device.Ref, Build: *device.Build,
-				}}
-			} else {
-				h.cfg.ExternalRunners[macProfile] = device
-			}
+			// The control plane decides the image platform; the device only has
+			// to be able to build it.
+			built := &run.ExternalBuild{Image: image, Platform: "linux/amd64", InsecureRegistry: true}
+			h.cfg.ExternalBuilds = []ExternalBuildPolicy{{
+				Repository: "me/repo", Workflow: ".github/workflows/manual.yml", Ref: "refs/heads/main", Build: *built,
+			}}
 			label := run.MacRunnerLabel
 			var podCount int
 			if tc.pod {
@@ -76,11 +73,11 @@ func TestExternalImageGatesAutomaticDeployment(t *testing.T) {
 				podCount = 1
 			}
 			h.cfg.Targets = map[string]delivery.Target{"web": {
-				Name: "web", SourceRepository: device.Repository, SourceRef: device.Ref,
+				Name: "web", SourceRepository: "me/repo", SourceRef: "refs/heads/main",
 				Repository: "me/gitops", InstallationID: 42, Branch: "main", Path: "apps/kustomization.yaml",
 				Mode: "direct", Image: image, ImageName: "app", FluxNamespace: "flux-system",
 				Kustomization: "app", Namespace: "apps", Deployment: "app", Container: "app",
-				OnSuccess: &delivery.OnSuccess{WorkflowPath: device.Workflow, Job: "publish", Profile: "small"},
+				OnSuccess: &delivery.OnSuccess{WorkflowPath: ".github/workflows/manual.yml", Job: "publish", Profile: "small"},
 			}}
 			h.cfg.Delivery = &delivery.Coordinator{Store: h.store, Now: time.Now}
 			h.start()
@@ -112,7 +109,7 @@ jobs:
 					}
 				}
 			} else {
-				code, body := h.externalRequest("/poll", testMachineToken, runnerRequest{Profile: macProfile, Attempt: attempt})
+				code, body := h.externalRequest("/poll", testMachineToken, runnerRequest{Attempt: attempt})
 				var grant run.ExternalGrant
 				if err := json.Unmarshal(body, &grant); code != 200 || err != nil || grant.Platform != "linux/amd64" {
 					t.Fatalf("platform grant: %d %s", code, body)
@@ -124,7 +121,7 @@ jobs:
 			}
 			code, body := call("claim", nil)
 			var plan run.Plan
-			if err := json.Unmarshal(body, &plan); code != 200 || err != nil || plan.External == tc.pod || plan.ExternalBuild == nil || *plan.ExternalBuild != *device.Build {
+			if err := json.Unmarshal(body, &plan); code != 200 || err != nil || plan.External == tc.pod || plan.ExternalBuild == nil || *plan.ExternalBuild != *built {
 				t.Fatalf("claimed plan: %d %s", code, body)
 			}
 			h.tick()

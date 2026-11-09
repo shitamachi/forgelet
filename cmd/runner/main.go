@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 
 	"github.com/shitamachi/forgelet/internal/runner"
@@ -19,15 +18,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	status := json.NewEncoder(os.Stdout)
-	if err := start(ctx, status); err != nil {
+	var err error
+	if len(os.Args) > 1 && os.Args[1] == "--exec" {
+		// Container mode: one job, configured on stdin, no polling.
+		err = runExec(ctx, status, os.Stdin)
+	} else {
+		err = start(ctx, status)
+	}
+	if err != nil {
 		_ = status.Encode(runner.Status{State: "error", Message: err.Error()})
 		os.Exit(1)
 	}
 }
 
 func start(ctx context.Context, status *json.Encoder) error {
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-		return errors.New("this runner requires an Apple Silicon Mac")
+	if err := checkPlatform(); err != nil {
+		return err
 	}
 	input := bufio.NewScanner(os.Stdin)
 	input.Buffer(make([]byte, 4096), 4096)
@@ -38,6 +44,9 @@ func start(ctx context.Context, status *json.Encoder) error {
 	if err := json.Unmarshal(input.Bytes(), &cfg); err != nil {
 		return errors.New("invalid desktop connection settings")
 	}
+	if err := prepareTLS(cfg); err != nil {
+		return err
+	}
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -45,36 +54,39 @@ func start(ctx context.Context, status *json.Encoder) error {
 		}
 		cancel()
 	}()
-	// Finder launches without a shell environment. Use only known tool directories.
-	if err := os.Setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"); err != nil {
-		return err
-	}
-	cache, err := os.UserCacheDir()
+	root, err := workRoot()
 	if err != nil {
 		return err
 	}
-	root := filepath.Join(cache, "io.forgelet.runner")
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return err
-	}
-	// Finder can inherit development caches on volumes the app cannot access.
-	if err := os.Setenv("GOCACHE", filepath.Join(root, "go-build")); err != nil {
-		return err
-	}
-	if err := os.Setenv("GOMODCACHE", filepath.Join(root, "go-mod")); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(filepath.Join(root, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	unlock, err := lockRoot(root)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = lock.Close() }()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("a Forgelet desktop runner is already active on this account")
-	}
+	defer unlock()
 	return runner.Run(lifetime, cfg, root, func(state runner.Status) {
 		if err := status.Encode(state); err != nil {
 			cancel()
 		}
 	})
+}
+
+// workRoot is the account's private cache directory. Finder and Explorer can
+// launch the app without a shell, so caches never depend on the calling
+// environment.
+func workRoot() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(cache, "io.forgelet.runner")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", err
+	}
+	if err := os.Setenv("GOCACHE", filepath.Join(root, "go-build")); err != nil {
+		return "", err
+	}
+	if err := os.Setenv("GOMODCACHE", filepath.Join(root, "go-mod")); err != nil {
+		return "", err
+	}
+	return root, nil
 }

@@ -17,9 +17,61 @@ import (
 
 const runnerReadyWindow = 10 * time.Second
 
+// peerMargin is how much better another idle device must look before this one
+// gives up a round. The hysteresis keeps two similar machines from alternating.
+const peerMargin = 0.15
+
+// stepAsideForPeer reports whether an idle device with clearly more headroom
+// can take the queued work this one would otherwise claim. The better device
+// polls on its own schedule, so no job is reserved away from it; the worse
+// device simply retries after its normal wait and takes the job when the peer
+// is busy, paused, offline or done. Scheduling stays a pull: no extra request
+// is sent to any device, and a busy machine never sees scheduling traffic.
+//
+// The peer must cover every label and build platform this device has, so a job
+// that only this device could run is never held back for a peer that cannot
+// take it. If the peer disappears, its readiness expires within the window.
+func (s *Server) stepAsideForPeer(ctx context.Context, runnerID string, labels, platforms []string, now time.Time) bool {
+	self, known := s.runnerInfo[runnerID]
+	if !known || len(labels) == 0 {
+		return false
+	}
+	queued, err := s.external.HasQueuedExternal(ctx, labels)
+	if err != nil || !queued {
+		return false
+	}
+	selfScore := self.Score()
+	for id, ready := range s.runnerReady {
+		if id == runnerID || now.Sub(ready.at) >= runnerReadyWindow || s.runners[id].Paused {
+			continue
+		}
+		if !covers(ready.labels, labels) || !covers(ready.platforms, platforms) {
+			continue
+		}
+		peer, ok := s.runnerInfo[id]
+		if !ok || peer.Score()+peerMargin >= selfScore {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// covers reports whether a peer advertises everything this device does. An
+// empty self list is covered by anything.
+func covers(peer, self []string) bool {
+	for _, value := range self {
+		if !slices.Contains(peer, value) {
+			return false
+		}
+	}
+	return true
+}
+
 type runnerAvailability struct {
 	at        time.Time
 	platforms []string
+	labels    []string
 }
 
 func (s *Server) preferRunner() bool {
@@ -58,7 +110,7 @@ func (s *Server) reservePods(ctx context.Context, limit int, repos []string) ([]
 			if idle == nil {
 				idle = map[string]storage.RunnerCapacity{}
 			}
-			idle[id] = storage.RunnerCapacity{Platforms: ready.platforms}
+			idle[id] = storage.RunnerCapacity{Platforms: ready.platforms, Labels: ready.labels}
 		}
 	}
 	var capacity []storage.RunnerCapacity

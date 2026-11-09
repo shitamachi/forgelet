@@ -42,14 +42,17 @@ type ExternalReservation struct {
 	Repositories        map[string]bool // Lowercase authorized repository names.
 	PodFirst            bool
 	Platforms           []string // nil for a client that predates capability reporting.
+	Labels              []string // nil for a client that predates capability reporting.
 }
 
 type RunnerCapacity struct {
 	Platforms []string
+	Labels    []string
 }
 
 func (r RunnerCapacity) supports(plan run.Plan) bool {
-	return plan.ExternalBuild == nil || slices.Contains(r.Platforms, plan.ExternalBuild.Platform)
+	return !run.DeviceLabelMismatch(plan.Profile, r.Labels) &&
+		(plan.ExternalBuild == nil || slices.Contains(r.Platforms, plan.ExternalBuild.Platform))
 }
 
 func (r *ExternalReservation) matches(job run.Job) bool {
@@ -57,7 +60,8 @@ func (r *ExternalReservation) matches(job run.Job) bool {
 		return !job.Plan.External || job.Plan.FallbackProfile != ""
 	}
 	return job.Plan.External && r.Repositories[strings.ToLower(job.Plan.Repository)] &&
-		(job.Plan.FallbackProfile == "" || !r.PodFirst && (RunnerCapacity{Platforms: r.Platforms}).supports(job.Plan))
+		!run.DeviceLabelMismatch(job.Plan.Profile, r.Labels) &&
+		(job.Plan.FallbackProfile == "" || !r.PodFirst && (RunnerCapacity{Platforms: r.Platforms, Labels: r.Labels}).supports(job.Plan))
 }
 
 func (r *ExternalReservation) existing(ctx context.Context, tx *sql.Tx) (run.Job, bool, error) {
@@ -81,6 +85,28 @@ OR (state IN ('starting','running') AND json_extract(body,'$.plan.external')=1
 		return job, true, nil
 	}
 	return run.Job{}, len(jobs) > 0, nil
+}
+
+// HasQueuedExternal reports whether any queued external job waits for one of
+// these device labels. The scheduler asks before a device steps aside for a
+// better peer, so the answer must stay cheap: one indexed lookup, no decoding.
+func (s *Store) HasQueuedExternal(ctx context.Context, labels []string) (bool, error) {
+	if len(labels) == 0 {
+		return false, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(labels)), ",")
+	args := make([]any, len(labels))
+	for i, label := range labels {
+		args[i] = label
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs
+	WHERE state='queued' AND json_extract(body,'$.plan.external')=1
+	AND json_extract(body,'$.profile') IN (`+placeholders+`))`, args...).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("query queued external jobs: %w", err)
+	}
+	return exists, nil
 }
 
 func (s *Store) ReserveExternal(ctx context.Context, limit int, request ExternalReservation) (run.Job, error) {

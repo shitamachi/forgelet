@@ -37,14 +37,14 @@ func (s *Server) consoleConfig(w http.ResponseWriter, _ *http.Request) {
 			profiles = append(profiles, profile{Name: label, Image: p.Image, Build: p.Build != nil, Fallback: fallback})
 		}
 	}
-	if _, pod := s.cfg.Profiles[run.MacRunnerLabel]; s.external != nil && !pod {
+	if s.external != nil {
 		build := len(s.cfg.ExternalBuilds) > 0
-		s.runnerMu.Lock()
-		for _, runner := range s.runnerPoliciesLocked() {
-			build = build || runner.Build != nil
+		for _, label := range run.ExternalRunnerLabels() {
+			if _, pod := s.cfg.Profiles[label]; pod {
+				continue
+			}
+			profiles = append(profiles, profile{Name: label, Image: run.ExternalRunnerDescription(label), Build: build})
 		}
-		s.runnerMu.Unlock()
-		profiles = append(profiles, profile{Name: run.MacRunnerLabel, Image: "macOS arm64", Build: build})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
 	managed := s.management()

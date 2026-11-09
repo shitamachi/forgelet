@@ -9,9 +9,9 @@ import (
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
-func TestRunnerRegistrationPauseAndRotate(t *testing.T) {
+func TestRunnerPairingPauseAndRotate(t *testing.T) {
 	h := externalHarness(t, 2)
-	const profile = "web-mac"
+	const device = "web-mac"
 	call := func(method, path string, body any, want int) []byte {
 		t.Helper()
 		code, data := h.admin(method, "/api/runners"+path, body)
@@ -20,17 +20,33 @@ func TestRunnerRegistrationPauseAndRotate(t *testing.T) {
 		}
 		return data
 	}
-	credential := func(data []byte) string {
-		t.Helper()
-		var reply struct{ Token string }
-		if err := json.Unmarshal(data, &reply); err != nil || !strings.HasPrefix(reply.Token, "frr_") || len(reply.Token) != 68 {
-			t.Fatal("missing device credential", err)
-		}
-		return reply.Token
+	firstToken := pairDevice(t, h, device)
+
+	// A pending code is listed until it is approved or forgotten.
+	id, secret := startPairing(t, h, "spare-host")
+	if code, _ := collectPairing(t, h, id, secret); code != 202 {
+		t.Fatalf("unapproved pairing returned %d", code)
 	}
-	registration := map[string]string{"name": profile}
-	first := credential(call("POST", "", registration, 201))
-	call("POST", "", registration, 409)
+	var pendingViews []pairingView
+	if code, data := h.admin("GET", "/api/runner-pairings", nil); code != 200 {
+		t.Fatalf("pairings: %d %s", code, data)
+	} else if err := json.Unmarshal(data, &pendingViews); err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingViews) != 1 || pendingViews[0].Hostname != "spare-host" || pendingViews[0].Code == "" {
+		t.Fatalf("pending pairing not listed: %+v", pendingViews)
+	}
+	// Re-pairing an offline device replaces its credential: the code proves
+	// possession and the machine is not running anything.
+	if code, body := h.admin("POST", "/api/runner-pairings/"+id+"/approve", map[string]string{"name": device}); code != 200 {
+		t.Fatalf("re-pairing an offline device: %d %s", code, body)
+	}
+	if _, repaird := collectPairing(t, h, id, secret); !strings.HasPrefix(repaird, "frr_") || repaird == firstToken {
+		t.Fatal("re-pairing did not issue a new credential")
+	} else {
+		firstToken = repaird
+	}
+
 	list := func(want string, paused bool) {
 		t.Helper()
 		data := call("GET", "", nil, 200)
@@ -39,10 +55,9 @@ func TestRunnerRegistrationPauseAndRotate(t *testing.T) {
 		}
 		var items []runnerView
 		if err := json.Unmarshal(data, &items); err != nil || len(items) != 2 {
-			t.Fatal("runner inventory did not include both sources", err)
+			t.Fatal("runner inventory did not include both devices", err)
 		}
-		if items[0].Name != macProfile || items[0].Source != "yaml" || items[1].Name != profile ||
-			items[1].Source != "web" || items[1].Status != want || items[1].Paused != paused {
+		if items[0].Name != macProfile || items[1].Name != device || items[1].Status != want || items[1].Paused != paused {
 			t.Fatalf("unexpected inventory: %s", data)
 		}
 	}
@@ -56,24 +71,32 @@ func TestRunnerRegistrationPauseAndRotate(t *testing.T) {
 		}
 		return data
 	}
-	poll(first, 204)
+	poll(firstToken, 204)
 	list("online", false)
-	call("PUT", "/"+profile+"/pause", map[string]bool{"paused": true}, 200)
+	// An online or busy device is never taken over by another code.
+	intruder, _ := startPairing(t, h, "intruder")
+	if code, _ := h.admin("POST", "/api/runner-pairings/"+intruder+"/approve", map[string]string{"name": device}); code != 409 {
+		t.Fatalf("online device takeover accepted: %d", code)
+	}
+	if code, _ := h.admin("DELETE", "/api/runner-pairings/"+intruder, nil); code != 204 {
+		t.Fatalf("reject failed: %d", code)
+	}
+	call("PUT", "/"+device+"/pause", map[string]bool{"paused": true}, 200)
 	job := h.manual(strings.ReplaceAll(testWorkflow, "runs-on: small", "runs-on: "+run.MacRunnerLabel)).Jobs[0]
-	poll(first, 204)
+	poll(firstToken, 204)
 	list("paused", true)
 
 	h.http.Close()
 	h.start()
 	list("paused", true)
-	call("PUT", "/"+profile+"/pause", map[string]bool{"paused": false}, 200)
-	poll(first, 200)
+	call("PUT", "/"+device+"/pause", map[string]bool{"paused": false}, 200)
+	poll(firstToken, 200)
 	list("busy", false)
-	call("POST", "/"+profile+"/rotate", nil, 409)
-	call("PUT", "/"+profile+"/pause", map[string]bool{"paused": true}, 200)
+	call("POST", "/"+device+"/rotate", nil, 409)
+	call("PUT", "/"+device+"/pause", map[string]bool{"paused": true}, 200)
 	list("busy", true)
-	poll(first, 200) // A previously granted attempt is still replayable.
-	if code, body := h.externalRequest("/renew", first, runnerRequest{Attempt: attempt, JobID: job.ID}); code != 200 {
+	poll(firstToken, 200) // A previously granted attempt is still replayable.
+	if code, body := h.externalRequest("/renew", firstToken, runnerRequest{Attempt: attempt, JobID: job.ID}); code != 200 {
 		t.Fatal(code, string(body))
 	}
 	for _, step := range []struct {
@@ -84,13 +107,16 @@ func TestRunnerRegistrationPauseAndRotate(t *testing.T) {
 			t.Fatal(code, string(body))
 		}
 	}
-	second := credential(call("POST", "/"+profile+"/rotate", nil, 200))
+	var rotated struct{ Token string }
+	if err := json.Unmarshal(call("POST", "/"+device+"/rotate", nil, 200), &rotated); err != nil || !strings.HasPrefix(rotated.Token, "frr_") {
+		t.Fatal("rotation did not return a credential", err)
+	}
 	h.http.Close()
 	h.start()
-	poll(first, 401)
-	call("PUT", "/"+profile+"/pause", map[string]bool{"paused": false}, 200)
+	poll(firstToken, 401)
+	call("PUT", "/"+device+"/pause", map[string]bool{"paused": false}, 200)
 	attempt = "frja_" + strings.Repeat("c", 64)
-	poll(second, 204)
+	poll(rotated.Token, 204)
 	list("online", false)
 	now := h.server.now()
 	h.server.now = func() time.Time { return now.Add(time.Minute) }

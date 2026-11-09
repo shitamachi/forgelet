@@ -15,36 +15,98 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
-	"github.com/shitamachi/forgelet/internal/executor"
+	"github.com/shitamachi/forgelet/internal/proc"
 	"github.com/shitamachi/forgelet/internal/run"
+	"github.com/shitamachi/forgelet/internal/sysinfo"
+	"github.com/shitamachi/forgelet/internal/wslc"
 )
 
 type Config struct {
-	URL           string `json:"url"`
-	LegacyProfile string `json:"profile,omitempty"` // Old servers still require this field.
-	Token         string `json:"token"`
+	URL   string       `json:"url"`
+	Token string       `json:"token,omitempty"` // Optional; otherwise the desktop pairs and stores one.
+	WSLC  *wslc.Config `json:"wslc,omitempty"`  // Windows only: the Linux container backend.
 }
 
 type Status struct {
-	State   string             `json:"state,omitempty"`
-	Log     *run.Log           `json:"log,omitempty"`
-	Message string             `json:"message,omitempty"`
-	Job     *run.ExternalGrant `json:"job,omitempty"`
+	State     string             `json:"state,omitempty"`
+	Log       *run.Log           `json:"log,omitempty"`
+	Message   string             `json:"message,omitempty"`
+	Job       *run.ExternalGrant `json:"job,omitempty"`
+	Code      string             `json:"code,omitempty"`       // Pairing code shown until an administrator approves it.
+	ExpiresAt time.Time          `json:"expires_at,omitzero"`  // When that code stops working.
+	Device    string             `json:"device,omitempty"`     // Name the administrator gave this machine.
+}
+
+// ExecRequest is what the Windows runner writes to the Linux container's stdin:
+// one job attempt and the private material it needs. It is never in argv.
+type ExecRequest struct {
+	URL       string `json:"url"`
+	JobID     string `json:"job_id"`
+	Attempt   string `json:"attempt"`
+	Workspace string `json:"workspace"`
+	CACert    string `json:"ca_cert,omitempty"`
 }
 
 type client struct {
-	url    *url.URL
-	http   http.Client
-	config Config
+	url     *url.URL
+	http    http.Client
+	config  Config
+	backend backend
+}
+
+// backend starts one job attempt in the environment this platform provides.
+type backend interface {
+	executeLease(ctx context.Context, client *client, workRoot string, grant run.ExternalGrant, token string, status func(Status)) Status
+	// describe names the backend and, where one exists, its engine version.
+	describe() descriptor
 }
 
 type request struct {
-	Profile string `json:"profile,omitempty"`
-	Attempt string `json:"attempt"`
-	JobID   string `json:"job_id,omitempty"`
+	Attempt string          `json:"attempt"`
+	JobID   string          `json:"job_id,omitempty"`
+	Info    *run.RunnerInfo `json:"info,omitempty"`
+}
+
+// infoInterval is how often a device re-reads its own numbers. It is a handful
+// of system calls and one small request, so a busy machine pays almost nothing.
+const infoInterval = 30 * time.Second
+
+// describe is the backend's name and engine version, shown with the device.
+type descriptor struct {
+	backend string
+	engine  string
+}
+
+// collectInfo reads the device's current description. Unknown readings stay
+// zero rather than costing extra work.
+func collectInfo(desc descriptor) *run.RunnerInfo {
+	sample := sysinfo.Read()
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = ""
+	}
+	return &run.RunnerInfo{
+		OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version(), Hostname: hostname,
+		Backend: desc.backend, Engine: desc.engine,
+		CPUs: sample.CPUs, MemoryTotalBytes: sample.MemoryTotal,
+		MemoryAvailableBytes: sample.MemoryAvailable, Load1: sample.Load1,
+		ReportedAt: time.Now().UTC(),
+	}
+}
+
+// version is the runner's own version, empty for development builds.
+func version() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+	}
+	return ""
 }
 
 func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) error {
@@ -53,11 +115,26 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 		(u.Scheme != "https" && (u.Scheme != "http" || (u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" && u.Hostname() != "::1"))) {
 		return errors.New("控制面地址必须使用 HTTPS，本机回环地址可用 HTTP")
 	}
-	token, ok := strings.CutPrefix(cfg.Token, "frr_")
-	if _, err := hex.DecodeString(token); !ok || err != nil || len(token) != 64 {
-		return errors.New("请输入有效的设备凭据")
+	token := cfg.Token
+	if token == "" {
+		token = readCredential(workRoot)
 	}
-	c := client{url: u, config: cfg, http: http.Client{
+	if token == "" {
+		paired, err := pair(ctx, cfg.URL, workRoot, status)
+		if err != nil {
+			return err
+		}
+		token = paired
+	}
+	if !validToken(token) {
+		return errors.New("设备凭据无效，请重新配对")
+	}
+	cfg.Token = token
+	execution, err := newBackend(ctx, cfg, status)
+	if err != nil {
+		return err
+	}
+	c := client{url: u, config: cfg, backend: execution, http: http.Client{
 		Timeout:       5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -65,6 +142,8 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 	var last Status
 	reconnecting := false
 	backoff := 2 * time.Second
+	var info *run.RunnerInfo
+	var nextInfo time.Time
 	for ctx.Err() == nil {
 		if attempt == "" {
 			var nonce [32]byte
@@ -73,9 +152,13 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 			}
 			attempt = "frja_" + hex.EncodeToString(nonce[:])
 		}
+		if !time.Now().Before(nextInfo) {
+			info = collectInfo(execution.describe())
+			nextInfo = time.Now().Add(infoInterval)
+		}
 		var grant run.ExternalGrant
 		sent := time.Now()
-		code, err := c.send(ctx, "/poll", request{Profile: cfg.LegacyProfile, Attempt: attempt}, &grant)
+		code, err := c.send(ctx, "/poll", request{Attempt: attempt, Info: info}, &grant)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -105,7 +188,16 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 				status(last)
 			}
 		case http.StatusUnauthorized:
-			return errors.New("控制面拒绝了设备凭据")
+			// The credential was rotated or the device removed: pair again and
+			// show a fresh code rather than failing quietly.
+			dropCredential(workRoot)
+			paired, err := pair(ctx, cfg.URL, workRoot, status)
+			if err != nil {
+				return err
+			}
+			c.config.Token = paired
+			attempt = ""
+			continue
 		case http.StatusForbidden:
 			return errors.New("当前设备无法访问配置的工作流仓库")
 		default:
@@ -119,40 +211,19 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 }
 
 func (c *client) execute(ctx context.Context, workRoot string, grant run.ExternalGrant, token string, deadline time.Time, status func(Status)) Status {
-	result := Status{State: "failed", Job: &grant}
-	dir, err := os.MkdirTemp(workRoot, "attempt-")
-	if err != nil {
-		result.Message = "无法创建临时工作区"
-		return result
-	}
-	defer func() { _ = os.RemoveAll(dir) }()
 	execution, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// A cancellation or a lost lease ends the local attempt, so the
+		// backend must stop its container or process group.
 		defer cancel()
-		c.renew(execution, request{Profile: c.config.LegacyProfile, JobID: grant.JobID, Attempt: token}, deadline)
+		c.renew(execution, request{JobID: grant.JobID, Attempt: token}, deadline)
 	}()
-	var reported run.State
-	err = executor.RunRemote(execution, executor.RemoteOptions{URL: c.url.String(), JobID: grant.JobID, AttemptToken: token,
-		Workspace: dir, Client: &c.http, RetryTimeout: 25 * time.Second, FlushTimeout: 8 * time.Second,
-		OnResult: func(state run.State) { reported = state },
-		OnLog:    func(entry run.Log) { status(Status{Log: &entry}) }})
-	stopped := execution.Err() != nil
+	result := c.backend.executeLease(execution, c, workRoot, grant, token, status)
 	cancel()
 	<-done
-	switch {
-	case err == nil:
-		result.State = "succeeded"
-	case reported == run.Cancelled || stopped:
-		result.State = "stopped"
-		result.Message = "任务停止，最终状态请查看控制面"
-	case reported == run.TimedOut:
-		result.State = "timed_out"
-		result.Message = "任务超时，详细日志请查看控制面"
-	default:
-		result.Message = "任务未成功，详细日志请查看控制面"
-	}
 	return result
 }
 
@@ -200,6 +271,9 @@ func (c *client) send(ctx context.Context, endpoint string, input request, outpu
 	req.Header.Set("Content-Type", "application/json")
 	if endpoint == "/poll" {
 		req.Header.Set(run.RunnerBuildPlatformsHeader, buildPlatforms(ctx))
+		if labels := deviceLabels(c.config); len(labels) > 0 {
+			req.Header.Set(run.RunnerLabelsHeader, strings.Join(labels, ","))
+		}
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
@@ -212,10 +286,27 @@ func (c *client) send(ctx context.Context, endpoint string, input request, outpu
 	return res.StatusCode, err
 }
 
+// DesktopState names an executor state the way the desktop app does.
+func DesktopState(state run.State) string {
+	switch state {
+	case run.Succeeded:
+		return "succeeded"
+	case run.Failed:
+		return "failed"
+	case run.Cancelled, run.Interrupted:
+		return "stopped"
+	case run.TimedOut:
+		return "timed_out"
+	}
+	return string(state)
+}
+
 func buildPlatforms(ctx context.Context) string {
 	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(probe, "docker", "buildx", "inspect", "--timeout", "2s").Output()
+	command := exec.CommandContext(probe, "docker", "buildx", "inspect", "--timeout", "2s")
+	proc.Hide(command)
+	output, err := command.Output()
 	if err != nil {
 		return "none"
 	}

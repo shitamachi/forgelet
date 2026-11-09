@@ -23,17 +23,73 @@ func externalHarness(t *testing.T, slots int) *harness {
 	t.Helper()
 	h := newHarness(t, slots)
 	h.http.Close()
-	h.cfg.ExternalRunners = map[string]ExternalRunner{macProfile: {
-		Repository: "me/repo", Workflow: ".github/workflows/manual.yml", Ref: "refs/heads/main",
-		TokenSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(testMachineToken))),
-	}}
-	var err error
+	// A paired device with a known credential; tests that need more devices
+	// pair them through the API.
+	registration, err := json.Marshal(map[string]runnerRegistration{
+		macProfile: {Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(testMachineToken)))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveRunnerRegistrations(t.Context(), registration); err != nil {
+		t.Fatal(err)
+	}
 	h.cfg.Blobs, err = blob.Open(filepath.Join(t.TempDir(), "artifacts"), blob.Limits{ObjectBytes: 1 << 20, TotalBytes: 4 << 20, Objects: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.start()
 	return h
+}
+
+// startPairing asks for a code the way a desktop app does.
+func startPairing(t *testing.T, h *harness, hostname string) (id, secret string) {
+	t.Helper()
+	h.server.pairInterval = -1
+	code, body := h.request("POST", "/runner/v1/pair",
+		`{"hostname":"`+hostname+`","os":"windows","arch":"amd64","version":"test"}`, nil)
+	var pairing struct{ ID, Code, Secret string }
+	if err := json.Unmarshal(body, &pairing); code != 200 || err != nil || pairing.Code == "" || pairing.Secret == "" {
+		t.Fatalf("pair %s: %d %s", hostname, code, body)
+	}
+	return pairing.ID, pairing.Secret
+}
+
+// collectPairing is the device polling for its credential after approval.
+func collectPairing(t *testing.T, h *harness, id, secret string) (int, string) {
+	t.Helper()
+	code, body := h.request("GET", "/runner/v1/pair/"+id, "",
+		map[string]string{"Authorization": "Bearer " + secret})
+	var issued struct{ Token string }
+	_ = json.Unmarshal(body, &issued)
+	return code, issued.Token
+}
+
+// pairDevice runs the whole onboarding handshake: the device asks for a code,
+// an administrator approves it, and the device collects its credential.
+func pairDevice(t *testing.T, h *harness, name string) string {
+	t.Helper()
+	id, secret := startPairing(t, h, name)
+	if approve, response := h.admin("POST", "/api/runner-pairings/"+id+"/approve", map[string]string{"name": name}); approve != 200 {
+		t.Fatalf("approve %s: %d %s", name, approve, response)
+	}
+	code, token := collectPairing(t, h, id, secret)
+	if code != 200 || !strings.HasPrefix(token, "frr_") {
+		t.Fatalf("collect credential for %s: %d %s", name, code, token)
+	}
+	return token
+}
+
+func TestRunnerPollRejectsUnusableCapabilities(t *testing.T) {
+	h := externalHarness(t, 1)
+	attempt := "frja_" + strings.Repeat("b", 64)
+	code, body := h.request("POST", "/runner/v1/poll", `{"attempt":"`+attempt+`"}`, map[string]string{
+		"Authorization": "Bearer " + testMachineToken, "Content-Type": "application/json",
+		run.RunnerLabelsHeader: "MacOS",
+	})
+	if code != 400 {
+		t.Fatalf("invalid labels header: %d %s", code, body)
+	}
 }
 
 func TestExternalRunnerExecutesNativeJobAndSharesPodCapacity(t *testing.T) {
@@ -56,7 +112,7 @@ jobs:
 		t.Fatalf("offline runner should stay queued: %+v, pods=%d", job, h.runtime.created)
 	}
 	attempt := "frja_" + strings.Repeat("b", 64)
-	if code, body := h.externalRequest("/poll", testMachineToken, runnerRequest{Profile: macProfile, Attempt: attempt}); code != 204 {
+	if code, body := h.externalRequest("/poll", testMachineToken, runnerRequest{Attempt: attempt}); code != 204 {
 		t.Fatalf("Pod already uses the only slot: %d %s", code, body)
 	}
 	if code, body := h.runtimeRequest("POST", "claim", pod, nil); code != 200 {
@@ -107,10 +163,19 @@ func TestExternalRunnerGrantFencingAndCancellation(t *testing.T) {
 	h := externalHarness(t, 2)
 	h.http.Close()
 	otherToken := "frr_" + strings.Repeat("b", 64)
-	h.cfg.ExternalRunners["other-mac"] = ExternalRunner{TokenSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(otherToken)))}
+	registrations, err := json.Marshal(map[string]runnerRegistration{
+		macProfile:  {Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(testMachineToken)))},
+		"other-mac": {Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(otherToken)))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveRunnerRegistrations(t.Context(), registrations); err != nil {
+		t.Fatal(err)
+	}
 	h.start()
 	item := h.manual(strings.ReplaceAll(testWorkflow, "runs-on: small", "runs-on: macos-arm64"))
-	input := runnerRequest{Profile: macProfile, Attempt: "frja_" + strings.Repeat("b", 64), JobID: item.Jobs[0].ID}
+	input := runnerRequest{Attempt: "frja_" + strings.Repeat("b", 64), JobID: item.Jobs[0].ID}
 	check := func(endpoint, token string, body any, want int) {
 		t.Helper()
 		if code, data := h.externalRequest(endpoint, token, body); code != want {
@@ -124,7 +189,7 @@ func TestExternalRunnerGrantFencingAndCancellation(t *testing.T) {
 	h.http.Close()
 	h.start()
 	check("/poll", testMachineToken, input, 200)
-	check("/poll", testMachineToken, runnerRequest{Profile: macProfile, Attempt: "frja_" + strings.Repeat("c", 64)}, 204)
+	check("/poll", testMachineToken, runnerRequest{Attempt: "frja_" + strings.Repeat("c", 64)}, 204)
 
 	jobPath := "/jobs/" + input.JobID
 	check(jobPath+"/claim", testMachineToken, nil, 401)
@@ -162,30 +227,14 @@ func TestExternalRunnerGrantFencingAndCancellation(t *testing.T) {
 func TestRunnerCredentialExecutesJobsAcrossRepositories(t *testing.T) {
 	h := externalHarness(t, 1)
 	h.http.Close()
-	const legacyLabel = "macos-admin-web"
-	legacy := h.cfg.ExternalRunners[macProfile]
-	delete(h.cfg.ExternalRunners, macProfile)
-	snapshot, err := json.Marshal(map[string]runnerRegistration{
-		legacyLabel: {Policy: &legacy, Digest: legacy.TokenSHA256},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.SaveRunnerRegistrations(t.Context(), snapshot); err != nil {
+	if err := h.store.SaveRunnerRegistrations(t.Context(), []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	h.cfg.Repositories = []string{"me/repo", "me/another", "me/disabled"}
 	h.start()
-	if code, body := h.externalRequest("/poll", testMachineToken, runnerRequest{Attempt: "frja_" + strings.Repeat("b", 64)}); code != 204 {
-		t.Fatalf("legacy device credential: %d %s", code, body)
-	}
-
 	const device = "lab-mac"
-	code, body := h.admin("POST", "/api/runners", map[string]string{"name": device})
-	var credential struct{ Token string }
-	if err := json.Unmarshal(body, &credential); code != 201 || err != nil || credential.Token == "" {
-		t.Fatalf("register: %d %v", code, err)
-	}
+	credential := pairDevice(t, h, device)
+
 	create := func(repository, label string) run.Run {
 		t.Helper()
 		source := strings.ReplaceAll(testWorkflow, "runs-on: small", "runs-on: "+label)
@@ -199,8 +248,8 @@ func TestRunnerCredentialExecutesJobsAcrossRepositories(t *testing.T) {
 		return item
 	}
 	disabled := create("me/disabled", run.MacRunnerLabel)
-	first := create("me/repo", legacyLabel)
-	second := create("me/another", run.MacRunnerLabel)
+	first := create("me/repo", run.MacRunnerLabel)
+	second := create("me/another", run.WSLCRunnerLabel)
 	h.http.Close()
 	h.cfg.Repositories = h.cfg.Repositories[:2]
 	h.start()
@@ -208,7 +257,7 @@ func TestRunnerCredentialExecutesJobsAcrossRepositories(t *testing.T) {
 	ctx, stop := context.WithTimeout(t.Context(), 10*time.Second)
 	defer stop()
 	var repositories []string
-	err = runner.Run(ctx, runner.Config{URL: h.http.URL, Token: credential.Token}, t.TempDir(), func(status runner.Status) {
+	err := runner.Run(ctx, runner.Config{URL: h.http.URL, Token: credential}, t.TempDir(), func(status runner.Status) {
 		if status.State == "failed" {
 			stop()
 		}

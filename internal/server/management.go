@@ -132,13 +132,8 @@ func (s *Server) validateManagement(m Management, requireRuntime bool) error {
 				return fmt.Errorf("workflow %s: %w", w.Path, err)
 			}
 			if requireRuntime {
-				// This preview uses a synthetic main ref. Actual admission checks
-				// the event ref against the external runner policy again.
-				for i := range plans {
-					if runner, ok := s.externalRunner(plans[i].Profile); ok {
-						plans[i].Ref = runner.Ref
-					}
-				}
+				// The preview uses a synthetic main ref; actual admission checks
+				// the event ref again against the device queue.
 				if err := s.validateProfiles(plans); err != nil {
 					return err
 				}

@@ -1,5 +1,5 @@
 use crate::activity::Tail;
-use crate::connection::Docker;
+use crate::settings::Docker;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -14,9 +14,8 @@ use std::{
 #[derive(Serialize)]
 pub struct Connection<'a> {
     pub url: &'a str,
-    #[serde(rename = "profile", skip_serializing_if = "Option::is_none")]
-    pub legacy_profile: Option<&'a str>,
-    pub token: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker: Option<Docker>,
 }
 
 #[derive(Clone, Default, PartialEq, Deserialize)]
@@ -34,6 +33,9 @@ pub struct Job {
 pub struct Status {
     pub state: String,
     pub message: String,
+    pub code: String,
+    pub expires_at: String,
+    pub device: String,
     pub job: Option<Job>,
 }
 
@@ -57,19 +59,16 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(
-        connection: Connection<'_>,
-        docker: Option<&Docker>,
-        logs: Arc<Mutex<Tail>>,
-    ) -> Result<Self, String> {
+    pub fn start(connection: Connection<'_>, logs: Arc<Mutex<Tail>>) -> Result<Self, String> {
         let mut program = std::env::current_exe().map_err(|_| "无法定位应用程序")?;
         program.set_file_name("forgelet-runner");
         let mut command = Command::new(program);
-        if let Some(docker) = docker {
-            command
-                .env("DOCKER_CONFIG", &docker.config)
-                .env("DOCKER_HOST", &docker.host)
-                .env("BUILDX_BUILDER", &docker.builder);
+        if let Some(docker) = &connection.docker {
+            if !docker.config.trim().is_empty() {
+                command.env("DOCKER_CONFIG", docker.config.trim());
+                command.env("DOCKER_HOST", docker.host.trim());
+                command.env("BUILDX_BUILDER", docker.builder.trim());
+            }
         }
         let mut child = command
             .stdin(Stdio::piped())

@@ -19,50 +19,37 @@ import (
 
 // A nil policy stores an operator override for a YAML registration.
 type runnerRegistration struct {
-	Policy *ExternalRunner `json:"policy,omitempty"`
-	Digest string          `json:"digest,omitempty"`
-	Paused bool            `json:"paused,omitempty"`
+	Digest string `json:"digest,omitempty"`
+	Paused bool   `json:"paused,omitempty"`
+	// Info, Labels and LastSeen are the device's last report, kept so an
+	// offline device still shows what and when it was.
+	Info     *run.RunnerInfo `json:"info,omitempty"`
+	Labels   []string        `json:"labels,omitempty"`
+	LastSeen time.Time       `json:"last_seen,omitzero"`
 }
 
 type runnerView struct {
-	Name     string    `json:"name"`
-	Source   string    `json:"source"`
-	Status   string    `json:"status"`
-	Paused   bool      `json:"paused"`
-	LastSeen time.Time `json:"last_seen,omitzero"`
-	JobID    string    `json:"job_id,omitempty"`
-	RunID    string    `json:"run_id,omitempty"`
+	Name            string          `json:"name"`
+	Status          string          `json:"status"`
+	Paused          bool            `json:"paused"`
+	LastSeen        time.Time       `json:"last_seen,omitzero"`
+	JobID           string          `json:"job_id,omitempty"`
+	RunID           string          `json:"run_id,omitempty"`
+	JobName         string          `json:"job_name,omitempty"`
+	Repository      string          `json:"repository,omitempty"`
+	StartedAt       time.Time       `json:"started_at,omitzero"`
+	DurationSeconds int             `json:"duration_seconds,omitempty"`
+	Labels          []string        `json:"labels,omitempty"`
+	Info            *run.RunnerInfo `json:"info,omitempty"`
 }
 
-func (s *Server) externalRunner(runnerID string) (ExternalRunner, bool) {
+// runnerRegistered reports whether a device with this credential identity is
+// registered. A device is one machine; there is no separate policy document.
+func (s *Server) runnerRegistered(runnerID string) bool {
 	s.runnerMu.Lock()
 	defer s.runnerMu.Unlock()
-	return s.externalRunnerLocked(runnerID)
-}
-
-func (s *Server) externalRunnerLocked(runnerID string) (ExternalRunner, bool) {
-	policy, exists := s.cfg.ExternalRunners[runnerID]
-	entry := s.runners[runnerID]
-	if entry.Policy != nil {
-		policy, exists = *entry.Policy, true
-	}
-	if entry.Digest != "" {
-		policy.TokenSHA256 = entry.Digest
-	}
-	return policy, exists
-}
-
-func (s *Server) runnerPoliciesLocked() map[string]ExternalRunner {
-	policies := make(map[string]ExternalRunner, len(s.cfg.ExternalRunners)+len(s.runners))
-	for name := range s.cfg.ExternalRunners {
-		policies[name], _ = s.externalRunnerLocked(name)
-	}
-	for name := range s.runners {
-		if policy, ok := s.externalRunnerLocked(name); ok {
-			policies[name] = policy
-		}
-	}
-	return policies
+	_, ok := s.runners[runnerID]
+	return ok
 }
 
 func (s *Server) loadRunners(ctx context.Context) error {
@@ -80,28 +67,128 @@ func (s *Server) loadRunners(ctx context.Context) error {
 		return fmt.Errorf("decode runner registrations: %w", err)
 	}
 	for name, entry := range s.runners {
-		if _, configured := s.cfg.ExternalRunners[name]; configured && entry.Policy != nil {
-			return fmt.Errorf("runner %q is registered in both SQLite and YAML", name)
+		if !runnerName.MatchString(name) || entry.Digest == "" {
+			return fmt.Errorf("invalid runner registration %q", name)
+		}
+		if _, err := hex.DecodeString(entry.Digest); err != nil {
+			return fmt.Errorf("invalid runner registration %q", name)
 		}
 	}
-	cfg := s.cfg
-	cfg.ExternalRunners = s.runnerPoliciesLocked()
-	return validateExternalRunners(cfg, s.external)
+	return nil
 }
 
 func (s *Server) saveRunnerLocked(ctx context.Context, runnerID string, entry runnerRegistration) error {
 	next := make(map[string]runnerRegistration, len(s.runners)+1)
 	maps.Copy(next, s.runners)
 	next[runnerID] = entry
-	body, err := json.Marshal(next)
-	if err != nil {
-		return fmt.Errorf("encode runner registrations: %w", err)
+	return s.saveRunnersLocked(ctx, next)
+}
+
+// saveRunnersLocked persists the whole registration set. An empty set is stored
+// as an empty object so loading never sees a NULL value.
+func (s *Server) saveRunnersLocked(ctx context.Context, next map[string]runnerRegistration) error {
+	body := []byte("{}")
+	if len(next) > 0 {
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("encode runner registrations: %w", err)
+		}
+		body = encoded
 	}
 	if err := s.external.SaveRunnerRegistrations(ctx, body); err != nil {
 		return fmt.Errorf("save runner registration: %w", err)
 	}
 	s.runners = next
 	return nil
+}
+
+// deleteRunner removes a paired device. A device with a live lease is left
+// until the job ends.
+func (s *Server) deleteRunner(w http.ResponseWriter, r *http.Request) {
+	runnerID := chi.URLParam(r, "runnerID")
+	s.runnerMu.Lock()
+	defer s.runnerMu.Unlock()
+	if _, exists := s.runners[runnerID]; !exists {
+		http.NotFound(w, r)
+		return
+	}
+	active, err := s.store.Active(r.Context())
+	if err != nil {
+		serverError(w, err)
+		return
+	}
+	for _, job := range active {
+		if job.Plan.External && job.ExternalRunnerID() == runnerID && s.now().Before(job.LeaseUntil) {
+			http.Error(w, "wait for the runner's current job to finish", http.StatusConflict)
+			return
+		}
+	}
+	next := make(map[string]runnerRegistration, len(s.runners))
+	maps.Copy(next, s.runners)
+	delete(next, runnerID)
+	if err = s.saveRunnersLocked(r.Context(), next); err != nil {
+		serverError(w, err)
+		return
+	}
+	delete(s.runnerSeen, runnerID)
+	delete(s.runnerReady, runnerID)
+	delete(s.runnerInfo, runnerID)
+	delete(s.runnerLabels, runnerID)
+	delete(s.runnerSaved, runnerID)
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+// runnerInfoView prefers the live report and falls back to the last persisted
+// one, so an offline device still explains itself.
+func (s *Server) runnerInfoView(runnerID string) *run.RunnerInfo {
+	if info, ok := s.runnerInfo[runnerID]; ok {
+		copied := info
+		return &copied
+	}
+	if info := s.runners[runnerID].Info; info != nil {
+		copied := *info
+		return &copied
+	}
+	return nil
+}
+
+// infoPersistInterval bounds how often a device's numbers reach SQLite. The
+// live copy is always current; the persisted one only has to survive a restart,
+// and the last-seen time it keeps is at most this stale.
+const infoPersistInterval = time.Minute
+
+// recordRunnerReport keeps one poll's capabilities, readings and time. Polls are
+// frequent, so persistence is throttled and its failure never fails the poll.
+func (s *Server) recordRunnerReport(ctx context.Context, runnerID string, info *run.RunnerInfo, labels []string) {
+	now := s.now().UTC()
+	if info != nil {
+		if !info.ValidBounds() {
+			info = nil
+		} else {
+			copied := *info
+			copied.ReportedAt = now
+			s.runnerInfo[runnerID] = copied
+		}
+	}
+	if len(labels) > 0 {
+		s.runnerLabels[runnerID] = labels
+	}
+	entry := s.runners[runnerID]
+	entry.LastSeen = now
+	if last, ok := s.runnerSaved[runnerID]; ok && now.Sub(last) < infoPersistInterval {
+		return
+	}
+	if info != nil {
+		copied := s.runnerInfo[runnerID]
+		entry.Info = &copied
+	}
+	if len(labels) > 0 {
+		entry.Labels = labels
+	}
+	if err := s.saveRunnerLocked(ctx, runnerID, entry); err != nil {
+		return
+	}
+	s.runnerSaved[runnerID] = now
 }
 
 func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
@@ -119,21 +206,35 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
 			jobs[job.ExternalRunnerID()] = job
 		}
 	}
-	policies := s.runnerPoliciesLocked()
-	views := make([]runnerView, 0, len(policies))
-	for _, name := range slices.Sorted(maps.Keys(policies)) {
-		source := "web"
-		if _, configured := s.cfg.ExternalRunners[name]; configured {
-			source = "yaml"
+	views := make([]runnerView, 0, len(s.runners))
+	for _, name := range slices.Sorted(maps.Keys(s.runners)) {
+		// Live polls decide whether the device is online; the persisted time
+		// answers "when was it last here" after a restart, with no poll in memory.
+		seen := s.runnerSeen[name]
+		lastSeen := seen
+		if lastSeen.IsZero() {
+			lastSeen = s.runners[name].LastSeen
 		}
-		view := runnerView{Name: name, Source: source,
-			LastSeen: s.runnerSeen[name], Paused: s.runners[name].Paused, Status: "offline"}
-		switch {
-		case jobs[name].ID != "":
-			view.Status, view.JobID, view.RunID = "busy", jobs[name].ID, jobs[name].RunID
-		case view.Paused:
+		labels := s.runnerLabels[name]
+		if len(labels) == 0 {
+			labels = s.runners[name].Labels
+		}
+		view := runnerView{Name: name,
+			LastSeen: lastSeen, Paused: s.runners[name].Paused, Status: "offline",
+			Labels: labels, Info: s.runnerInfoView(name)}
+		if job := jobs[name]; job.ID != "" {
+			view.Status, view.JobID, view.RunID = "busy", job.ID, job.RunID
+			view.JobName, view.Repository = job.Name, job.Plan.Repository
+			view.StartedAt = job.ClaimedAt
+			if view.StartedAt.IsZero() {
+				view.StartedAt = job.ReservedAt
+			}
+			if !view.StartedAt.IsZero() && now.After(view.StartedAt) {
+				view.DurationSeconds = int(now.Sub(view.StartedAt) / time.Second)
+			}
+		} else if view.Paused {
 			view.Status = "paused"
-		case !view.LastSeen.IsZero() && now.Sub(view.LastSeen) < 30*time.Second:
+		} else if !seen.IsZero() && now.Sub(seen) < 30*time.Second {
 			view.Status = "online"
 		}
 		views = append(views, view)
@@ -149,40 +250,6 @@ func runnerToken() (string, string) {
 	return token, fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 }
 
-func (s *Server) registerRunner(w http.ResponseWriter, r *http.Request) {
-	if s.external == nil {
-		http.Error(w, "external runners unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	var input struct {
-		Name string `json:"name"`
-	}
-	if err := decode(w, r, &input, 4096); err != nil {
-		http.Error(w, "invalid runner registration", http.StatusBadRequest)
-		return
-	}
-	s.runnerMu.Lock()
-	defer s.runnerMu.Unlock()
-	if _, exists := s.externalRunnerLocked(input.Name); exists {
-		http.Error(w, "runner name already exists", http.StatusConflict)
-		return
-	}
-	if len(s.runners) >= 128 {
-		http.Error(w, "runner registration limit reached", http.StatusUnprocessableEntity)
-		return
-	}
-	if !runnerName.MatchString(input.Name) {
-		http.Error(w, "invalid runner name", http.StatusUnprocessableEntity)
-		return
-	}
-	token, digest := runnerToken()
-	if err := s.saveRunnerLocked(r.Context(), input.Name, runnerRegistration{Policy: &ExternalRunner{}, Digest: digest}); err != nil {
-		serverError(w, err)
-		return
-	}
-	writeRunnerToken(w, http.StatusCreated, input.Name, token)
-}
-
 func (s *Server) pauseRunner(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Paused *bool `json:"paused"`
@@ -194,7 +261,7 @@ func (s *Server) pauseRunner(w http.ResponseWriter, r *http.Request) {
 	runnerID := chi.URLParam(r, "runnerID")
 	s.runnerMu.Lock()
 	defer s.runnerMu.Unlock()
-	if _, exists := s.externalRunnerLocked(runnerID); !exists {
+	if _, exists := s.runners[runnerID]; !exists {
 		http.NotFound(w, r)
 		return
 	}
@@ -211,7 +278,7 @@ func (s *Server) rotateRunner(w http.ResponseWriter, r *http.Request) {
 	runnerID := chi.URLParam(r, "runnerID")
 	s.runnerMu.Lock()
 	defer s.runnerMu.Unlock()
-	if _, exists := s.externalRunnerLocked(runnerID); !exists {
+	if _, exists := s.runners[runnerID]; !exists {
 		http.NotFound(w, r)
 		return
 	}

@@ -19,15 +19,6 @@ import (
 	"github.com/shitamachi/forgelet/internal/storage"
 )
 
-type ExternalRunner struct {
-	// Legacy registrations supply workflow aliases and a fallback build policy.
-	Build       *run.ExternalBuild `yaml:"build,omitempty" json:"build,omitempty"`
-	Repository  string             `yaml:"repository,omitempty" json:"repository,omitempty"`
-	Workflow    string             `yaml:"workflow,omitempty" json:"workflow,omitempty"`
-	Ref         string             `yaml:"ref,omitempty" json:"ref,omitempty"`
-	TokenSHA256 string             `yaml:"token_sha256" json:"-"`
-}
-
 type ExternalBuildPolicy struct {
 	Repository string            `yaml:"repository"`
 	Workflow   string            `yaml:"workflow"`
@@ -41,6 +32,7 @@ type externalStore interface {
 	ExpireExternal(context.Context, string, time.Time) error
 	RunnerRegistrations(context.Context) ([]byte, error)
 	SaveRunnerRegistrations(context.Context, []byte) error
+	HasQueuedExternal(context.Context, []string) (bool, error)
 }
 
 var runnerName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -49,23 +41,6 @@ func validExternalSource(repository, workflow, ref string) bool {
 	return configuredRepository(repository) && workflowPath(workflow) &&
 		strings.HasPrefix(ref, "refs/heads/") && len(ref) > len("refs/heads/") &&
 		!strings.ContainsAny(ref, " ~^:?*[\\\x00\r\n") && !strings.Contains(ref, "..")
-}
-
-func validateExternalRunners(cfg Config, store externalStore) error {
-	seen := map[string]bool{}
-	for name, runner := range cfg.ExternalRunners {
-		_, pod := cfg.Profiles[name]
-		digest, err := hex.DecodeString(runner.TokenSHA256)
-		key := strings.ToLower(runner.TokenSHA256)
-		legacy := runner.Repository != "" || runner.Workflow != "" || runner.Ref != "" || runner.Build != nil
-		if store == nil || seen[key] || !runnerName.MatchString(name) || err != nil || len(digest) != sha256.Size ||
-			legacy && (pod || !validExternalSource(runner.Repository, runner.Workflow, runner.Ref) ||
-				runner.Build != nil && !runner.Build.Valid()) {
-			return fmt.Errorf("invalid external runner %q", name)
-		}
-		seen[key] = true
-	}
-	return nil
 }
 
 func validateExternalBuilds(policies []ExternalBuildPolicy) error {
@@ -80,46 +55,31 @@ func validateExternalBuilds(policies []ExternalBuildPolicy) error {
 	return nil
 }
 
-func (s *Server) externalBuild(p run.Plan, legacy map[string]ExternalRunner) (*run.ExternalBuild, error) {
+// externalBuild resolves the image policy for a build step. The control plane
+// decides the image repository and target platform; a device is only chosen for
+// it when it reports that it can build the platform.
+func (s *Server) externalBuild(p run.Plan) (*run.ExternalBuild, error) {
 	for _, policy := range s.cfg.ExternalBuilds {
 		if strings.EqualFold(p.Repository, policy.Repository) && p.SourceWorkflow == policy.Workflow && p.Ref == policy.Ref {
 			return &policy.Build, nil
 		}
 	}
-	if runner, ok := legacy[p.Profile]; ok && runner.Build != nil && runner.permitsLegacy(p) {
-		return runner.Build, nil
-	}
-	var build *run.ExternalBuild
-	for _, runner := range legacy {
-		if runner.Build == nil || !runner.permitsLegacy(p) {
-			continue
-		}
-		if build != nil && *build != *runner.Build {
-			return nil, fmt.Errorf("conflicting legacy external builds; configure external_builds for %q", p.SourceWorkflow)
-		}
-		build = runner.Build
-	}
-	return build, nil
+	return nil, nil
 }
 
 func (s *Server) validateExternalPlans(plans []run.Plan) error {
-	s.runnerMu.Lock()
-	legacy := s.runnerPoliciesLocked()
-	s.runnerMu.Unlock()
 	hasExternal, hasExternalOnly := false, false
 	for i := range plans {
 		p := &plans[i]
-		runner := legacy[p.Profile]
 		_, pod := s.cfg.Profiles[p.Profile]
 		fallback := s.cfg.RunnerFallbacks[p.Profile]
-		if s.external == nil || fallback == "" && (pod || p.Profile != run.MacRunnerLabel && runner.Workflow == "") {
+		if s.external == nil || fallback == "" && (pod || !run.ExternalRunnerLabel(p.Profile)) {
 			if p.External {
 				return fmt.Errorf("external runner label %q is no longer available", p.Profile)
 			}
 			continue
 		}
-		if p.EventName != "push" && p.EventName != "workflow_dispatch" || !strings.HasPrefix(p.Ref, "refs/heads/") ||
-			p.Profile != run.MacRunnerLabel && runner.Workflow != "" && !runner.permitsLegacy(*p) {
+		if p.EventName != "push" && p.EventName != "workflow_dispatch" || !strings.HasPrefix(p.Ref, "refs/heads/") {
 			return fmt.Errorf("external runner label %q requires an authorized branch push or manual run", p.Profile)
 		}
 		if p.Control != "" || p.Kernel == "act" || p.ParentGate != "" || len(p.SecretNames) > 0 ||
@@ -132,7 +92,7 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 		for _, step := range p.Steps {
 			if step.Action != nil && step.Action.Uses == "forgelet/build@v1" {
 				var err error
-				build, err = s.externalBuild(*p, legacy)
+				build, err = s.externalBuild(*p)
 				if err != nil {
 					return err
 				}
@@ -205,10 +165,6 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 	return nil
 }
 
-func (r ExternalRunner) permitsLegacy(p run.Plan) bool {
-	return strings.EqualFold(p.Repository, r.Repository) && p.SourceWorkflow == r.Workflow && p.Ref == r.Ref
-}
-
 type externalJobRoute struct{}
 
 func (s *Server) runnerRoutes(r chi.Router) {
@@ -216,6 +172,7 @@ func (s *Server) runnerRoutes(r chi.Router) {
 		return
 	}
 	r.Route("/runner/v1", func(r chi.Router) {
+		s.pairingRoutes(r)
 		r.Post("/poll", s.runnerPoll)
 		r.Post("/renew", s.runnerRenew)
 		r.Route("/jobs/{jobID}", func(r chi.Router) {
@@ -242,8 +199,8 @@ func (s *Server) runnerMachine(r *http.Request) string {
 		return ""
 	}
 	got := sha256.Sum256([]byte("frr_" + token))
-	for name, runner := range s.runnerPoliciesLocked() {
-		expected, _ := hex.DecodeString(runner.TokenSHA256)
+	for name, entry := range s.runners {
+		expected, _ := hex.DecodeString(entry.Digest)
 		if subtle.ConstantTimeCompare(expected, got[:]) == 1 {
 			return name
 		}
@@ -252,14 +209,14 @@ func (s *Server) runnerMachine(r *http.Request) string {
 }
 
 type runnerRequest struct {
-	Profile string `json:"profile,omitempty"` // Ignored; accepted for old clients.
-	Attempt string `json:"attempt"`
-	JobID   string `json:"job_id,omitempty"`
+	Attempt string          `json:"attempt"`
+	JobID   string          `json:"job_id,omitempty"`
+	Info    *run.RunnerInfo `json:"info,omitempty"`
 }
 
 func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 	var input runnerRequest
-	if decode(w, r, &input, 2048) != nil {
+	if decode(w, r, &input, 8192) != nil {
 		http.Error(w, "invalid runner request", http.StatusBadRequest)
 		return
 	}
@@ -271,6 +228,13 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid runner identity", http.StatusUnauthorized)
 		return
 	}
+	platforms := runnerPlatforms(r.Header.Get(run.RunnerBuildPlatformsHeader))
+	labels := run.RunnerLabels(r.Header.Get(run.RunnerLabelsHeader))
+	if r.Header.Get(run.RunnerLabelsHeader) != "" && len(labels) == 0 {
+		http.Error(w, "invalid runner capabilities", http.StatusBadRequest)
+		return
+	}
+	s.recordRunnerReport(r.Context(), runnerID, input.Info, labels)
 	if err := s.disk.check(r.Context(), s.now()); err != nil {
 		serverError(w, err)
 		return
@@ -285,19 +249,28 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 			repositories[strings.ToLower(repo.Name)] = true
 		}
 	}
-	platforms := runnerPlatforms(r.Header.Get(run.RunnerBuildPlatformsHeader))
+	now := s.now().UTC()
+	if limit > 0 {
+		// Announce readiness before deciding, so a device that steps aside is
+		// still visible to the peer it makes room for.
+		s.runnerReady[runnerID] = runnerAvailability{at: now, platforms: platforms, labels: labels}
+		if s.stepAsideForPeer(r.Context(), runnerID, labels, platforms, now) {
+			s.runnerSeen[runnerID] = now
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	job, err := s.external.ReserveExternal(r.Context(), limit, storage.ExternalReservation{
 		RunnerID: runnerID, AttemptID: attempt, Repositories: repositories,
-		PodFirst: !s.preferRunner(), Platforms: platforms,
+		PodFirst: !s.preferRunner(), Platforms: platforms, Labels: labels,
 	})
 	if err != nil {
 		serverError(w, err)
 		return
 	}
-	now := s.now().UTC()
 	s.runnerSeen[runnerID] = now
 	if job.ID == "" {
-		s.runnerReady[runnerID] = runnerAvailability{at: now, platforms: platforms}
+		s.runnerReady[runnerID] = runnerAvailability{at: now, platforms: platforms, labels: labels}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -352,8 +325,7 @@ func (s *Server) authenticateExternal(r *http.Request) (run.Job, executionIdenti
 		return run.Job{}, executionIdentity{}, kube.ErrIdentity
 	}
 	job, err := s.store.GetJob(r.Context(), chi.URLParam(r, "jobID"))
-	_, configured := s.externalRunner(job.ExternalRunnerID())
-	if err != nil || !configured || !job.Plan.External || !s.allowed(job.Plan.Repository) ||
+	if err != nil || !s.runnerRegistered(job.ExternalRunnerID()) || !job.Plan.External || !s.allowed(job.Plan.Repository) ||
 		!time.Now().Before(job.LeaseUntil) ||
 		subtle.ConstantTimeCompare([]byte(attempt), []byte(job.AttemptID)) != 1 {
 		return run.Job{}, executionIdentity{}, kube.ErrIdentity

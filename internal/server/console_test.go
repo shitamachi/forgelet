@@ -138,9 +138,20 @@ func TestConsoleConfigurationExcludesCredentials(t *testing.T) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Profiles) != 3 || result.Profiles[0].Name != "builder" || !result.Profiles[0].Build ||
-		result.Profiles[1].Name != run.MacRunnerLabel || result.Profiles[1].Build || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
+	if len(result.Profiles) != 4 || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
 		t.Fatalf("config: %s", body)
+	}
+	builds := map[string]bool{}
+	for _, profile := range result.Profiles {
+		builds[profile.Name] = profile.Build
+	}
+	if build, ok := builds["builder"]; !ok || !build {
+		t.Fatalf("pod profile missing: %s", body)
+	}
+	for _, label := range []string{run.MacRunnerLabel, run.WSLCRunnerLabel} {
+		if build, ok := builds[label]; !ok || build {
+			t.Fatalf("runner profile %q missing or advertising builds: %s", label, body)
+		}
 	}
 }
 

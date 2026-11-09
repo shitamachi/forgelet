@@ -64,3 +64,14 @@ clean:
 .PHONY: runner-macos
 runner-macos:
 	sh desktop/macos/package.sh
+
+# Windows desktop runner and the Linux job image it starts with wslc.
+.PHONY: runner-windows runner-linux-executor runner-windows-image
+runner-windows:
+	pwsh -NoProfile -File desktop/windows/package.ps1
+
+runner-linux-executor:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o desktop/windows/image/forgelet-runner ./cmd/runner
+
+runner-windows-image: runner-linux-executor
+	wslc build -t "forgelet-runner-wslc:$(IMAGE_TAG)" -f desktop/windows/image/Dockerfile desktop/windows/image

@@ -1,9 +1,8 @@
 mod activity;
-mod connection;
+mod settings;
 mod worker;
 
 use activity::{LOG_BYTES, PREVIEW_BYTES, Tail, write_report};
-use connection::LocalConnection;
 use nsh_base::{ButtonElement, button, input};
 use nsh_core::{
     desktop::MenuRole,
@@ -12,6 +11,7 @@ use nsh_core::{
     prelude::*,
 };
 use nsh_platform_macos::{AppOptions, AppSource, Root, run_app};
+use settings::Settings;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -43,7 +43,8 @@ fn accent() -> AdaptiveColor {
 fn state_label(state: &str) -> &'static str {
     match state {
         "connecting" => "连接中",
-        "available" | "succeeded" | "failed" | "stopped" | "timed_out" => "等待任务",
+        "pairing" => "等待配对",
+        "available" | "succeeded" | "failed" | "stopped" | "timed_out" => "空闲",
         "running" => "正在构建",
         "reconnecting" => "重新连接中",
         "stopping" => "正在停止",
@@ -57,7 +58,7 @@ fn state_color(state: &str) -> AdaptiveColor {
         "available" | "succeeded" | "failed" | "stopped" | "timed_out" => {
             colors(0x237150, 0x6dd8a6)
         }
-        "running" | "connecting" => accent(),
+        "running" | "connecting" | "pairing" => accent(),
         "reconnecting" | "stopping" => colors(0x8c570b, 0xffc978),
         "error" => colors(0xa63246, 0xff9eac),
         _ => secondary(),
@@ -223,7 +224,7 @@ fn menu(
         ),
         MenuItem::submenu(
             "运行",
-            [MenuItem::new(if active { "停止" } else { "开启" })
+            [MenuItem::new(if active { "暂停" } else { "开始" })
                 .shortcut("mod+r")
                 .disabled(disabled)
                 .on_select(move || toggle())],
@@ -241,19 +242,13 @@ fn menu(
 
 #[component]
 fn App() -> impl IntoElement {
-    let (local_connection, config_error) = match LocalConnection::load() {
-        Ok(config) => (config, ""),
-        Err(message) => (None, message),
-    };
-    let configured = local_connection.is_some();
-    let url = signal(
-        local_connection
-            .as_ref()
-            .map_or_else(String::new, |config| config.url.clone()),
-    );
-    let token = signal(String::new());
+    let settings = Settings::load().unwrap_or_default();
+    let url = signal(settings.url.clone());
+    let docker_config = signal(settings.docker.config.clone());
+    let docker_host = signal(settings.docker.host.clone());
+    let docker_builder = signal(settings.docker.builder.clone());
     let active = signal(false);
-    let fields_locked = computed(move || configured || active.get());
+    let fields_locked = computed(move || active.get());
     let status = signal(Status::default());
     let job = signal(None::<Job>);
     let job_state = signal(String::new());
@@ -270,9 +265,7 @@ fn App() -> impl IntoElement {
     let saving = signal(false);
     let feedback = signal(String::new());
     let disabled = computed(move || {
-        status.get().state == "stopping"
-            || !active.get()
-                && (url.get().trim().is_empty() || !configured && token.get().trim().is_empty())
+        status.get().state == "stopping" || !active.get() && url.get().trim().is_empty()
     });
 
     let record = {
@@ -347,7 +340,7 @@ fn App() -> impl IntoElement {
                 Err(_) => set_status(Status {
                     state: "error".into(),
                     message: "无法读取执行器状态".into(),
-                    job: None,
+                    ..Status::default()
                 }),
             }
             *current = None;
@@ -370,36 +363,32 @@ fn App() -> impl IntoElement {
                 });
                 return;
             }
-            let (address, device_token) = if let Some(config) = &local_connection {
-                match config.token() {
-                    Ok(token) => (config.url.clone(), token),
-                    Err(message) => {
-                        set_status(Status {
-                            state: "error".into(),
-                            message: message.into(),
-                            job: None,
-                        });
-                        return;
-                    }
-                }
-            } else {
-                (url.get(), token.get())
+            // The app owns its settings; the credential comes from pairing.
+            let next = Settings {
+                url: url.get().trim().to_owned(),
+                docker: settings::Docker {
+                    config: docker_config.get().trim().to_owned(),
+                    host: docker_host.get().trim().to_owned(),
+                    builder: docker_builder.get().trim().to_owned(),
+                },
             };
+            if let Err(message) = next.validate().and_then(|()| next.save()) {
+                set_status(Status {
+                    state: "error".into(),
+                    message,
+                    ..Status::default()
+                });
+                return;
+            }
             match Worker::start(
                 Connection {
-                    url: address.trim(),
-                    legacy_profile: local_connection
-                        .as_ref()
-                        .and_then(|config| config.legacy_profile.as_deref()),
-                    token: device_token.trim(),
+                    url: next.url.trim(),
+                    docker: next.docker.configured().then(|| next.docker.clone()),
                 },
-                local_connection
-                    .as_ref()
-                    .and_then(|config| config.docker.as_ref()),
                 logs.clone(),
             ) {
                 Ok(started) => {
-                    run_url.set(address.trim().trim_end_matches('/').into());
+                    run_url.set(next.url.trim().trim_end_matches('/').into());
                     job.set(None);
                     job_state.set(String::new());
                     set_status(Status {
@@ -412,7 +401,7 @@ fn App() -> impl IntoElement {
                 Err(message) => set_status(Status {
                     state: "error".into(),
                     message,
-                    job: None,
+                    ..Status::default()
                 }),
             }
         })
@@ -532,6 +521,34 @@ fn App() -> impl IntoElement {
                                     text("1 个槽位").text_size(px(11.0)).text_color(secondary()),
                                 ),
                         )
+                        // While an administrator has not approved this machine
+                        // yet, the code is the only thing that matters.
+                        .child(
+                            view()
+                                .gap(px(3.0))
+                                .child(
+                                    text(move || status.get().code.clone())
+                                        .font_family("Menlo")
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_size(px(24.0))
+                                        .text_color(accent()),
+                                )
+                                .child(
+                                    text(move || {
+                                        if status.get().state != "pairing" {
+                                            return String::new();
+                                        }
+                                        let current = status.get();
+                                        if current.message.is_empty() {
+                                            "在 Web 的 Runners 页面批准该代码".into()
+                                        } else {
+                                            current.message
+                                        }
+                                    })
+                                    .text_size(px(11.0))
+                                    .text_color(secondary()),
+                                ),
+                        )
                         .child(
                             button()
                                 .disabled(disabled)
@@ -552,7 +569,7 @@ fn App() -> impl IntoElement {
                                 .focus(|style| style.border_color(accent()))
                                 .disabled_style(|style| style.bg(colors(0xe8e8ec, 0x3b3b40)))
                                 .child(
-                                    text(move || if active.get() { "停止" } else { "开启" })
+                                    text(move || if active.get() { "暂停" } else { "开始" })
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_size(px(12.0))
                                         .text_color(move || {
@@ -578,16 +595,32 @@ fn App() -> impl IntoElement {
                             fields_locked,
                             false,
                         ))
+                        .child(
+                            text("镜像构建（可选）")
+                                .text_color(ink())
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD),
+                        )
                         .child(field(
-                            "设备凭据",
-                            if configured {
-                                "使用本机凭据文件"
-                            } else {
-                                "粘贴设备凭据"
-                            },
-                            token,
+                            "Docker 配置目录",
+                            "/Users/runner/.docker",
+                            docker_config,
                             fields_locked,
-                            true,
+                            false,
+                        ))
+                        .child(field(
+                            "Docker Host",
+                            "unix:///Users/runner/.orbstack/run/docker.sock",
+                            docker_host,
+                            fields_locked,
+                            false,
+                        ))
+                        .child(field(
+                            "Buildx Builder",
+                            "forgelet-build",
+                            docker_builder,
+                            fields_locked,
+                            false,
                         ))
                         .child(
                             text(move || {
@@ -595,13 +628,9 @@ fn App() -> impl IntoElement {
                                 if !current.message.is_empty() {
                                     current.message
                                 } else if active.get() {
-                                    "停止或关窗会取消本机当前任务。".into()
-                                } else if configured {
-                                    "已加载本机配置，点「开启」接单。".into()
-                                } else if !config_error.is_empty() {
-                                    config_error.into()
+                                    "暂停或关窗会取消本机当前任务。".into()
                                 } else {
-                                    "凭据仅保留在本窗口。".into()
+                                    "点「开始」，按提示在 Web 中批准本机。".into()
                                 }
                             })
                             .text_color(move || {
