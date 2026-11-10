@@ -60,21 +60,43 @@ impl Settings {
     /// A machine upgraded from the old app keeps working: the previous
     /// connection file supplies the address and Docker settings, and its device
     /// credential becomes the runner's stored credential, so no new approval is
-    /// needed.
+    /// needed. Apps before 0.3 used `profile.json` for the same data, and the
+    /// profile name it carried no longer exists, so only the rest is read.
     fn migrate(dir: &Path) -> Result<Self, &'static str> {
-        let legacy = dir.join("connection.json");
-        let Ok(data) = read_file(&legacy) else {
+        Self::migrate_into(dir, Self::work_root().as_deref())
+    }
+
+    /// migrate_into is the testable form: the credential goes to `root` and the
+    /// settings to `dir`, never to the real account during a test.
+    fn migrate_into(dir: &Path, root: Option<&Path>) -> Result<Self, &'static str> {
+        let mut data = None;
+        for name in ["connection.json", "profile.json"] {
+            match read_file(&dir.join(name)) {
+                Ok(found) => {
+                    data = Some(found);
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => return Err("无法读取旧的本机连接配置，请检查文件权限"),
+            }
+        }
+        let Some(data) = data else {
             return Ok(Self::default());
         };
         let Some(settings) = parse_legacy(&data) else {
             return Err("旧的本机连接配置格式无效");
         };
-        if let (Some(root), Some(token)) = (Self::work_root(), settings.0.clone())
-            && fs::create_dir_all(&root).is_ok()
+        if let (Some(root), Some(token)) = (root, settings.0.clone())
+            && fs::create_dir_all(root).is_ok()
         {
             let _ = write_private(&root.join("credential"), &token);
         }
-        let _ = settings.1.save();
+        if dir.is_dir() {
+            let _ = write_private(
+                &dir.join("settings.json"),
+                &serde_json::to_string_pretty(&settings.1).unwrap_or_default(),
+            );
+        }
         Ok(settings.1)
     }
 
@@ -223,6 +245,40 @@ mod tests {
         };
         assert!(relative.validate().is_err());
         assert!(serde_json::from_str::<Settings>(r#"{"url":"https://f","unknown":1}"#).is_err());
+    }
+
+    #[test]
+    fn older_profile_file_still_migrates() {
+        let dir = std::env::temp_dir().join(format!("forgelet-migrate-{}", std::process::id()));
+        let cache = dir.join("cache");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let token = dir.join("token");
+        fs::write(
+            &token,
+            "frr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+        )
+        .unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        let profile = format!(
+            r#"{{"url":"https://forgelet.example","profile":"old-device","token_file":{:?}}}"#,
+            token.to_string_lossy()
+        );
+        fs::write(dir.join("profile.json"), profile).unwrap();
+        fs::set_permissions(dir.join("profile.json"), fs::Permissions::from_mode(0o600)).unwrap();
+
+        let settings = Settings::migrate_into(&dir, Some(&cache)).expect("migrated settings");
+        assert_eq!(settings.url, "https://forgelet.example");
+        assert!(!settings.docker.configured());
+        let credential = fs::read_to_string(cache.join("credential")).expect("credential");
+        assert_eq!(
+            credential.trim(),
+            "frr_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let saved: Settings =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(saved.url, settings.url);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
