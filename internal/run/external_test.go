@@ -36,10 +36,10 @@ func TestRunnerLabels(t *testing.T) {
 
 func TestDeviceLabelMismatchKeepsPortableLabelsShared(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		label      string
-		caps       []string
-		mismatch   bool
+		name     string
+		label    string
+		caps     []string
+		mismatch bool
 	}{
 		{"mac device", MacRunnerLabel, []string{MacRunnerLabel}, false},
 		{"wslc device", MacRunnerLabel, []string{WSLCRunnerLabel}, true},
@@ -87,8 +87,8 @@ func TestRunnerInfoBounds(t *testing.T) {
 		"huge memory":  {MemoryTotalBytes: 1 << 51},
 		"available above total": {MemoryTotalBytes: 1 << 30,
 			MemoryAvailableBytes: 2 << 30},
-		"negative load":      {Load1: -1},
-		"oversized os name":  {OS: strings.Repeat("x", 40)},
+		"negative load":     {Load1: -1},
+		"oversized os name": {OS: strings.Repeat("x", 40)},
 		"oversized version": {Version: strings.Repeat("9", 80)},
 	} {
 		if info.ValidBounds() {

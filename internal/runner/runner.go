@@ -37,9 +37,9 @@ type Status struct {
 	Log       *run.Log           `json:"log,omitempty"`
 	Message   string             `json:"message,omitempty"`
 	Job       *run.ExternalGrant `json:"job,omitempty"`
-	Code      string             `json:"code,omitempty"`       // Pairing code shown until an administrator approves it.
-	ExpiresAt time.Time          `json:"expires_at,omitzero"`  // When that code stops working.
-	Device    string             `json:"device,omitempty"`     // Name the administrator gave this machine.
+	Code      string             `json:"code,omitempty"`      // Pairing code shown until an administrator approves it.
+	ExpiresAt time.Time          `json:"expires_at,omitzero"` // When that code stops working.
+	Device    string             `json:"device,omitempty"`    // Name the administrator gave this machine.
 }
 
 // ExecRequest is what the Windows runner writes to the Linux container's stdin:

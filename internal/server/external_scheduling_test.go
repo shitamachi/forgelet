@@ -16,14 +16,12 @@ func pollRunner(t *testing.T, h *harness, token, nonce, labels, platforms string
 		t.Fatal(err)
 	}
 	return h.request("POST", "/runner/v1/poll", string(body), map[string]string{
-		"Authorization":               "Bearer " + token,
-		"Content-Type":                "application/json",
-		run.RunnerLabelsHeader:        labels,
+		"Authorization":                "Bearer " + token,
+		"Content-Type":                 "application/json",
+		run.RunnerLabelsHeader:         labels,
 		run.RunnerBuildPlatformsHeader: platforms,
 	})
 }
-
-
 
 func deviceInfo(load float64) *run.RunnerInfo {
 	return &run.RunnerInfo{OS: "windows", Arch: "amd64", CPUs: 8, MemoryTotalBytes: 16 << 30,

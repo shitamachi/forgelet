@@ -71,9 +71,9 @@ type config struct {
 	CASecret             string                     `yaml:"runtime_ca_secret"`
 	AllowInsecureRuntime bool                       `yaml:"allow_insecure_runtime"`
 
-	ExternalBuilds  []server.ExternalBuildPolicy  `yaml:"external_builds"`
-	PreferRunner    *bool                         `yaml:"prefer_runner"`
-	RunnerFallbacks map[string]string             `yaml:"runner_fallbacks"`
+	ExternalBuilds  []server.ExternalBuildPolicy `yaml:"external_builds"`
+	PreferRunner    *bool                        `yaml:"prefer_runner"`
+	RunnerFallbacks map[string]string            `yaml:"runner_fallbacks"`
 }
 
 func main() {
