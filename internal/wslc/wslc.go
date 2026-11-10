@@ -69,7 +69,7 @@ func (c Config) Validate() error {
 			return errors.New("wslc dns entries must be addresses")
 		}
 	}
-	if c.CAFile != "" && !filepath.IsAbs(c.CAFile) {
+	if c.CAFile != "" && !absolutePath(c.CAFile) {
 		return errors.New("wslc ca_file must be an absolute path")
 	}
 	if c.ControlURL != "" {
@@ -80,6 +80,22 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// absolutePath reports whether p names an absolute location. WSLC settings are
+// authored on Windows, but the validation also runs on other hosts (tests and
+// the control plane), where filepath.IsAbs only understands the local form. A
+// drive-letter path or a UNC share is absolute for the runner wherever the
+// check runs, and a POSIX path is absolute inside the WSL distribution.
+func absolutePath(p string) bool {
+	if filepath.IsAbs(p) {
+		return true
+	}
+	if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
+		drive := p[0]
+		return drive >= 'A' && drive <= 'Z' || drive >= 'a' && drive <= 'z'
+	}
+	return strings.HasPrefix(p, `\\`)
 }
 
 // Find locates wslc.exe: the installed WSL directory first, then PATH.
