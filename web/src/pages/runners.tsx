@@ -37,6 +37,9 @@ function systemSummary(info: RunnerInfo, live: boolean): string {
   if (info.backend === 'wslc') {
     parts.push(info.engine ? `${info.engine} 容器` : 'WSLC 容器')
   }
+  if (info.backend === 'wsl2') {
+    parts.push(info.engine ? `WSL2 · ${info.engine}` : 'WSL2 发行版')
+  }
   if (info.cpus) {
     parts.push(`${info.cpus} 核`)
   }
