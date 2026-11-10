@@ -88,7 +88,7 @@ func (c Config) Validate() error {
 // drive-letter path or a UNC share is absolute for the runner wherever the
 // check runs, and a POSIX path is absolute inside the WSL distribution.
 func absolutePath(p string) bool {
-	if filepath.IsAbs(p) {
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
 		return true
 	}
 	if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
