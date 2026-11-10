@@ -25,10 +25,17 @@ func main() {
 	} else {
 		err = start(ctx, status)
 	}
-	if err != nil {
+	if err != nil && !sessionEnded(err) {
 		_ = status.Encode(runner.Status{State: "error", Message: err.Error()})
 		os.Exit(1)
 	}
+}
+
+// sessionEnded reports whether err only says the desktop session ended: the app
+// closed the pipe, or the user pressed stop while pairing. That is a pause, not
+// a failure, so nothing is reported and the window shows its own paused state.
+func sessionEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func start(ctx context.Context, status *json.Encoder) error {
