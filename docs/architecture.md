@@ -754,17 +754,32 @@ flowchart LR
 | GitLab Runner | agent 生命周期与 shell、容器等执行方式分开。几台机器先用带退避和抖动的短轮询，确有规模需求时可在原协议上加有界长轮询。[Executors](https://docs.gitlab.com/runner/executors/)、[长轮询](https://docs.gitlab.com/ci/runners/long_polling/) |
 | Buildkite | 以显式队列分配工作，agent 拉取任务、回报输出和产物。forgelet 用已有 `runs-on` profile 表达相同路由，沿用单 SQLite 和原有日志、产物接口语义。[Agent](https://buildkite.com/docs/agent)、[Queues](https://buildkite.com/docs/agent/queues) |
 
-### 执行环境与 WSLC
+### 执行环境与 Windows 后端
 
 | 示例 `runs-on` | 桌面端所在位置 | job 实际运行位置 |
 |---|---|---|
 | `macos-arm64` | Mac 专用非管理员账号下的桌面 App | 原生 Darwin arm64 进程。首轮跑源码编译、单测和产物，可用实测验证后再接入 Xcode 等特定工具链。 |
-| `linux-amd64-external` | 物理 Linux 或 WSL2 distro 内 | 原生 Linux amd64 进程。WSL2 使用专用 distro、Linux 文件系统和最小挂载；同协议可另建 arm64 profile。 |
-| `linux-amd64-wslc` | Windows 专用非管理员账号下的桌面 App | `wslc.exe` 按固定 OCI digest 启动 Linux 容器，运行 Linux 版 `forgelet-executor`。容器内 `runner.os` 为 `Linux`，`runner.arch` 来自实际执行架构。 |
+| `linux-amd64-wslc` | Windows 专用非管理员账号下的桌面 App | `wslc.exe` 按固定 OCI digest 启动 Linux 容器，运行 Linux 版 `forgelet-runner`。每次 attempt 一个干净容器，环境由镜像固定。 |
+| `linux-amd64-wsl2` | Windows 专用非管理员账号下的桌面 App | 在已安装的 WSL2 发行版内原生运行 Linux 版 `forgelet-runner`，直接使用该发行版自己的 Docker、Buildx 和工具链。 |
+
+两个 Windows 后端共用同一套协议：supervisor 在 Windows 侧负责配对、轮询、续租和上报，Linux 执行器只做单个 attempt。区别只在「Linux 执行器跑在哪」以及是否有现成的 Docker。后端在桌面应用里切换，设备自报的标签随之改变，同一台机器不会同时占用两个队列。
 
 微软在 2026-09-29 宣布 WSLC GA，当前文档要求 WSL ≥ 2.9.3。`wslc.exe` 经 `wslservice.exe` 使用 WSL 虚拟机，`wslcsession.exe` 代表调用用户管理容器、挂载与网络。镜像和容器状态在每 session 的 VHD 中，删除容器可丢弃其临时文件系统。CLI session 的 CPU、内存、磁盘和空闲关停由 `%LOCALAPPDATA%\wslc\settings.yaml` 管理。容器网络经 Windows 网络栈接入，实际私网 DNS、VPN 路由和证书信任仍要从容器内验证。[微软 GA 公告](https://blogs.windows.com/windowsdeveloper/2026/09/29/wsl-containers-now-generally-available/)、[WSLC 架构](https://devblogs.microsoft.com/commandline/wslc-architecture-deep-dive/)、[固定提交的配置文档](https://github.com/MicrosoftDocs/WSL/blob/526e57752f7241dc7e98f14b1033905e8e675587/WSL/wsl-container-settings.md)
 
 Windows 端先用 CLI 做薄适配。用唯一 attempt 名称和 forgelet 所有权标记执行 create/start、inspect、stop 和 remove，启动响应丢失时先核对容器再决定下一步。用容器自己的文件系统保存工作区，凭据通过私有启动通道进入容器，命令行和容器配置元数据中无明文。Windows 桌面 App 在用户启用接单期间管理 agent，WSLC VM 可在容器退出后空闲关停。首轮以专用用户前台启动，实测停止接单、关闭 App、睡眠唤醒和 Windows 重启。若 CLI 无法可靠传递启动凭据或观测退出，再考虑官方 SDK 的 `Session`、`Container` 和 `Process` 接口。[固定提交的 CLI 与 API 文档](https://github.com/MicrosoftDocs/WSL/blob/526e57752f7241dc7e98f14b1033905e8e675587/WSL/wsl-container.md)、[WSL API reference](https://wsl.dev/api-reference/)
+
+### WSL2 后端（2026-11-10）
+
+选型：用 `wsl.exe` 的 CLI 通道，而不是 `WslLaunch`（`wslapi.h`）或 WSL 的 C++/C API。理由是同一条通路已经承担协议里的 stdin/stdout/退出码和隐藏控制台，不需要在 Windows 侧常驻 COM、句柄和回调管理：
+
+- `wsl.exe --distribution <d> --user <u> --exec <argv…>` 把子进程的 stdin/stdout/stderr 直接接到管道，退出码原样成为 `wsl.exe` 的退出码（实测 `exit 7` 返回 7），因此现有「stdin 传配置、stdout 逐行 JSON、关闭 stdin 即取消」的协议可以原样复用。[wsl.exe 内部实现](https://wsl.dev/technical-documentation/wsl.exe/)、[WSL 启动流程与 stdio 交接](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/boot-process.md)
+- `WslLaunch`/`WslLaunchInteractive` 需要先 `WslRegisterDistribution` 式的 API 生命周期、HANDLE 传参与 `WslConfigureDistribution` 配合，且 `wslapi` 面向的是「自行分发 Linux 发行版」的宿主程序；我们只是驱动用户已安装的发行版，没有这部分需求。[WslLaunch](https://learn.microsoft.com/en-us/windows/win32/api/wslapi/nf-wslapi-wsllaunch)
+- 文件传递不依赖 UNC 路径：执行器二进制经 stdin 流式写入发行版内的 `~/.local/share/forgelet/`，避免计划任务和会话里的 `\\wsl$` 兼容问题，也不要求开启 9p 挂载。
+- 输出编码：`wsl --list --quiet` 是 UTF-16LE（Windows 控制台程序的既有行为），其余命令是 UTF-8，客户端统一做探测解码；`wsl.exe` 必须以 `CREATE_NO_WINDOW` 启动，用 `DETACHED_PROCESS` 时它会拿不到输出。
+
+Docker：执行器给每个 job 独立 `HOME`，所以发行版的 Docker context 不会被继承；supervisor 在启动时读一次 `docker context inspect --format '{{.Endpoints.docker.Host}}'`，把结果作为 `DOCKER_HOST` 随 attempt 配置传给执行器。这样 rootless（`unix:///run/user/<uid>/docker.sock`）与 rootful（`unix:///var/run/docker.sock`）、以及 Docker Desktop 的 WSL 集成都能用，且不需要在 job 里猜测 socket 位置。[Docker Desktop 的 WSL2 后端](https://docs.docker.com/desktop/features/wsl/)
+
+安全边界：WSL2 后端使用发行版当前用户的权限，job 能看到该用户在发行版内可访问的文件。因此它和 WSLC 一样只用于可信仓库，并且建议专用非管理员 Windows 账号 + 专用发行版；不要在日常开发发行版上开启。
 
 WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按微软 WSL 安全模型处理。Windows job 只允许可信源码，容器使用非 root、普通权限，避免挂 Windows 用户目录、开发工作区、宿主 socket 或凭据目录。Linux/WSL2 同样使用专用账号；WSL2 的关闭互操作和自动挂载属于环境收紧。Mac 的专用目录、进程组与清理只用于可信 job，尤其同 OS 账号运行时，进程环境过滤不能防止读取该账号能访问的文件。个人登录账号的 SSH key、Keychain 和开发配置留在 runner 账号之外。[微软 WSL 安全模型](https://wsl.dev/technical-documentation/security/)、[GitLab shell runner 信任边界](https://docs.gitlab.com/runner/security/)
 

@@ -146,9 +146,14 @@ curl -fsS https://steam-admin.k.mygo.rocks/healthz
 
 若需要恢复由集群构建的主分支发布，在 Forgelet 停用 `.github/workflows/image-mac.yml` 并处理该工作流中仍在排队或执行的运行，再把 `admin-web` 的自动部署来源改回 `.github/workflows/image.yml` 的 `build-push`。在业务仓库用 `git restore --source=94f9fc6 -- .github/workflows/ci.yml .github/workflows/image.yml` 恢复原触发配置，提交并推送到 `main`。该 push 由集群 workflow 构建并提交 GitOps。仅需恢复服务时，优先按上一 digest 回滚。
 
-## Windows 桌面 Runner（WSLC）
+## Windows 桌面 Runner（WSLC / WSL2）
 
-Windows 设备不直接在 Windows 账户执行 job：桌面端调用 `wslc.exe`，每次 attempt 启动一个 Linux 容器，容器内的执行器完成领取后的 checkout、步骤、日志和产物。要求 Windows 10 1809+ 或 Windows 11、WSL 2.9.3+（`wsl --version` 或 `wslc.info` 显示的版本），以及到控制面的私网 HTTPS。构建机另需 Go 1.27+ 和 Rust（MSVC 工具链）。
+Windows 设备不直接在 Windows 账户执行 job：桌面端把每次 attempt 交给 Linux 环境执行，执行器完成领取后的 checkout、步骤、日志和产物。有两种后端，在应用「执行后端」中切换：
+
+- **WSLC 容器**（默认）：调用 `wslc.exe`，每次 attempt 启动一个干净容器，环境由镜像固定。要求 WSL 2.9.3+。
+- **WSL2 发行版**：在已安装的 WSL2 发行版里原生运行，直接使用该发行版自己的 Docker（`docker`、`docker buildx`）、语言运行时和工具链，适合构建镜像或需要容器的任务。要求该发行版已安装并能启动。
+
+两种后端都要求 Windows 10 1809+ 或 Windows 11、到控制面的私网 HTTPS；构建机另需 Go 1.27+ 和 Rust（MSVC 工具链）。
 
 在 Windows 构建机生成应用和 Linux 执行镜像：
 
@@ -156,7 +161,7 @@ Windows 设备不直接在 Windows 账户执行 job：桌面端调用 `wslc.exe`
 pwsh -File desktop/windows/package.ps1
 ```
 
-产物是单个 `dist\Forgelet Runner.exe`（Go 执行器由构建脚本编译并内嵌，首次启动写入 `%LOCALAPPDATA%\io.forgelet.runner\bin`，无需安装其他文件），同目录的 `SHA256SUMS.txt` 可用于校验；若未加 `-SkipImage`，还会用 `wslc build` 生成 `forgelet-runner-wslc:dev`。只重建执行镜像时可执行 `make runner-windows-image`；镜像来自 `desktop/windows/image/Dockerfile`，以非 root 用户运行，内含 bash、git、CA 和常用解压工具。
+产物是单个 `dist\Forgelet Runner.exe`（Windows 执行器与 WSL2 用的 Linux 执行器都由构建脚本编译并内嵌，首次启动写入 `%LOCALAPPDATA%\io.forgelet.runner\bin`，无需安装其他文件），同目录的 `SHA256SUMS.txt` 可用于校验；若未加 `-SkipImage`，还会用 `wslc build` 生成 `forgelet-runner-wslc:dev`。只重建执行镜像时可执行 `make runner-windows-image`；镜像来自 `desktop/windows/image/Dockerfile`，以非 root 用户运行，内含 bash、git、CA 和常用解压工具。
 
 把镜像推送到 Windows 设备可拉取的 registry，并固定 digest：
 
@@ -168,16 +173,20 @@ wslc inspect --type image zot.k.mygo.rocks/forgelet/runner-wslc:20261109
 
 基础镜像为 `node:24-bookworm`（已含 git、bash、curl 与构建工具），以非 root 的 `node` 用户在 `/workspace` 运行；需要其他工具链时在 `desktop/windows/image/Dockerfile` 中扩展。2026-11-09 的 homelab 验收使用 `zot.k.mygo.rocks/forgelet/runner-wslc@sha256:92be4aa92d382007d205bf835c6994dd7adfa65375d3eccff6b44dc199a1dbfa` 完成了 `steam-admin-web` 的 `npm ci`/类型检查/单测。
 
-设备接入与 macOS 相同：打开应用填控制面地址和执行镜像，点「开始」，在 Web 的 **Runners → 等待批准** 批准配对码；工作流使用 `runs-on: linux-amd64-wslc`。控制面只把这一个内建标签的 job 发给 Windows 设备，`macos-arm64` 与可移植标签的路由保持不变。
+设备接入与 macOS 相同：打开应用填控制面地址，选择执行后端并填好对应设置，点「开始」，在 Web 的 **Runners → 等待批准** 批准配对码；工作流分别使用 `runs-on: linux-amd64-wslc` 或 `runs-on: linux-amd64-wsl2`。控制面只把这些内建标签的 job 发给 Windows 设备，`macos-arm64` 与可移植标签的路由保持不变。切换后端即改变设备自报的标签：同一台机器不会同时占用两个队列。
 
-应用把控制面地址、执行镜像、可选的 CPU/内存等设置保存在自己管理的 `%APPDATA%\io.forgelet.runner\settings.json`，配对成功后执行器把凭据写进 `%LOCALAPPDATA%\io.forgelet.runner\credential`；两者都不需要手工编辑。私网 CA 仍可用可选的 `ca_file` 指定 PEM：桌面进程用它作为信任根，同一 PEM 也经容器 stdin 传入并在容器内设置 `SSL_CERT_FILE`。注意 Go 在设置 `SSL_CERT_FILE` 后不再合并系统根证书，该文件需要包含控制面的完整信任链。
+WSL2 后端的接入方式：应用用 `wsl --list --quiet` 校验发行版（留空表示默认发行版），通过 `wsl --distribution … --exec` 读取 `$HOME`，把内嵌的 Linux 执行器以流的方式写到 `<home>/.local/share/forgelet/forgelet-runner`（同尺寸则复用），之后每次 attempt 都在该发行版内启动，控制面地址、租约和日志仍走同一条 stdin/stdout 协议。任务的工作目录是发行版内的临时目录，运行结束即删除。
+
+Docker：执行器会给每个 job 单独的 `HOME`，发行版的 Docker context 不会被继承，因此服务端在启动时读取一次 `docker context inspect` 的 endpoint 并作为 `DOCKER_HOST` 传给执行器；rootless Docker（`unix:///run/user/<uid>/docker.sock`）和 rootful Docker 都适用。发行版内没装 Docker 时后端照常工作，只是 job 里没有 `docker` 命令。
+
+应用把控制面地址、执行后端与各自设置保存在自己管理的 `%APPDATA%\io.forgelet.runner\settings.json`，配对成功后执行器把凭据写进 `%LOCALAPPDATA%\io.forgelet.runner\credential`；两者都不需要手工编辑。私网 CA 仍可用可选的 `ca_file` 指定 PEM：桌面进程用它作为信任根，同一 PEM 也经容器 stdin 传入并在容器内设置 `SSL_CERT_FILE`。注意 Go 在设置 `SSL_CERT_FILE` 后不再合并系统根证书，该文件需要包含控制面的完整信任链。
 
 如果 `url` 只在 Windows 本机可解析（例如本地端口转发），用可选的 `control_url` 指定容器内可解析的同一控制面地址；未配置时容器沿用 `url`。两个地址都应由同一证书覆盖。Windows 上 `host.wslc.internal` 是容器访问宿主的名称，宿主机一侧不能直接用它连接本机监听端口。
 
 边界与排查：
 
-- 容器内是 Linux 环境和镜像自带工具；首轮不支持需要 Docker API 或 Buildx 的 job，这些任务继续用集群或 Mac Runner。
-- 点击停止、关闭窗口或退出应用会先关闭容器 stdin，容器内执行器按原有有界流程取消；超过宽限期再 `wslc stop`。进程被强退后，下次启动按 `forgelet.owner` 标签清理遗留容器。
+- WSLC 容器内是 Linux 环境和镜像自带工具；需要 Docker API 或 Buildx 的 job 请切到 WSL2 后端（或继续用集群、Mac Runner）。WSL2 后端使用发行版自己的 Docker，可在 job 中 `docker build`、`docker buildx build` 和 `docker run`。
+- 点击停止、关闭窗口或退出应用会先关闭执行器 stdin，按原有有界流程取消；WSLC 超过宽限期再 `wslc stop`，WSL2 则先关闭 stdin、再按需结束 `wsl.exe` 子进程。进程被强退后，WSLC 下次启动按 `forgelet.owner` 标签清理遗留容器。
 - 容器会话的资源上限、磁盘位置和空闲关停由 `%LOCALAPPDATA%\wslc\settings.yaml` 管理（`wslc settings`），默认空闲 30 秒关停会话。修改 `session.*` 后先用 `wslc system session terminate` 结束当前会话。
 - 睡眠或断网超过租期时，控制面把 attempt 记为 `interrupted`；恢复后显式重跑，不会把同一 attempt 重放到其他设备。
 

@@ -7,13 +7,15 @@ forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为�
 该历史实验执行官方 Actions，并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry。
 正式 act executor 已在 10.5b 接入；实验、正式临时 k3s 验证和 homelab 原始业务 workflow 验收分别记录，不能互相替代。
 
-已启用仓库的 `runs-on: macos-arm64` / `linux-amd64-wslc` job 进入共享桌面队列，由配对并经管理员批准的设备领取。配对的设备显示一次性码，Web 批准后自动取得凭据；一台机器是一个 runner，没有额外的 profile 或标签映射配置。支持分支 `push`、管理端手动触发、原生 `actions/checkout@v4` 子集、`bash`/`sh`、artifact v4 内置适配器，以及显式启用的 `forgelet/build@v1`。每个镜像 job 允许一个 build 步骤，`image` 须与控制面按仓库、workflow 和 ref 配置的镜像仓库一致。目标 OCI 平台由控制面配置，支持 `linux/amd64` 和 `linux/arm64`，产出为单平台 manifest。Apple Silicon 设备的 `runner.os` 和 `runner.arch` 仍分别是 `macOS` 与 `ARM64`。匹配 push 的控制面自动部署任务可与外部 job 同 run。仓库 YAML 中的 Pod、act、cache、仓库 secrets、Packages 和直接部署仍超出外部 Runner 能力。[接入与构建](deployment.md#从-mac-发布集群镜像)
+已启用仓库的 `runs-on: macos-arm64` / `linux-amd64-wslc` / `linux-amd64-wsl2` job 进入共享桌面队列，由配对并经管理员批准的设备领取。配对的设备显示一次性码，Web 批准后自动取得凭据；一台机器是一个 runner，没有额外的 profile 或标签映射配置。支持分支 `push`、管理端手动触发、原生 `actions/checkout@v4` 子集、`bash`/`sh`、artifact v4 内置适配器，以及显式启用的 `forgelet/build@v1`。每个镜像 job 允许一个 build 步骤，`image` 须与控制面按仓库、workflow 和 ref 配置的镜像仓库一致。目标 OCI 平台由控制面配置，支持 `linux/amd64` 和 `linux/arm64`，产出为单平台 manifest。Apple Silicon 设备的 `runner.os` 和 `runner.arch` 仍分别是 `macOS` 与 `ARM64`。匹配 push 的控制面自动部署任务可与外部 job 同 run。仓库 YAML 中的 Pod、act、cache、仓库 secrets、Packages 和直接部署仍超出外部 Runner 能力。[接入与构建](deployment.md#从-mac-发布集群镜像)
 
-`runs-on: linux-amd64-wslc` 的 job 由 Windows 设备在 WSL 容器内执行：`runner.os` 为 `Linux`，`runner.arch` 来自容器平台（首轮 `amd64`）。支持范围与 macOS 外部 Runner 相同（分支 push、管理端手动触发、原生 checkout、`bash`/`sh`、artifact v4 内置适配器和配置的镜像构建），工具来自设备配置的执行镜像，不承诺镜像之外的工具。容器内不提供 Docker API 或 Buildx，需要它们的 workflow 继续由集群或 Mac Runner 执行。设备睡眠或断网超过租期时，attempt 按 `interrupted` 结束，恢复后显式重跑。
+`runs-on: linux-amd64-wslc` 的 job 由 Windows 设备在 WSL 容器内执行：`runner.os` 为 `Linux`，`runner.arch` 来自容器平台（首轮 `amd64`）。支持范围与 macOS 外部 Runner 相同（分支 push、管理端手动触发、原生 checkout、`bash`/`sh`、artifact v4 内置适配器和配置的镜像构建），工具来自设备配置的执行镜像，不承诺镜像之外的工具。容器内不提供 Docker API 或 Buildx，需要它们的 workflow 继续由集群、Mac Runner 或 WSL2 后端执行。设备睡眠或断网超过租期时，attempt 按 `interrupted` 结束，恢复后显式重跑。
+
+`runs-on: linux-amd64-wsl2` 的 job 由 Windows 设备在已安装的 WSL2 发行版内原生执行：`runner.os` 为 `Linux`，`runner.arch` 为 `amd64`。与 WSLC 的差别是工具来自发行版本身，`docker`、`docker buildx` 和 `docker run` 可用（使用发行版当前用户的 Docker context，rootless 与 rootful 都支持），因此可以跑镜像构建和依赖容器的 workflow 步骤。控制面不启用按仓库的镜像是 `forgelet/build@v1` 的门槛之外的能力；该动作仍要求控制面授权的镜像仓库与平台。发行版内的工具链由设备维护，不承诺发行版之外的工具；job 以发行版当前用户运行，仅用于可信仓库。
 
 ## Workflow 与触发
 
-管理员可通过 `runner_fallbacks` 为可移植标签配置集群内 native profile。默认 `prefer_runner: true` 会让可运行该任务的空闲 Runner 优先领取，否则使用回退 Pod。镜像构建要求两端使用同一个控制面目标平台。显式的设备标签（`macos-arm64`、`linux-amd64-wslc`）与原有 Kubernetes 执行 profile 保留各自的执行语义；设备通过轮询声明的能力标签决定它能领取哪些内建标签的 job。多台空闲设备同时可接单时，控制面按设备自述的负载与内存余量优先让余量更多者领取，其余设备延后一个轮询周期重试；这不改变 `runs-on` 的匹配语义，也不提供按 job 的资源预留。
+管理员可通过 `runner_fallbacks` 为可移植标签配置集群内 native profile。默认 `prefer_runner: true` 会让可运行该任务的空闲 Runner 优先领取，否则使用回退 Pod。镜像构建要求两端使用同一个控制面目标平台。显式的设备标签（`macos-arm64`、`linux-amd64-wslc`、`linux-amd64-wsl2`）与原有 Kubernetes 执行 profile 保留各自的执行语义；设备通过轮询声明的能力标签决定它能领取哪些内建标签的 job。多台空闲设备同时可接单时，控制面按设备自述的负载与内存余量优先让余量更多者领取，其余设备延后一个轮询周期重试；这不改变 `runs-on` 的匹配语义，也不提供按 job 的资源预留。
 
 | 能力 | 当前支持 |
 |---|---|

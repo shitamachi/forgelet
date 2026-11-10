@@ -1470,3 +1470,13 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **自动测试**。`cargo test` 10 项通过（含真实抓取消息的解析用例、迁移用例、时间轴 7 组取值），`cargo clippy -D warnings`、`cargo fmt --check` 通过；Go 侧 `go test`（`cmd/runner`、`internal/runner`、`internal/server`、`internal/storage`、`internal/wslc`、`internal/run`、`internal/workflow`）与 `golangci-lint --build-tags integration` 0 issues。
 - **本机实测**。用真实控制面二进制与打包后的 runner 完成配对 → 批准 → 空闲 → 领取任务 → 运行 → 通过 → 暂停取消全流程，日志、任务头与最终状态在窗口与控制面两侧一致；拖动标题栏可用，浅色与深色取样与相邻面板同色。安装 `/Applications/Forgelet Runner.app` 0.5.0 (build 7) 并通过签名核验，发行包为 `bin/Forgelet-Runner-0.5.0-macos-arm64.zip`。
 - **边界**。以上是本机临时控制面与真实 `.app` 的验证，homelab 上的真实接单仍需在 Web 批准配对码；`Connection refused`/`SSL handshake failure` 一类失败在带 `https_proxy` 的终端里启动会出现，Finder 启动不受影响。
+
+## 2026-11-10：WSL2 原生后端
+
+- **选型**。查了 `wsl.exe` 实现、WSL 启动流程与 `WslLaunch`（`wslapi.h`）：`wsl.exe --exec` 把子进程 stdio 接到管道并原样返回退出码（实测 `exit 7` → 7），`WslLaunch` 面向自行分发发行版的宿主程序，需要 API 生命周期与句柄管理。因此沿用 CLI 通道，现有「stdin 传配置、stdout 逐行 JSON、关 stdin 即取消」协议原样复用；执行器二进制经 stdin 写入发行版内 `~/.local/share/forgelet/`，不依赖 UNC 或 9p。
+- **实现**。新增 `internal/wsl`（列发行版、读 `$HOME`、安装执行器、探测 Docker 版本与 context endpoint、拼 `--distribution/--user/--exec`）、`internal/runner/execute_wsl2.go`（原生执行、取消、日志与终态），`runner.Config` 增加 `wsl2` 字段，`newBackend` 按配置在 WSLC 与 WSL2 间分派，设备标签随后端变为 `linux-amd64-wsl2`。Linux 执行器支持由 supervisor 注入环境变量（`DOCKER_HOST`），并在未给 workspace 时自建临时目录。
+- **界面**。Windows 应用「执行后端」改为两个可切换按钮：WSLC 容器（执行镜像 + CPU/内存）、WSL2 发行版（发行版与用户，留空为默认）。设置保存在 `settings.json` 的 `backend` 字段，切换后重新开始即生效。单文件仍只有一个 exe：构建脚本同时编译并内嵌 Windows 与 Linux 两个执行器（69.98 MB）。
+- **控制面**。新增内建标签 `linux-amd64-wsl2` 与描述「Windows WSL2 (Linux amd64, Docker)」，控制台 profile 列表与 Runners 页系统摘要显示 `WSL2 · Docker <版本>`。
+- **验证（真实 Windows + WSL2）**。在 `archlinux` 发行版（rootless Docker 29.9.2）上用应用逐个跑通：`uname` 为 `6.18.58.1-microsoft-standard-WSL2 x86_64`；`docker version` 的 server 29.9.2；`docker run --rm alpine:3.20` 输出 `docker-in-wsl2-from-app`；job 内 `docker buildx build --load` 构建并运行镜像输出 `image-built-in-wsl2`。三个 run（`ca51b8c4ff57fa5c8e4cc8b7`、`a75e880eed6b4a4a8134682e` 等）均为 `success`。切回 WSLC 后端后设备标签恢复 `linux-amd64-wslc`（`wslc 3.0.5.0`）并正常空闲，说明两个后端可来回切换。
+- **测试**。`internal/wsl` 单测覆盖 UTF-16LE 解码、`--distribution/--user` 参数拼装与默认发行版显示；`cmd/runner` 覆盖注入环境变量名的校验；`internal/runner`（Windows）覆盖后端选择与标签推导；`internal/server` 与 `internal/run` 在 Linux 容器内全量通过。macOS 端不涉及此改动。
+- **边界**。WSL2 后端以发行版当前用户运行，可访问该用户文件，只用于可信仓库；需要 Node/Python 等工具时由设备自行在发行版里维护，应用不安装运行时。`forgelet/build@v1` 的镜像仓库授权规则未变。
