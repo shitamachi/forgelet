@@ -5,8 +5,8 @@ mod worker;
 use activity::{LOG_BYTES, PREVIEW_BYTES, Tail, write_report};
 use nsh_base::{ButtonElement, button, input};
 use nsh_core::{
-    desktop::MenuRole,
-    element::desktop::{MenuItem, set_application_menu},
+    desktop::{MenuRole, TitleBarStyle},
+    element::desktop::{MenuItem, set_application_menu, set_title_bar, title_bar},
     file_dialog::{FileFilter, SaveDialog},
     prelude::*,
 };
@@ -171,11 +171,43 @@ fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
     } else {
         format!("  {}", update.message)
     };
-    tail.borrow_mut().push(format!(
-        "+{:02}:{:02}  {label}{job}{detail}\n",
-        elapsed / 60,
-        elapsed % 60
-    ));
+    tail.borrow_mut()
+        .push(format!("{}  {label}{job}{detail}\n", stamp(elapsed)));
+}
+
+/// The status timeline's offset from the start of this window. Minutes alone
+/// are ambiguous once a window stays open for hours, so an hour or more adds
+/// the hours field instead of a three-digit minute count.
+fn stamp(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    if hours > 0 {
+        format!("+{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("+{minutes:02}:{seconds:02}")
+    }
+}
+
+/// The window's own title bar: the system bar is hidden so the sidebar and the
+/// console reach the window's top edge, and the traffic lights sit over the
+/// sidebar's colour. The whole strip drags the window and keeps AppKit's
+/// double-click behaviour.
+fn window_bar() -> impl IntoElement {
+    set_title_bar(TitleBarStyle::Hidden, Some(px(38.0)));
+    view()
+        .h(px(38.0))
+        .flex_shrink_0()
+        .flex_row()
+        .window_drag(true)
+        .child(
+            view()
+                .w(px(224.0))
+                .h_full()
+                .flex_shrink_0()
+                .bg(colors(0xf3f3f5, 0x29292c))
+                .pl(move || title_bar().left + px(6.0)),
+        )
+        .child(view().w(px(1.0)).h_full().bg(separator()))
+        .child(view().flex_1().h_full().bg(colors(0xf6f6f8, 0x2c2c30)))
 }
 
 fn menu(
@@ -483,324 +515,353 @@ fn App() -> impl IntoElement {
 
     view()
         .flex_1()
-        .flex_row()
+        .flex_col()
         .bg(colors(0xffffff, 0x1f1f21))
+        .child(window_bar())
         .child(
-            scroll()
-                .w(px(224.0))
-                .flex_shrink_0()
-                .bg(colors(0xf3f3f5, 0x29292c))
+            view()
+                .flex_1()
+                .flex_row()
+                .min_h(px(0.0))
+                .child(
+                    scroll()
+                        .w(px(224.0))
+                        .flex_shrink_0()
+                        .bg(colors(0xf3f3f5, 0x29292c))
+                        .child(
+                            view()
+                                .p(px(14.0))
+                                .gap(px(13.0))
+                                .child(
+                                    text("本机 Runner")
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_size(px(13.0))
+                                        .text_color(ink()),
+                                )
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            view()
+                                                .size(px(7.0))
+                                                .rounded_full()
+                                                .bg(move || state_color(&status.get().state)),
+                                        )
+                                        .child(
+                                            text(move || state_label(&status.get().state))
+                                                .text_color(secondary())
+                                                .text_size(px(12.0)),
+                                        )
+                                        .child(view().flex_1())
+                                        .child(
+                                            text("1 个槽位")
+                                                .text_size(px(11.0))
+                                                .text_color(secondary()),
+                                        ),
+                                )
+                                // While an administrator has not approved this machine
+                                // yet, the code is the only thing that matters.
+                                .child(
+                                    view()
+                                        .gap(px(3.0))
+                                        .child(
+                                            text(move || status.get().code.clone())
+                                                .font_family("Menlo")
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_size(px(24.0))
+                                                .text_color(accent()),
+                                        )
+                                        .child(
+                                            text(move || {
+                                                if status.get().state != "pairing" {
+                                                    return String::new();
+                                                }
+                                                let current = status.get();
+                                                if current.message.is_empty() {
+                                                    "在 Web 的 Runners 页面批准该代码".into()
+                                                } else {
+                                                    current.message
+                                                }
+                                            })
+                                            .text_size(px(11.0))
+                                            .text_color(secondary()),
+                                        ),
+                                )
+                                .child(
+                                    button()
+                                        .disabled(disabled)
+                                        .on_press(move || toggle())
+                                        .h(px(27.0))
+                                        .rounded(px(5.0))
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(move || {
+                                            if active.get() {
+                                                colors(0xfefefe, 0x39393f)
+                                            } else {
+                                                colors(0x0865ca, 0x265eaa)
+                                            }
+                                        })
+                                        .border(px(1.0))
+                                        .border_color(separator())
+                                        .focus(|style| style.border_color(accent()))
+                                        .disabled_style(|style| {
+                                            style.bg(colors(0xe8e8ec, 0x3b3b40))
+                                        })
+                                        .child(
+                                            text(
+                                                move || {
+                                                    if active.get() { "暂停" } else { "开始" }
+                                                },
+                                            )
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_size(px(12.0))
+                                            .text_color(move || {
+                                                if active.get() || disabled.get() {
+                                                    ink()
+                                                } else {
+                                                    colors(0xffffff, 0xffffff)
+                                                }
+                                            }),
+                                        ),
+                                )
+                                .child(view().h(px(1.0)).bg(separator()))
+                                .child(
+                                    text("连接设置")
+                                        .text_color(ink())
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::SEMIBOLD),
+                                )
+                                .child(field(
+                                    "控制面",
+                                    "https://forgelet.local",
+                                    url,
+                                    fields_locked,
+                                    false,
+                                ))
+                                .child(
+                                    text("镜像构建（可选）")
+                                        .text_color(ink())
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::SEMIBOLD),
+                                )
+                                .child(field(
+                                    "Docker 配置目录",
+                                    "/Users/runner/.docker",
+                                    docker_config,
+                                    fields_locked,
+                                    false,
+                                ))
+                                .child(field(
+                                    "Docker Host",
+                                    "unix:///Users/runner/.orbstack/run/docker.sock",
+                                    docker_host,
+                                    fields_locked,
+                                    false,
+                                ))
+                                .child(field(
+                                    "Buildx Builder",
+                                    "forgelet-build",
+                                    docker_builder,
+                                    fields_locked,
+                                    false,
+                                ))
+                                .child(
+                                    text(move || {
+                                        let current = status.get();
+                                        if !current.message.is_empty() {
+                                            current.message
+                                        } else if active.get() {
+                                            "暂停或关窗会取消本机当前任务。".into()
+                                        } else {
+                                            "点「开始」，按提示在 Web 中批准本机。".into()
+                                        }
+                                    })
+                                    .text_color(move || {
+                                        if status.get().state == "error" {
+                                            state_color("error")
+                                        } else {
+                                            secondary()
+                                        }
+                                    })
+                                    .text_size(px(11.0)),
+                                ),
+                        ),
+                )
+                .child(view().w(px(1.0)).bg(separator()))
                 .child(
                     view()
-                        .p(px(14.0))
-                        .gap(px(13.0))
-                        .child(
-                            text("本机 Runner")
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(13.0))
-                                .text_color(ink()),
-                        )
+                        .min_w(px(0.0))
+                        .flex_1()
                         .child(
                             view()
                                 .flex_row()
                                 .items_center()
-                                .gap(px(6.0))
+                                .gap(px(8.0))
+                                .px(px(12.0))
+                                .h(px(43.0))
+                                .bg(colors(0xf6f6f8, 0x2c2c30))
                                 .child(
                                     view()
-                                        .size(px(7.0))
-                                        .rounded_full()
-                                        .bg(move || state_color(&status.get().state)),
-                                )
-                                .child(
-                                    text(move || state_label(&status.get().state))
-                                        .text_color(secondary())
-                                        .text_size(px(12.0)),
+                                        .flex_row()
+                                        .gap(px(1.0))
+                                        .p(px(2.0))
+                                        .rounded(px(6.0))
+                                        .bg(colors(0xe5e5ea, 0x343438))
+                                        .child(tab("日志", Pane::Log, pane))
+                                        .child(tab("状态", Pane::Status, pane)),
                                 )
                                 .child(view().flex_1())
+                                .child(command("复制记录").on_press(move || {
+                                    set_clipboard(report());
+                                    feedback.set("运行记录已复制".into());
+                                }))
                                 .child(
-                                    text("1 个槽位").text_size(px(11.0)).text_color(secondary()),
+                                    command("导出…").disabled(saving).on_press(move || export()),
                                 ),
                         )
-                        // While an administrator has not approved this machine
-                        // yet, the code is the only thing that matters.
+                        .child(view().h(px(1.0)).bg(separator()))
                         .child(
                             view()
-                                .gap(px(3.0))
+                                .px(px(14.0))
+                                .py(px(10.0))
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
                                 .child(
-                                    text(move || status.get().code.clone())
-                                        .font_family("Menlo")
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_size(px(24.0))
-                                        .text_color(accent()),
+                                    view()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .gap(px(3.0))
+                                        .child(
+                                            text(move || {
+                                                job.get().map_or_else(
+                                                    || "暂无任务".into(),
+                                                    |job| job.name,
+                                                )
+                                            })
+                                            .number_of_lines(1)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_size(px(13.0))
+                                            .text_color(ink()),
+                                        )
+                                        .child(
+                                            text(move || {
+                                                job.get().map_or_else(
+                                                    || "领取任务后，构建输出会显示在下方。".into(),
+                                                    |job| {
+                                                        let platform = if job.platform.is_empty() {
+                                                            String::new()
+                                                        } else {
+                                                            format!("  ·  目标 {}", job.platform)
+                                                        };
+                                                        format!(
+                                                            "{}  ·  {}  ·  {}{platform}",
+                                                            job.repository,
+                                                            job.sha
+                                                                .chars()
+                                                                .take(8)
+                                                                .collect::<String>(),
+                                                            job_label(&job_state.get())
+                                                        )
+                                                    },
+                                                )
+                                            })
+                                            .number_of_lines(1)
+                                            .text_color(secondary())
+                                            .text_size(px(11.0)),
+                                        ),
                                 )
                                 .child(
-                                    text(move || {
-                                        if status.get().state != "pairing" {
-                                            return String::new();
-                                        }
-                                        let current = status.get();
-                                        if current.message.is_empty() {
-                                            "在 Web 的 Runners 页面批准该代码".into()
-                                        } else {
-                                            current.message
-                                        }
-                                    })
-                                    .text_size(px(11.0))
-                                    .text_color(secondary()),
-                                ),
-                        )
-                        .child(
-                            button()
-                                .disabled(disabled)
-                                .on_press(move || toggle())
-                                .h(px(27.0))
-                                .rounded(px(5.0))
-                                .items_center()
-                                .justify_center()
-                                .bg(move || {
-                                    if active.get() {
-                                        colors(0xfefefe, 0x39393f)
-                                    } else {
-                                        colors(0x0865ca, 0x265eaa)
-                                    }
-                                })
-                                .border(px(1.0))
-                                .border_color(separator())
-                                .focus(|style| style.border_color(accent()))
-                                .disabled_style(|style| style.bg(colors(0xe8e8ec, 0x3b3b40)))
-                                .child(
-                                    text(move || if active.get() { "暂停" } else { "开始" })
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_size(px(12.0))
-                                        .text_color(move || {
-                                            if active.get() || disabled.get() {
-                                                ink()
-                                            } else {
-                                                colors(0xffffff, 0xffffff)
+                                    command("查看运行")
+                                        .disabled(move || job.get().is_none())
+                                        .on_press(move || {
+                                            if let Some(job) = job.get()
+                                                && job.run_id.bytes().all(|c| {
+                                                    c.is_ascii_alphanumeric()
+                                                        || c == b'-'
+                                                        || c == b'_'
+                                                })
+                                            {
+                                                let opened = open_url(format!(
+                                                    "{}/runs/{}",
+                                                    run_url.get(),
+                                                    job.run_id
+                                                ));
+                                                spawn(async move {
+                                                    let _ = opened.await;
+                                                });
                                             }
                                         }),
                                 ),
                         )
                         .child(view().h(px(1.0)).bg(separator()))
                         .child(
-                            text("连接设置")
-                                .text_color(ink())
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(field(
-                            "控制面",
-                            "https://forgelet.local",
-                            url,
-                            fields_locked,
-                            false,
-                        ))
-                        .child(
-                            text("镜像构建（可选）")
-                                .text_color(ink())
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD),
-                        )
-                        .child(field(
-                            "Docker 配置目录",
-                            "/Users/runner/.docker",
-                            docker_config,
-                            fields_locked,
-                            false,
-                        ))
-                        .child(field(
-                            "Docker Host",
-                            "unix:///Users/runner/.orbstack/run/docker.sock",
-                            docker_host,
-                            fields_locked,
-                            false,
-                        ))
-                        .child(field(
-                            "Buildx Builder",
-                            "forgelet-build",
-                            docker_builder,
-                            fields_locked,
-                            false,
-                        ))
-                        .child(
-                            text(move || {
-                                let current = status.get();
-                                if !current.message.is_empty() {
-                                    current.message
-                                } else if active.get() {
-                                    "暂停或关窗会取消本机当前任务。".into()
-                                } else {
-                                    "点「开始」，按提示在 Web 中批准本机。".into()
-                                }
-                            })
-                            .text_color(move || {
-                                if status.get().state == "error" {
-                                    state_color("error")
-                                } else {
-                                    secondary()
-                                }
-                            })
-                            .text_size(px(11.0)),
-                        ),
-                ),
-        )
-        .child(view().w(px(1.0)).bg(separator()))
-        .child(
-            view()
-                .min_w(px(0.0))
-                .flex_1()
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.0))
-                        .px(px(12.0))
-                        .h(px(43.0))
-                        .bg(colors(0xf6f6f8, 0x2c2c30))
-                        .child(
-                            view()
-                                .flex_row()
-                                .gap(px(1.0))
-                                .p(px(2.0))
-                                .rounded(px(6.0))
-                                .bg(colors(0xe5e5ea, 0x343438))
-                                .child(tab("日志", Pane::Log, pane))
-                                .child(tab("状态", Pane::Status, pane)),
-                        )
-                        .child(view().flex_1())
-                        .child(command("复制记录").on_press(move || {
-                            set_clipboard(report());
-                            feedback.set("运行记录已复制".into());
-                        }))
-                        .child(command("导出…").disabled(saving).on_press(move || export())),
-                )
-                .child(view().h(px(1.0)).bg(separator()))
-                .child(
-                    view()
-                        .px(px(14.0))
-                        .py(px(10.0))
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            view()
+                            scroll()
                                 .flex_1()
-                                .min_w(px(0.0))
-                                .gap(px(3.0))
+                                .min_h(px(0.0))
+                                .element_ref(&console)
                                 .child(
-                                    text(move || {
-                                        job.get().map_or_else(|| "暂无任务".into(), |job| job.name)
-                                    })
-                                    .number_of_lines(1)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(13.0))
-                                    .text_color(ink()),
-                                )
-                                .child(
-                                    text(move || {
-                                        job.get().map_or_else(
-                                            || "领取任务后，构建输出会显示在下方。".into(),
-                                            |job| {
-                                                let platform = if job.platform.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    format!("  ·  目标 {}", job.platform)
-                                                };
-                                                format!(
-                                                    "{}  ·  {}  ·  {}{platform}",
-                                                    job.repository,
-                                                    job.sha.chars().take(8).collect::<String>(),
-                                                    job_label(&job_state.get())
-                                                )
-                                            },
-                                        )
-                                    })
-                                    .number_of_lines(1)
-                                    .text_color(secondary())
-                                    .text_size(px(11.0)),
+                                    view().p(px(13.0)).child(
+                                        text(move || match pane.get() {
+                                            Pane::Log if log_text.get().is_empty() => {
+                                                "暂无构建日志".into()
+                                            }
+                                            Pane::Log => log_text.get(),
+                                            Pane::Status => timeline_text.get(),
+                                        })
+                                        .font_family("Menlo")
+                                        .text_size(px(11.5))
+                                        .text_color(ink())
+                                        .selectable(true),
+                                    ),
                                 ),
                         )
+                        .child(view().h(px(1.0)).bg(separator()))
                         .child(
-                            command("查看运行")
-                                .disabled(move || job.get().is_none())
-                                .on_press(move || {
-                                    if let Some(job) = job.get()
-                                        && job.run_id.bytes().all(|c| {
-                                            c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
-                                        })
-                                    {
-                                        let opened = open_url(format!(
-                                            "{}/runs/{}",
-                                            run_url.get(),
-                                            job.run_id
-                                        ));
-                                        spawn(async move {
-                                            let _ = opened.await;
-                                        });
-                                    }
-                                }),
-                        ),
-                )
-                .child(view().h(px(1.0)).bg(separator()))
-                .child(
-                    scroll()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .element_ref(&console)
-                        .child(
-                            view().p(px(13.0)).child(
-                                text(move || match pane.get() {
-                                    Pane::Log if log_text.get().is_empty() => "暂无构建日志".into(),
-                                    Pane::Log => log_text.get(),
-                                    Pane::Status => timeline_text.get(),
-                                })
-                                .font_family("Menlo")
-                                .text_size(px(11.5))
-                                .text_color(ink())
-                                .selectable(true),
-                            ),
-                        ),
-                )
-                .child(view().h(px(1.0)).bg(separator()))
-                .child(
-                    view()
-                        .h(px(31.0))
-                        .px(px(12.0))
-                        .flex_row()
-                        .gap(px(6.0))
-                        .items_center()
-                        .bg(colors(0xf6f6f8, 0x2c2c30))
-                        .child(
-                            text(move || {
-                                if feedback.get().is_empty() {
-                                    "日志与控制面确认的输出同步".into()
-                                } else {
-                                    feedback.get()
-                                }
-                            })
-                            .text_size(px(11.0))
-                            .text_color(secondary()),
-                        )
-                        .child(view().flex_1())
-                        .child(
-                            button()
-                                .h(px(23.0))
-                                .px(px(4.0))
-                                .justify_center()
-                                .selected(follow)
-                                .on_press(move || follow.update(|follow| *follow = !*follow))
+                            view()
+                                .h(px(31.0))
+                                .px(px(12.0))
+                                .flex_row()
+                                .gap(px(6.0))
+                                .items_center()
+                                .bg(colors(0xf6f6f8, 0x2c2c30))
                                 .child(
                                     text(move || {
-                                        if follow.get() {
-                                            "跟随最新 ✓"
+                                        if feedback.get().is_empty() {
+                                            "日志与控制面确认的输出同步".into()
                                         } else {
-                                            "跟随最新"
+                                            feedback.get()
                                         }
                                     })
                                     .text_size(px(11.0))
-                                    .text_color(move || {
-                                        if follow.get() { accent() } else { secondary() }
-                                    }),
+                                    .text_color(secondary()),
+                                )
+                                .child(view().flex_1())
+                                .child(
+                                    button()
+                                        .h(px(23.0))
+                                        .px(px(4.0))
+                                        .justify_center()
+                                        .selected(follow)
+                                        .on_press(move || {
+                                            follow.update(|follow| *follow = !*follow)
+                                        })
+                                        .child(
+                                            text(move || {
+                                                if follow.get() {
+                                                    "跟随最新 ✓"
+                                                } else {
+                                                    "跟随最新"
+                                                }
+                                            })
+                                            .text_size(px(11.0))
+                                            .text_color(move || {
+                                                if follow.get() { accent() } else { secondary() }
+                                            }),
+                                        ),
                                 ),
                         ),
                 ),
@@ -813,8 +874,48 @@ fn main() -> std::process::ExitCode {
         AppOptions {
             app_id: "io.forgelet.runner".into(),
             title: "Forgelet Runner".into(),
-            size: (870, 560),
+            size: (870, 592),
             ..Default::default()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window stays open for hours; the timeline must not print a
+    /// three-digit minute count that reads like seconds.
+    #[test]
+    fn timeline_offsets_become_clear_after_an_hour() {
+        for (seconds, want) in [
+            (0, "+00:00"),
+            (29, "+00:29"),
+            (163, "+02:43"),
+            (3599, "+59:59"),
+            (3600, "+1:00:00"),
+            (19118, "+5:18:38"),
+            (360000, "+100:00:00"),
+        ] {
+            assert_eq!(stamp(seconds), want, "seconds {seconds}");
+        }
+    }
+
+    /// The window must name every state the runner reports, including the two
+    /// that only exist since pairing onboarding.
+    #[test]
+    fn every_runner_state_has_a_label() {
+        for (state, label) in [
+            ("connecting", "连接中"),
+            ("pairing", "等待配对"),
+            ("available", "空闲"),
+            ("running", "正在构建"),
+            ("reconnecting", "重新连接中"),
+            ("stopping", "正在停止"),
+            ("error", "连接失败"),
+            ("", "已暂停"),
+        ] {
+            assert_eq!(state_label(state), label, "state {state:?}");
+        }
+    }
 }
