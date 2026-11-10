@@ -15,6 +15,7 @@ const ExternalLease = 60 * time.Second
 const (
 	MacRunnerLabel  = "macos-arm64"
 	WSLCRunnerLabel = "linux-amd64-wslc"
+	WSL2RunnerLabel = "linux-amd64-wsl2"
 )
 
 // RunnerLabelsHeader announces the runs-on profiles a device can serve. Its
@@ -22,7 +23,7 @@ const (
 // original shared-queue behavior.
 const RunnerLabelsHeader = "X-Forgelet-Runner-Labels"
 
-var externalRunnerLabels = []string{MacRunnerLabel, WSLCRunnerLabel}
+var externalRunnerLabels = []string{MacRunnerLabel, WSLCRunnerLabel, WSL2RunnerLabel}
 
 // ExternalRunnerLabel reports whether label has a built-in device backend.
 func ExternalRunnerLabel(label string) bool {
@@ -49,6 +50,8 @@ func ExternalRunnerDescription(label string) string {
 		return "macOS arm64"
 	case WSLCRunnerLabel:
 		return "Windows WSLC (Linux amd64)"
+	case WSL2RunnerLabel:
+		return "Windows WSL2 (Linux amd64, Docker)"
 	}
 	return ""
 }

@@ -35,10 +35,20 @@ const (
 	stopWait = 25 * time.Second
 )
 
+// newBackend picks the execution environment this device is configured for.
+// WSL2 runs natively in a distribution (Docker available); WSLC gives each
+// attempt a fresh container.
 func newBackend(ctx context.Context, cfg Config, status func(Status)) (backend, error) {
-	if cfg.WSLC == nil {
-		return nil, errors.New("Windows 桌面执行器需要配置 wslc 执行镜像")
+	switch {
+	case cfg.WSL2 != nil:
+		return newWSL2Backend(ctx, cfg, status)
+	case cfg.WSLC != nil:
+		return newWSLBackend(ctx, cfg, status)
 	}
+	return nil, errors.New("Windows 执行器需要选择 WSLC 或 WSL2 后端")
+}
+
+func newWSLBackend(ctx context.Context, cfg Config, status func(Status)) (backend, error) {
 	if err := cfg.WSLC.Validate(); err != nil {
 		return nil, err
 	}
@@ -125,7 +135,10 @@ func removeOrphans(ctx context.Context, cli wslc.Client, status func(Status)) (i
 	return removed, nil
 }
 
-func deviceLabels(Config) []string {
+func deviceLabels(cfg Config) []string {
+	if cfg.WSL2 != nil {
+		return []string{"linux-" + goruntime.GOARCH + "-wsl2"}
+	}
 	return []string{"linux-" + goruntime.GOARCH + "-wslc"}
 }
 

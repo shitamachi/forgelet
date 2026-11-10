@@ -138,7 +138,7 @@ func TestConsoleConfigurationExcludesCredentials(t *testing.T) {
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Profiles) != 4 || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
+	if len(result.Profiles) != 5 || result.MaxParallel != 4 || result.Repositories[0] != "me/repo" {
 		t.Fatalf("config: %s", body)
 	}
 	builds := map[string]bool{}
@@ -148,7 +148,7 @@ func TestConsoleConfigurationExcludesCredentials(t *testing.T) {
 	if build, ok := builds["builder"]; !ok || !build {
 		t.Fatalf("pod profile missing: %s", body)
 	}
-	for _, label := range []string{run.MacRunnerLabel, run.WSLCRunnerLabel} {
+	for _, label := range []string{run.MacRunnerLabel, run.WSLCRunnerLabel, run.WSL2RunnerLabel} {
 		if build, ok := builds[label]; !ok || build {
 			t.Fatalf("runner profile %q missing or advertising builds: %s", label, body)
 		}

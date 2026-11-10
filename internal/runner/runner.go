@@ -29,7 +29,17 @@ import (
 type Config struct {
 	URL   string       `json:"url"`
 	Token string       `json:"token,omitempty"` // Optional; otherwise the desktop pairs and stores one.
-	WSLC  *wslc.Config `json:"wslc,omitempty"`  // Windows only: the Linux container backend.
+	WSLC  *wslc.Config `json:"wslc,omitempty"`  // Windows: one Linux container per attempt.
+	WSL2  *WSL2Config  `json:"wsl2,omitempty"`  // Windows: jobs run inside a WSL distribution.
+}
+
+// WSL2Config selects native execution inside a WSL distribution. The app writes
+// its embedded Linux runner to disk and hands over the path; the supervisor
+// installs that binary into the distribution.
+type WSL2Config struct {
+	Distro       string `json:"distro,omitempty"`        // Empty means the WSL default distribution.
+	User         string `json:"user,omitempty"`          // Empty means the distribution's default user.
+	RunnerBinary string `json:"runner_binary,omitempty"` // Host path of the Linux runner to install.
 }
 
 type Status struct {
@@ -45,11 +55,12 @@ type Status struct {
 // ExecRequest is what the Windows runner writes to the Linux container's stdin:
 // one job attempt and the private material it needs. It is never in argv.
 type ExecRequest struct {
-	URL       string `json:"url"`
-	JobID     string `json:"job_id"`
-	Attempt   string `json:"attempt"`
-	Workspace string `json:"workspace"`
-	CACert    string `json:"ca_cert,omitempty"`
+	URL       string            `json:"url"`
+	JobID     string            `json:"job_id"`
+	Attempt   string            `json:"attempt"`
+	Workspace string            `json:"workspace"`
+	CACert    string            `json:"ca_cert,omitempty"`
+	Env       map[string]string `json:"env,omitempty"` // Extra job environment, e.g. a WSL2 Docker endpoint.
 }
 
 type client struct {

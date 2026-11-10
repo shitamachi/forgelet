@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,19 @@ import (
 	"github.com/shitamachi/forgelet/internal/run"
 	"github.com/shitamachi/forgelet/internal/runner"
 )
+
+// validEnvKey keeps supervisor-provided names to what a shell can carry.
+func validEnvKey(key string) bool {
+	if key == "" || len(key) > 64 {
+		return false
+	}
+	for _, r := range key {
+		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
 
 // runExec is the container side of a Windows job: it runs exactly one attempt
 // inside the Linux container and reports its logs and final state on stdout.
@@ -31,8 +45,30 @@ func runExec(ctx context.Context, status *json.Encoder, input io.Reader) error {
 	if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
 		return errors.New("执行配置格式无效")
 	}
-	if request.JobID == "" || request.Workspace == "" || run.ExternalAttempt(request.Attempt) == "" {
+	if request.JobID == "" || run.ExternalAttempt(request.Attempt) == "" {
 		return errors.New("执行配置缺少任务或工作区")
+	}
+	// The executor gives each job its own HOME, so a distribution's Docker
+	// context is not inherited automatically; the supervisor states the daemon
+	// endpoint explicitly.
+	for key, value := range request.Env {
+		if !validEnvKey(key) || strings.ContainsAny(value, "\r\n\x00") {
+			return errors.New("执行配置包含无效环境变量")
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return err
+		}
+	}
+	// A container passes its workspace explicitly; native WSL2 execution lets the
+	// runner create a private directory under the account's temp area.
+	workspace := request.Workspace
+	if workspace == "" {
+		dir, err := os.MkdirTemp("", "forgelet-job-")
+		if err != nil {
+			return errors.New("无法创建任务工作区")
+		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		workspace = dir
 	}
 	if request.CACert != "" {
 		dir, err := os.MkdirTemp("", "forgelet-ca-")
@@ -65,7 +101,7 @@ func runExec(ctx context.Context, status *json.Encoder, input io.Reader) error {
 	var final run.State
 	err := executor.RunRemote(lifetime, executor.RemoteOptions{
 		URL: request.URL, JobID: request.JobID, AttemptToken: request.Attempt,
-		Workspace: request.Workspace, RetryTimeout: 25 * time.Second, FlushTimeout: 8 * time.Second,
+		Workspace: workspace, RetryTimeout: 25 * time.Second, FlushTimeout: 8 * time.Second,
 		OnResult: func(state run.State) {
 			mu.Lock()
 			final = state
