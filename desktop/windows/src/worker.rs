@@ -1,5 +1,5 @@
 use crate::activity::Tail;
-use crate::settings::{Settings, Wslc};
+use crate::settings::{Backend, Settings, Wslc};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -13,15 +13,28 @@ use std::{
     thread::JoinHandle,
 };
 
-/// The Go runner is compiled by `build.rs` and shipped inside this executable,
+/// The Go runners are compiled by `build.rs` and shipped inside this executable,
 /// so the app is one file with nothing to install beside it.
 const EMBEDDED_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-runner.exe"));
+/// The Linux executor the WSL2 backend installs into the distribution.
+const EMBEDDED_LINUX_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-runner-linux"));
 
 #[derive(Serialize)]
 pub struct Connection<'a> {
     pub url: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub wslc: Option<&'a Wslc>,
+    pub wslc: Option<Wslc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wsl2: Option<Wsl2Connection>,
+}
+
+/// The native WSL2 backend: which distribution to use and the host path of the
+/// Linux executor the supervisor installs there.
+#[derive(Serialize)]
+pub struct Wsl2Connection {
+    pub distro: String,
+    pub user: String,
+    pub runner_binary: String,
 }
 
 #[derive(Clone, Default, PartialEq, Deserialize)]
@@ -65,8 +78,28 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(connection: Connection<'_>, logs: Arc<Mutex<Tail>>) -> Result<Self, String> {
-        let program = materialize_runner()?;
+    /// start launches the supervisor with this device's settings. The WSL2
+    /// backend additionally needs the Linux executor on disk; it is written from
+    /// the same embedded copy.
+    pub fn start(settings: &Settings, logs: Arc<Mutex<Tail>>) -> Result<Self, String> {
+        let program = materialize("forgelet-runner.exe", EMBEDDED_RUNNER)?;
+        let mut connection = Connection {
+            url: settings.url.trim(),
+            wslc: None,
+            wsl2: None,
+        };
+        match settings.backend {
+            Backend::Wslc => connection.wslc = Some(settings.wslc.clone()),
+            Backend::Wsl2 => {
+                connection.wsl2 = Some(Wsl2Connection {
+                    distro: settings.wsl2.distro.trim().to_owned(),
+                    user: settings.wsl2.user.trim().to_owned(),
+                    runner_binary: materialize("forgelet-runner-linux", EMBEDDED_LINUX_RUNNER)?
+                        .to_string_lossy()
+                        .into_owned(),
+                })
+            }
+        }
         let mut command = Command::new(program);
         // The runner is a console program; starting it from the windowed app
         // must not create a terminal. It writes to the pipes below, so it needs
@@ -143,21 +176,21 @@ impl Worker {
     }
 }
 
-/// Writes the embedded runner to the account's cache and returns its path. A
+/// Writes an embedded runner to the account's cache and returns its path. A
 /// matching file is reused, so repeated starts cost one size check; a mismatched
 /// one is replaced atomically (a running copy keeps working until it exits).
-fn materialize_runner() -> Result<PathBuf, String> {
+fn materialize(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let root = Settings::work_root().ok_or("无法定位本机缓存目录")?;
     let dir = root.join("bin");
     fs::create_dir_all(&dir).map_err(|_| "无法创建执行器目录")?;
-    let path = dir.join("forgelet-runner.exe");
+    let path = dir.join(name);
     if let Ok(metadata) = fs::metadata(&path)
-        && metadata.len() == EMBEDDED_RUNNER.len() as u64
+        && metadata.len() == bytes.len() as u64
     {
         return Ok(path);
     }
-    let temporary = dir.join(format!("forgelet-runner-{}.exe", std::process::id()));
-    fs::write(&temporary, EMBEDDED_RUNNER).map_err(|_| "无法写入内置执行器")?;
+    let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
     match fs::rename(&temporary, &path) {
         Ok(()) => Ok(path),
         Err(_) => {
@@ -165,7 +198,7 @@ fn materialize_runner() -> Result<PathBuf, String> {
             // Another instance may be running the old copy; use it if its size
             // still matches, otherwise report the failure.
             match fs::metadata(&path) {
-                Ok(metadata) if metadata.len() == EMBEDDED_RUNNER.len() as u64 => Ok(path),
+                Ok(metadata) if metadata.len() == bytes.len() as u64 => Ok(path),
                 _ => Err("无法更新内置执行器，请关闭其他实例后重试".into()),
             }
         }

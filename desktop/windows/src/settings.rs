@@ -11,8 +11,29 @@ use std::{
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Settings {
+    /// `wslc` runs each attempt in a fresh container; `wsl2` runs natively in a
+    /// distribution, where the machine's Docker and tools are available.
+    pub backend: Backend,
     pub url: String,
     pub wslc: Wslc,
+    pub wsl2: Wsl2,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    #[default]
+    Wslc,
+    Wsl2,
+}
+
+impl Backend {
+    pub fn label(self) -> &'static str {
+        match self {
+            Backend::Wslc => "WSLC 容器",
+            Backend::Wsl2 => "WSL2 发行版",
+        }
+    }
 }
 
 /// The Linux container backend. The image is the job environment; it is pinned
@@ -25,6 +46,15 @@ pub struct Wslc {
     pub memory: Option<String>,
     pub ca_file: Option<PathBuf>,
     pub control_url: Option<String>,
+}
+
+/// Native execution inside a WSL distribution. Empty names mean the WSL default
+/// distribution and its default user.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Wsl2 {
+    pub distro: String,
+    pub user: String,
 }
 
 impl Settings {
@@ -72,14 +102,26 @@ impl Settings {
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err("控制面地址必须以 https:// 开头".into());
         }
-        if self.wslc.image.trim().is_empty() {
-            return Err("请填写执行镜像，例如 registry/runner@sha256:…".into());
-        }
-        if self.wslc.image.contains(char::is_whitespace) {
-            return Err("执行镜像不能包含空格".into());
-        }
-        if self.cpus_ok() && self.wslc.memory.as_deref().is_some_and(|m| m.contains(char::is_whitespace)) {
-            return Err("内存大小不能包含空格".into());
+        match self.backend {
+            Backend::Wslc => {
+                if self.wslc.image.trim().is_empty() {
+                    return Err("请填写执行镜像，例如 registry/runner@sha256:…".into());
+                }
+                if self.wslc.image.contains(char::is_whitespace) {
+                    return Err("执行镜像不能包含空格".into());
+                }
+                if self.cpus_ok() && self.wslc.memory.as_deref().is_some_and(|m| m.contains(char::is_whitespace)) {
+                    return Err("内存大小不能包含空格".into());
+                }
+            }
+            Backend::Wsl2 => {
+                if self.wsl2.distro.contains(char::is_whitespace) {
+                    return Err("WSL 发行版名称不能包含空格".into());
+                }
+                if self.wsl2.user.contains(char::is_whitespace) || self.wsl2.user.contains(':') {
+                    return Err("WSL 用户名不能包含空格或冒号".into());
+                }
+            }
         }
         Ok(())
     }
@@ -123,6 +165,7 @@ mod tests {
         let settings = Settings {
             url: "https://forgelet.example".into(),
             wslc: Wslc { image: "zot/runner@sha256:abc".into(), cpus: Some(2.0), ..Wslc::default() },
+            ..Settings::default()
         };
         let text = serde_json::to_string(&settings).unwrap();
         let decoded: Settings = serde_json::from_str(&text).unwrap();
@@ -136,8 +179,24 @@ mod tests {
         let spaced = Settings {
             url: "https://f".into(),
             wslc: Wslc { image: "a b".into(), ..Wslc::default() },
+            ..Settings::default()
         };
         assert!(spaced.validate().is_err());
+        // The WSL2 backend needs no image; it only has to name a valid user.
+        let wsl2 = Settings {
+            backend: Backend::Wsl2,
+            url: "https://f".into(),
+            wsl2: Wsl2 { distro: "archlinux".into(), user: "guo".into() },
+            ..Settings::default()
+        };
+        assert!(wsl2.validate().is_ok());
+        let bad_user = Settings {
+            backend: Backend::Wsl2,
+            url: "https://f".into(),
+            wsl2: Wsl2 { distro: String::new(), user: "a:b".into() },
+            ..Settings::default()
+        };
+        assert!(bad_user.validate().is_err());
         assert!(serde_json::from_str::<Settings>(r#"{"url":"https://f","unknown":1}"#).is_err());
     }
 }

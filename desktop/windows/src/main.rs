@@ -7,7 +7,7 @@ mod settings;
 mod worker;
 
 use activity::{LOG_BYTES, PREVIEW_BYTES, Tail, write_report};
-use settings::Settings;
+use settings::{Backend, Settings};
 use nsh_base::{ButtonElement, button, input};
 use nsh_core::{
     desktop::MenuRole,
@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use worker::{Connection, Job, Status, Worker};
+use worker::{Job, Status, Worker};
 
 fn colors(light: u32, dark: u32) -> AdaptiveColor {
     AdaptiveColor::new(rgb(light), rgb(dark))
@@ -152,6 +152,31 @@ fn tab(name: &'static str, pane: Pane, current: Signal<Pane>) -> impl IntoElemen
         .child(text(name).text_size(px(12.0)).text_color(ink()))
 }
 
+fn backend_tab(
+    name: &'static str,
+    value: Backend,
+    current: Signal<Backend>,
+    locked: impl IntoReactive<bool>,
+) -> impl IntoElement {
+    let locked = locked.into_reactive();
+    button()
+        .h(px(23.0))
+        .px(px(10.0))
+        .justify_center()
+        .rounded(px(4.0))
+        .disabled(move || locked.get())
+        .bg(move || {
+            if current.get() == value {
+                colors(0xffffff, 0x57575d)
+            } else {
+                colors(0xe9e9ed, 0x343438)
+            }
+        })
+        .focus(|style| style.border(px(1.0)).border_color(accent()))
+        .on_press(move || current.set(value))
+        .child(text(name).text_size(px(12.0)).text_color(ink()))
+}
+
 fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
     let elapsed = started.elapsed().as_secs();
     let label = match update.state.as_str() {
@@ -239,6 +264,7 @@ fn menu(
 fn App() -> impl IntoElement {
     let settings = Settings::load().unwrap_or_default();
     let url = signal(settings.url.clone());
+    let backend = signal(settings.backend);
     let image = signal(settings.wslc.image.clone());
     let cpus = signal(
         settings
@@ -247,6 +273,8 @@ fn App() -> impl IntoElement {
             .map_or_else(String::new, |value| value.to_string()),
     );
     let memory = signal(settings.wslc.memory.clone().unwrap_or_default());
+    let distro = signal(settings.wsl2.distro.clone());
+    let wsl_user = signal(settings.wsl2.user.clone());
     let active = signal(false);
     let fields_locked = computed(move || active.get());
     let status = signal(Status::default());
@@ -366,6 +394,7 @@ fn App() -> impl IntoElement {
             }
             // The app owns its settings; the credential comes from pairing.
             let next = Settings {
+                backend: backend.get(),
                 url: url.get().trim().to_owned(),
                 wslc: settings::Wslc {
                     image: image.get().trim().to_owned(),
@@ -373,18 +402,16 @@ fn App() -> impl IntoElement {
                     memory: Some(memory.get().trim().to_owned()).filter(|value| !value.is_empty()),
                     ..settings.wslc.clone()
                 },
+                wsl2: settings::Wsl2 {
+                    distro: distro.get().trim().to_owned(),
+                    user: wsl_user.get().trim().to_owned(),
+                },
             };
             if let Err(message) = next.validate().and_then(|()| next.save()) {
                 set_status(Status { state: "error".into(), message, ..Status::default() });
                 return;
             }
-            match Worker::start(
-                Connection {
-                    url: next.url.trim(),
-                    wslc: Some(&next.wslc),
-                },
-                logs.clone(),
-            ) {
+            match Worker::start(&next, logs.clone()) {
                 Ok(started) => {
                     run_url.set(next.url.trim().trim_end_matches('/').into());
                     job.set(None);
@@ -593,28 +620,85 @@ fn App() -> impl IntoElement {
                             fields_locked,
                             false,
                         ))
-                        .child(field(
-                            "执行镜像",
-                            "registry/runner@sha256:…",
-                            image,
-                            fields_locked,
-                            false,
-                        ))
                         .child(
                             view()
-                                .flex_row()
-                                .gap(px(8.0))
+                                .gap(px(4.0))
+                                .child(text("执行后端").text_size(px(11.0)).text_color(secondary()))
                                 .child(
                                     view()
-                                        .flex_1()
-                                        .child(field("CPU（可选）", "2", cpus, fields_locked, false)),
-                                )
-                                .child(
-                                    view()
-                                        .flex_1()
-                                        .child(field("内存（可选）", "4G", memory, fields_locked, false)),
+                                        .flex_row()
+                                        .gap(px(1.0))
+                                        .p(px(2.0))
+                                        .rounded(px(6.0))
+                                        .bg(colors(0xe5e5ea, 0x343438))
+                                        .child(backend_tab(
+                                            Backend::Wslc.label(),
+                                            Backend::Wslc,
+                                            backend,
+                                            fields_locked,
+                                        ))
+                                        .child(backend_tab(
+                                            Backend::Wsl2.label(),
+                                            Backend::Wsl2,
+                                            backend,
+                                            fields_locked,
+                                        )),
                                 ),
                         )
+                        // WSLC gives every attempt a fresh container from the
+                        // configured image.
+                        .child(when(
+                            move || backend.get() == Backend::Wslc,
+                            move || {
+                                view()
+                                    .gap(px(13.0))
+                                    .child(field(
+                                        "执行镜像",
+                                        "registry/runner@sha256:…",
+                                        image,
+                                        fields_locked,
+                                        false,
+                                    ))
+                                    .child(
+                                        view()
+                                            .flex_row()
+                                            .gap(px(8.0))
+                                            .child(
+                                                view()
+                                                    .flex_1()
+                                                    .child(field("CPU（可选）", "2", cpus, fields_locked, false)),
+                                            )
+                                            .child(
+                                                view()
+                                                    .flex_1()
+                                                    .child(field("内存（可选）", "4G", memory, fields_locked, false)),
+                                            ),
+                                    )
+                            },
+                        ))
+                        // WSL2 runs the attempt natively in a distribution, so the
+                        // machine's own Docker and tooling are used.
+                        .child(when(
+                            move || backend.get() == Backend::Wsl2,
+                            move || {
+                                view()
+                                    .gap(px(13.0))
+                                    .child(field(
+                                        "发行版（可选）",
+                                        "默认发行版",
+                                        distro,
+                                        fields_locked,
+                                        false,
+                                    ))
+                                    .child(field(
+                                        "用户（可选）",
+                                        "默认用户",
+                                        wsl_user,
+                                        fields_locked,
+                                        false,
+                                    ))
+                            },
+                        ))
                         .child(
                             text(move || {
                                 let current = status.get();
