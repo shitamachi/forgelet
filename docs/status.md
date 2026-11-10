@@ -1463,3 +1463,10 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **边界**。构建机仍需 Go 与 Rust；执行镜像不在单文件内，需要单独 `wslc build`/推送并固定 digest 后填进应用。未生成 MSI/Inno 安装包（本机没有对应工具链）。
 - **无控制台窗口**。用户反馈从资源管理器打开会出现黑色终端：应用此前是控制台子系统，且启动 Go 执行器时未设置进程创建标志。现在应用声明 `#![windows_subsystem = "windows"]`（PE Subsystem=2），执行器用 `DETACHED_PROCESS` 启动（只用管道通信，不需要控制台）。实测启动后不再产生新的 conhost，窗口截图只有应用本身；重新打包后 `dist` 的 SHA256 为 `ad7af2b324cca9142c3092cde4445d817f314eb16610666023bafb0dc8f7e68d`。
 - **启动时的终端闪烁**。点击「开始」仍会闪黑窗，原因是执行器启动时会调用 `wslc --version` 和 `wslc list` 做版本检查与遗留容器清理，这些 CLI 是控制台程序，从无控制台的后台进程启动时会各自弹窗。新增 `internal/proc.Hide`：Windows 上用 `DETACHED_PROCESS` 启动子进程，macOS/Linux 为空操作；`internal/wslc` 的所有 CLI 调用和 `docker buildx inspect` 探测均走它。实测点击「开始」后 8 秒内不再出现新的 conhost，状态正常转为空闲；随后用真实任务验证容器路径仍可用（`wslc run --interactive` 在无控制台下管道通信正常，run/job 均为 success）。`dist` 重新打包，SHA256 `ac884a3bc2d440f967bd26d03f22ee3338d00b7c70cefff884929b2f5d491f9d`。
+
+## 2026-11-10：macOS Runner 编译、配对与窗口外观
+
+- **实现**。macOS 端补齐上一轮的设置迁移：只有旧 `profile.json` 的安装也能读到地址、Docker 设置与设备凭据，旧设备不必重新审批。隐藏系统标题栏、改为应用自绘 38pt 标题栏（`set_title_bar(Hidden)` + `window_drag`），红绿灯落在侧栏同色区域，侧栏与控制台都延伸到窗口顶边。状态时间轴超过一小时后改用 `H:M:SS`，不再输出 `+318:38` 这类三位数分钟。用户点暂停或关窗时执行器把会话结束当作暂停，不再上报 `上下文已取消` 的 error 状态。
+- **自动测试**。`cargo test` 10 项通过（含真实抓取消息的解析用例、迁移用例、时间轴 7 组取值），`cargo clippy -D warnings`、`cargo fmt --check` 通过；Go 侧 `go test`（`cmd/runner`、`internal/runner`、`internal/server`、`internal/storage`、`internal/wslc`、`internal/run`、`internal/workflow`）与 `golangci-lint --build-tags integration` 0 issues。
+- **本机实测**。用真实控制面二进制与打包后的 runner 完成配对 → 批准 → 空闲 → 领取任务 → 运行 → 通过 → 暂停取消全流程，日志、任务头与最终状态在窗口与控制面两侧一致；拖动标题栏可用，浅色与深色取样与相邻面板同色。安装 `/Applications/Forgelet Runner.app` 0.5.0 (build 7) 并通过签名核验，发行包为 `bin/Forgelet-Runner-0.5.0-macos-arm64.zip`。
+- **边界**。以上是本机临时控制面与真实 `.app` 的验证，homelab 上的真实接单仍需在 Web 批准配对码；`Connection refused`/`SSL handshake failure` 一类失败在带 `https_proxy` 的终端里启动会出现，Finder 启动不受影响。
