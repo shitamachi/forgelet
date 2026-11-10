@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -93,7 +94,7 @@ func TestPairingAsksForANewCodeWhenItExpires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	_, err := pair(ctx, server.URL, t.TempDir(), func(Status) {})
-	if err != context.DeadlineExceeded && err != context.Canceled {
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Fatalf("pair returned %v, want the context error", err)
 	}
 	if issued.Load() < 2 {

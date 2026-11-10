@@ -248,8 +248,12 @@ func TestRunnerCredentialExecutesJobsAcrossRepositories(t *testing.T) {
 		return item
 	}
 	disabled := create("me/disabled", run.MacRunnerLabel)
+	// Both jobs name the built-in label this host's desktop runner advertises
+	// (macOS reports macos-arm64; a Linux runner predates capability reporting
+	// and claims every label). A built-in label of another platform would only
+	// match a device that advertises it, so the pair would never leave here.
 	first := create("me/repo", run.MacRunnerLabel)
-	second := create("me/another", run.WSLCRunnerLabel)
+	second := create("me/another", run.MacRunnerLabel)
 	h.http.Close()
 	h.cfg.Repositories = h.cfg.Repositories[:2]
 	h.start()

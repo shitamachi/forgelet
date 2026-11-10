@@ -41,10 +41,10 @@ func TestRunnerPairingPauseAndRotate(t *testing.T) {
 	if code, body := h.admin("POST", "/api/runner-pairings/"+id+"/approve", map[string]string{"name": device}); code != 200 {
 		t.Fatalf("re-pairing an offline device: %d %s", code, body)
 	}
-	if _, repaird := collectPairing(t, h, id, secret); !strings.HasPrefix(repaird, "frr_") || repaird == firstToken {
+	if _, repaired := collectPairing(t, h, id, secret); !strings.HasPrefix(repaired, "frr_") || repaired == firstToken {
 		t.Fatal("re-pairing did not issue a new credential")
 	} else {
-		firstToken = repaird
+		firstToken = repaired
 	}
 
 	list := func(want string, paused bool) {
