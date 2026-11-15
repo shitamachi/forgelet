@@ -21,7 +21,10 @@ const EMBEDDED_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgele
 const RUNNER_ID: &str = env!("FORGELET_RUNNER_ID");
 /// The Linux executor the WSL2 backend installs into the distribution.
 const EMBEDDED_LINUX_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-runner-linux"));
-const LINUX_RUNNER_ID: &str = env!("FORGELET_LINUX_RUNNER_ID");
+/// The act worker that runs full GitHub workflows beside a container engine.
+/// The supervisor copies it into each job sandbox, so it has to sit next to the
+/// supervisor under the name it looks for.
+const EMBEDDED_ACT_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-act-linux"));
 
 #[derive(Serialize)]
 pub struct Connection<'a> {
@@ -95,13 +98,17 @@ impl Worker {
         match settings.backend {
             Backend::Wslc => connection.wslc = Some(settings.wslc.clone()),
             Backend::Wsl2 => {
+                // The supervisor looks for the Linux executor and the act worker
+                // beside itself under these exact names, so they are written
+                // there rather than under a fingerprint.
+                let dir = runner_dir()?;
+                materialize_fixed(&dir, "forgelet-runner-linux-amd64", EMBEDDED_LINUX_RUNNER)?;
+                materialize_fixed(&dir, "forgelet-act-linux-amd64", EMBEDDED_ACT_RUNNER)?;
                 connection.wsl2 = Some(Wsl2Connection {
                     distro: settings.wsl2.distro.trim().to_owned(),
                     user: settings.wsl2.user.trim().to_owned(),
-                    runner_binary: materialize("forgelet-runner-linux", LINUX_RUNNER_ID, EMBEDDED_LINUX_RUNNER)?
-                        .to_string_lossy()
-                        .into_owned(),
-                })
+                    runner_binary: dir.join("forgelet-runner-linux-amd64").to_string_lossy().into_owned(),
+                });
             }
         }
         let mut command = Command::new(program);
@@ -180,48 +187,86 @@ impl Worker {
     }
 }
 
+/// runner_dir is where the app keeps the copies it starts and hands to a WSL2
+/// distribution.
+fn runner_dir() -> Result<PathBuf, String> {
+    let root = Settings::work_root().ok_or("无法定位本机缓存目录")?;
+    let dir = root.join("bin");
+    fs::create_dir_all(&dir).map_err(|_| "无法创建执行器目录")?;
+    Ok(dir)
+}
+
 /// Writes an embedded runner to the account's cache and returns its path. The
 /// fingerprint is part of the file name, so a rebuilt runner of the same size
 /// never reuses a stale copy; older copies are removed once they are not in use.
 fn materialize(name: &str, id: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let root = Settings::work_root().ok_or("无法定位本机缓存目录")?;
-    let dir = root.join("bin");
-    fs::create_dir_all(&dir).map_err(|_| "无法创建执行器目录")?;
+    let dir = runner_dir()?;
     let (stem, extension) = split_name(name);
     let path = dir.join(format!("{stem}-{id}{extension}"));
-    if !matches!(fs::metadata(&path), Ok(metadata) if metadata.len() == bytes.len() as u64) {
-        let temporary = dir.join(format!("{stem}.{}.tmp", std::process::id()));
-        fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
-        if fs::rename(&temporary, &path).is_err() {
-            let _ = fs::remove_file(&temporary);
-            // Another instance may be running the old copy; use it if its size
-            // still matches, otherwise report the failure.
-            match fs::metadata(&path) {
-                Ok(metadata) if metadata.len() == bytes.len() as u64 => {}
-                _ => return Err("无法更新内置执行器，请关闭其他实例后重试".into()),
-            }
-        }
-    }
+    write_if_changed(&dir, &path, stem, bytes)?;
     prune(&dir, stem, &path);
     Ok(path)
 }
 
-/// prune removes superseded copies, leaving the one about to run in place. A
-/// copy still executing cannot be deleted on Windows; that failure is harmless.
+/// materialize_fixed keeps a file under its exact name: the supervisor finds the
+/// Linux executor and the act worker that way, so the name cannot carry a
+/// fingerprint. The bytes are compared instead, which costs one read per start.
+fn materialize_fixed(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    let current = fs::read(&path).ok();
+    if current.as_deref() != Some(bytes) {
+        let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
+        fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
+        if fs::rename(&temporary, &path).is_err() {
+            let _ = fs::remove_file(&temporary);
+            // A copy still running cannot be replaced on Windows; it is only
+            // acceptable when it already holds the bytes we need.
+            if fs::read(&path).ok().as_deref() != Some(bytes) {
+                return Err("无法更新内置执行器，请关闭其他实例后重试".into());
+            }
+        }
+    }
+    Ok(path)
+}
+
+/// write_if_changed writes bytes unless the target already holds them.
+fn write_if_changed(dir: &Path, path: &Path, stem: &str, bytes: &[u8]) -> Result<(), String> {
+    if matches!(fs::metadata(path), Ok(metadata) if metadata.len() == bytes.len() as u64) {
+        return Ok(());
+    }
+    let temporary = dir.join(format!("{stem}.{}.tmp", std::process::id()));
+    fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
+    if fs::rename(&temporary, path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        // Another instance may be running the old copy; use it if its size
+        // still matches, otherwise report the failure.
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.len() == bytes.len() as u64 => {}
+            _ => return Err("无法更新内置执行器，请关闭其他实例后重试".into()),
+        }
+    }
+    Ok(())
+}
+
+/// prune removes superseded fingerprint copies, leaving the one about to run and
+/// the fixed-name files alone. A copy still executing cannot be deleted on
+/// Windows; that failure is harmless.
 fn prune(dir: &Path, stem: &str, keep: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
+    let prefix = format!("{stem}-");
     for entry in entries.flatten() {
         let path = entry.path();
         if path == keep || !path.is_file() {
             continue;
         }
-        let matches_stem = path
+        let fingerprinted = path
             .file_stem()
             .and_then(|value| value.to_str())
-            .is_some_and(|value| value == stem || value.starts_with(&format!("{stem}-")));
-        if matches_stem {
+            .and_then(|value| value.strip_prefix(&prefix))
+            .is_some_and(|rest| rest.len() == 16 && rest.chars().all(|c| c.is_ascii_hexdigit()));
+        if fingerprinted {
             let _ = fs::remove_file(&path);
         }
     }
@@ -244,5 +289,22 @@ mod tests {
     fn cached_runners_are_named_by_fingerprint() {
         assert_eq!(split_name("forgelet-runner.exe"), ("forgelet-runner", ".exe".into()));
         assert_eq!(split_name("forgelet-runner-linux"), ("forgelet-runner-linux", String::new()));
+    }
+
+    /// The supervisor finds the Linux executor and the act worker by exact
+    /// name, so a rebuild with different bytes must replace the cached copy.
+    #[test]
+    fn fixed_names_are_replaced_when_the_bytes_change() {
+        let dir = std::env::temp_dir().join(format!("forgelet-fixed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = materialize_fixed(&dir, "forgelet-act-linux-amd64", b"first").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"first");
+        // The same bytes are left alone, so a start does not rewrite the file.
+        assert_eq!(materialize_fixed(&dir, "forgelet-act-linux-amd64", b"first").unwrap(), path);
+        // Different bytes of the same length still replace it.
+        assert_eq!(materialize_fixed(&dir, "forgelet-act-linux-amd64", b"other").unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), b"other");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -6,9 +6,9 @@
 // rebuilt runner of the same size still has to replace the one on disk.
 use std::{env, fs, path::PathBuf, process::Command};
 
-fn build(out: &PathBuf, goos: &str, name: &str, repo: &PathBuf) {
+fn build(out: &PathBuf, goos: &str, name: &str, repo: &PathBuf, package: &str) {
     let target = out.join(name);
-    for path in ["cmd/runner", "internal", "go.mod", "go.sum"] {
+    for path in ["cmd", "internal", "go.mod", "go.sum"] {
         println!("cargo:rerun-if-changed={}", repo.join(path).display());
     }
     let status = Command::new("go")
@@ -16,7 +16,7 @@ fn build(out: &PathBuf, goos: &str, name: &str, repo: &PathBuf) {
         .env("GOOS", goos)
         .env("GOARCH", "amd64")
         .env("CGO_ENABLED", "0")
-        .args(["build", "-trimpath", "-o", &target.to_string_lossy(), "./cmd/runner"])
+        .args(["build", "-trimpath", "-o", &target.to_string_lossy(), package])
         .status()
         .expect("go build the runners (is Go 1.27+ on PATH?)");
     if !status.success() {
@@ -42,12 +42,14 @@ fn main() {
         .and_then(|path| path.parent())
         .expect("repository root")
         .to_path_buf();
-    build(&out, "windows", "forgelet-runner.exe", &repo);
-    build(&out, "linux", "forgelet-runner-linux", &repo);
+    build(&out, "windows", "forgelet-runner.exe", &repo, "./cmd/runner");
+    build(&out, "linux", "forgelet-runner-linux", &repo, "./cmd/runner");
+    build(&out, "linux", "forgelet-act-linux", &repo, "./cmd/act-worker");
     let windows = out.join("forgelet-runner.exe");
     let linux = out.join("forgelet-runner-linux");
+    let act = out.join("forgelet-act-linux");
     println!("cargo:rustc-env=FORGELET_RUNNER={}", windows.display());
     println!("cargo:rustc-env=FORGELET_LINUX_RUNNER={}", linux.display());
+    println!("cargo:rustc-env=FORGELET_ACT_RUNNER={}", act.display());
     println!("cargo:rustc-env=FORGELET_RUNNER_ID={}", fingerprint(&windows));
-    println!("cargo:rustc-env=FORGELET_LINUX_RUNNER_ID={}", fingerprint(&linux));
 }
