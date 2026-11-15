@@ -1480,3 +1480,12 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **验证（真实 Windows + WSL2）**。在 `archlinux` 发行版（rootless Docker 29.9.2）上用应用逐个跑通：`uname` 为 `6.18.58.1-microsoft-standard-WSL2 x86_64`；`docker version` 的 server 29.9.2；`docker run --rm alpine:3.20` 输出 `docker-in-wsl2-from-app`；job 内 `docker buildx build --load` 构建并运行镜像输出 `image-built-in-wsl2`。三个 run（`ca51b8c4ff57fa5c8e4cc8b7`、`a75e880eed6b4a4a8134682e` 等）均为 `success`。切回 WSLC 后端后设备标签恢复 `linux-amd64-wslc`（`wslc 3.0.5.0`）并正常空闲，说明两个后端可来回切换。
 - **测试**。`internal/wsl` 单测覆盖 UTF-16LE 解码、`--distribution/--user` 参数拼装与默认发行版显示；`cmd/runner` 覆盖注入环境变量名的校验；`internal/runner`（Windows）覆盖后端选择与标签推导；`internal/server` 与 `internal/run` 在 Linux 容器内全量通过。macOS 端不涉及此改动。
 - **边界**。WSL2 后端以发行版当前用户运行，可访问该用户文件，只用于可信仓库；需要 Node/Python 等工具时由设备自行在发行版里维护，应用不安装运行时。`forgelet/build@v1` 的镜像仓库授权规则未变。
+
+## 2026-11-15：Windows 端验收与桌面端对齐
+
+- **拉取结果**。`origin/main` 仍是 `2126547`（`git ls-remote` 与本地 HEAD 一致），本次没有可拉取的新提交，工作区干净。homelab 上 Mac 设备自报版本为 `v0.0.0-20261110092451-2126547124d4+dirty` 且声明 `macos-arm64,ubuntu-latest` 两个标签，而仓库里 Darwin 只声明 `macos-<arch>`——说明那台机器上是**未提交的本地改动**，没有推到 main，因此无法从远程取得。
+- **桌面端对齐**（Windows 相对 macOS 最近三个提交）：暂停语义来自共享的 `cmd/runner`，已生效；旧安装迁移（`connection.json`/`profile.json`）是 macOS 早期版本的产物，Windows 从未使用，无需移植；窗口外观是平台差异，Windows 保留原生标题栏与 Win32 菜单栏（隐藏标题栏会同时隐藏菜单与快捷键），不照搬 macOS 的自绘标题栏。唯一真正落后的逻辑是状态时间轴：Windows 仍用无上限的分钟数（会出现 `+318:38`），已移植 `stamp()` 并补表驱动测试（`772ea46`）。
+- **执行器缓存缺陷**。设备版本号一直停在旧提交：`materialize` 只比较文件长度，重建后大小相同的执行器不会替换缓存。改为构建脚本对两个内嵌执行器取 FNV-1a 指纹，缓存文件按指纹命名并在写入后清理旧副本（`d409e06`）；实测设备版本随即变为 `2126547`，缓存目录只剩当前两份。
+- **本机验收（Windows + homelab）**。删掉凭据与设置重来：应用显示配对码 `VLJW-5S2Q` → Web 批准为 `windows-wslc-01` → 设备空闲，自报 `wslc 3.0.5.0`。两个后端各跑一次真实任务：`linux-amd64-wsl2` 的任务 `cb8367a489e893262dcb7da2` 输出 `server=29.9.2` 与 `final-acceptance`（job 内 `docker run alpine` 成功）；切回 `linux-amd64-wslc` 后任务 `dff80ed3721bd4124b53f770` 输出 `node v24.22.2`、`git 2.39.5`、`wslc-final-ok`。暂停测试：任务 `089317d3fcb057984c0d8f06` 运行中点「暂停」，控制面 run/job 均为 `cancelled`，窗口显示「已暂停」与「任务停止」，没有出现 `context canceled` 错误文案。
+- **产物**。`dist/Forgelet Runner.exe` 重新打包（SHA256 `2f56ec929b808b94a96ed22028fba9810e7c5095c6d43d7ff0e413eeeb12e309`），内嵌执行器为本提交重新编译，Rust 测试 5 项通过。
+- **待确认**。Mac 上那台设备的 `ubuntu-latest` 标签与新后端语义不在仓库里；是否要让 Windows WSL2 也声明 `ubuntu-latest`（它同样是完整 Linux + Docker）需要先确定语义，未擅自实现。
