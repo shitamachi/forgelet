@@ -1567,3 +1567,17 @@ run d9645a85 的 Mac reliability 全部测试门禁成功：static 331.42s、uni
 发现已完成job的设备清理期间，控制面直接把依赖build-push预约成Pod。该Pod仍在preparing、未发布，已按API取消该run；成功CI历史保留，未把Pod镜像构建记为Mac成功。新增终态/Pod预约互斥及精确环境回接窗口：portable容器job首次成功保存终态后，为该设备的同一环境保留最多一个60s租期，下一次poll覆盖状态；暂停立即失效、到期仍回退Pod，幂等重复result不延长窗口。HTTP+SQLite回归覆盖正常续接/失联/暂停/重复结果；`GOFLAGS=-p=2 make verify`完整通过，Go工具链本机已为1.27.4。升级前快照timeout-60/before-handoff-fix.db，控制面镜像server@sha256:4caaa8378f8f9cd2187709c0ab2e34bb8b700196280f754c432fc67ac64993c8。
 
 新完整run `b17eb0aca7007c29349aae80` 使用相同SHA、相同60分钟bundle；Mac reliability `dd0b547d20e905f8813a8a31` 已命中Go/Atlas缓存，static 34.44s、unit/race 52.25s成功，正在PG。后续build-push `c51a0b934cbe7bd94c6cba51` 的真实设备身份与CD仍待验收。现有cf-registry pull Secret保留原域凭据并合并已有forgelet-steam-tasks-pull中的Zot只读入口；未变更PodTemplate/现网镜像，副本在新发布前可读取两个registry。
+
+## 2026-11-15 晚：接入 29a5835（桌面 act 执行统一）
+
+- **拉取**。`26e1ae3..29a5835`（提交 `feat: unify desktop act execution and gate runner secrets`），没有冲突。
+- **Windows 桌面端需要接入的部分**。新的 `dockerExecutor` 会在每次任务前后把 `forgelet-runner-linux-<arch>` 与 `forgelet-act-linux-<arch>` 拷进沙箱，并从 supervisor 自身目录（`%LOCALAPPDATA%\io.forgelet.runner\bin`）查找这两个文件。原应用只内嵌了 Windows supervisor 与 WSL2 用的 Linux 执行器，且按指纹命名，因此启用 WSL2 + Docker 后必然报「桌面应用缺少 Linux 完整执行内核」。补齐：`build.rs` 增加编译 `cmd/act-worker`（linux/amd64）；WSL2 后端启动时把两个 Linux 二进制按**固定文件名**写入缓存目录（名字不能带指纹），内容比较后再替换；指纹副本的清理只删除「stem-16位十六进制」，不会误删固定名文件。
+- **测试可移植性**。`execute_docker_test.go` 用 `/bin/sh`、`/usr/bin/printf` 伪造 Docker CLI，在 Windows 上必失败。改成子进程 helper（`os.Args[0] -test.run=^TestDockerCLIFake$` + 环境变量），两种宿主都通过；helper 在打印后立即 `os.Exit(0)`，避免混入测试框架的 `PASS` 行影响解析。
+- **真实 Windows 验收**（WSL2 发行版 `archlinux`，rootless Docker 29.9.2）：
+  - 设备在线后自报 `linux-amd64-wsl2`，缓存目录自动出现 `forgelet-runner-linux-amd64`、`forgelet-act-linux-amd64`。
+  - 为验证统一容器路径，临时在控制面加入 profile `ci-wsl2-test`（`runner_platform: linux/amd64`）与 `runner_fallbacks.linux-ci`，用当次源码构建并推送 `zot.k.mygo.rocks/forgelet/runner-ci@sha256:7212f239…`；提交 `runs-on: linux-ci` 的任务 `53c1d648cd174100a5d8a8b1` 落在 `windows-wslc-01`，在 Docker 容器内以 uid 1000 运行并输出 `container-path-ok`。
+  - WSLC 后端回归：`runs-on: linux-amd64-wslc` 的任务 `93c3512b98aa25f82f5f5531` 成功（`node v24.22.2`）。
+  - 首次失败与修复过程：旧镜像内的执行器要求显式 workspace（`执行配置缺少任务或工作区`），换成当次源码构建的镜像后通过；镜像缺少 uid 1000 用户时 `id -un` 报 `unknown ID 1000`，补 `adduser -u 1000` 后通过。
+- **act 内核（完整 Actions）未在 Windows 验证成功，原因明确**：`ubuntu-latest` 的 `act.data_limit` 是 24 GiB，而本机发行版只剩约 4.7 GiB，`checkAct` 直接报「Docker 可用空间不足」；拉取 `executor-act-web-tools` 还会进一步占满磁盘，已在 4.7 GiB 时中止并让 Docker 自行清理。控制面配置已恢复原样（仅 `ubuntu-latest: ubuntu-latest`），临时 profile 与 fallback 已删除。
+- **自动测试**。Windows：`internal/runner`、`internal/wsl`、`internal/wslc`、`cmd/runner`、`internal/run` 通过；Linux 容器内：`internal/server`、`internal/storage`、`internal/run`、`internal/actworker`、`internal/executor` 通过；Rust 端 6 项测试通过（新增固定名替换用例）。
+- **产物**。`dist/Forgelet Runner.exe` 89.7 MB（新增 act worker），SHA256 `296b2a95b9b17e345733b73d3ff832caa834e877723dd350d4b29a74d115e02c`。
