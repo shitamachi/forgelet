@@ -26,11 +26,11 @@ func TestActSandboxCopyFailureRemovesOnlyOwnedSandbox(t *testing.T) {
 		calls = append(calls, append([]string(nil), args...))
 		switch args[0] {
 		case "cp":
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+			return fakeDocker(ctx, "fail")
 		case "ps":
-			return exec.CommandContext(ctx, "/bin/sh", "-c", "echo our-container")
+			return fakeDocker(ctx, "print:our-container\n")
 		}
-		return exec.CommandContext(ctx, "/usr/bin/true")
+		return fakeDocker(ctx, "ok")
 	}}
 	u, _ := url.Parse("https://control.example")
 	env := run.RunnerContainer{Kernel: "act", CPUs: 4, MemoryBytes: 4 << 30, Platform: "linux/amd64", Image: "engine@sha256:" + strings.Repeat("a", 64)}
@@ -66,9 +66,9 @@ func TestActReadinessRequiresDiskCapacity(t *testing.T) {
 			}
 			d := &dockerExecutor{binaryDir: dir, command: func(ctx context.Context, args ...string) *exec.Cmd {
 				if args[0] == "image" {
-					return exec.CommandContext(ctx, "/usr/bin/true")
+					return fakeDocker(ctx, "ok")
 				}
-				return exec.CommandContext(ctx, "/usr/bin/printf", "%s", tc.available)
+				return fakeDocker(ctx, "print:"+tc.available)
 			}}
 			var message string
 			got := d.checkAct(t.Context(), run.RunnerContainer{DiskBytes: 24 << 30}, func(s Status) { message = s.Message })
@@ -79,5 +79,31 @@ func TestActReadinessRequiresDiskCapacity(t *testing.T) {
 				t.Fatal("missing capacity diagnostic", message)
 			}
 		})
+	}
+}
+
+const fakeDockerEnv = "FORGELET_TEST_DOCKER_FAKE"
+
+// / fakeDocker answers like the Docker CLI without a POSIX shell, so the same
+// / tests run on every host: "fail" exits 1, "print:<text>" writes text, and
+// / anything else succeeds silently.
+func fakeDocker(ctx context.Context, mode string) *exec.Cmd {
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestDockerCLIFake$")
+	command.Env = append(os.Environ(), fakeDockerEnv+"="+mode)
+	return command
+}
+
+func TestDockerCLIFake(t *testing.T) {
+	mode := os.Getenv(fakeDockerEnv)
+	switch {
+	case mode == "":
+		return
+	case mode == "fail":
+		os.Exit(1)
+	case strings.HasPrefix(mode, "print:"):
+		// Exit before the test framework prints its own summary, so the caller
+		// sees exactly what the fake Docker CLI would print.
+		os.Stdout.WriteString(strings.TrimPrefix(mode, "print:"))
+		os.Exit(0)
 	}
 }
