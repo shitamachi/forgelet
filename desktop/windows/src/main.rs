@@ -177,6 +177,18 @@ fn backend_tab(
         .child(text(name).text_size(px(12.0)).text_color(ink()))
 }
 
+/// The status timeline's offset from the start of this window. Minutes alone
+/// are ambiguous once a window stays open for hours, so an hour or more adds
+/// the hours field instead of a three-digit minute count.
+fn stamp(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    if hours > 0 {
+        format!("+{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("+{minutes:02}:{seconds:02}")
+    }
+}
+
 fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
     let elapsed = started.elapsed().as_secs();
     let label = match update.state.as_str() {
@@ -201,11 +213,7 @@ fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
     } else {
         format!("  {}", update.message)
     };
-    tail.borrow_mut().push(format!(
-        "+{:02}:{:02}  {label}{job}{detail}\n",
-        elapsed / 60,
-        elapsed % 60
-    ));
+    tail.borrow_mut().push(format!("{}  {label}{job}{detail}\n", stamp(elapsed)));
 }
 
 fn menu(
@@ -897,4 +905,26 @@ fn main() -> std::process::ExitCode {
             ..Default::default()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A window stays open for hours; the timeline must not print a
+    /// three-digit minute count that reads like seconds.
+    #[test]
+    fn timeline_offsets_become_clear_after_an_hour() {
+        for (seconds, want) in [
+            (0, "+00:00"),
+            (29, "+00:29"),
+            (163, "+02:43"),
+            (3599, "+59:59"),
+            (3600, "+1:00:00"),
+            (19118, "+5:18:38"),
+            (360000, "+100:00:00"),
+        ] {
+            assert_eq!(stamp(seconds), want, "seconds {seconds}");
+        }
+    }
 }
