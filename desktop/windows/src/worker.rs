@@ -42,6 +42,7 @@ pub struct Wsl2Connection {
     pub distro: String,
     pub user: String,
     pub runner_binary: String,
+    pub act_binary: String,
 }
 
 #[derive(Clone, Default, PartialEq, Deserialize)]
@@ -98,9 +99,9 @@ impl Worker {
         match settings.backend {
             Backend::Wslc => connection.wslc = Some(settings.wslc.clone()),
             Backend::Wsl2 => {
-                // The supervisor looks for the Linux executor and the act worker
-                // beside itself under these exact names, so they are written
-                // there rather than under a fingerprint.
+                // The supervisor installs the Linux executor into the
+                // distribution; the full act sandbox also copies an act worker
+                // there, so both are written beside the supervisor first.
                 let dir = runner_dir()?;
                 materialize_fixed(&dir, "forgelet-runner-linux-amd64", EMBEDDED_LINUX_RUNNER)?;
                 materialize_fixed(&dir, "forgelet-act-linux-amd64", EMBEDDED_ACT_RUNNER)?;
@@ -108,6 +109,7 @@ impl Worker {
                     distro: settings.wsl2.distro.trim().to_owned(),
                     user: settings.wsl2.user.trim().to_owned(),
                     runner_binary: dir.join("forgelet-runner-linux-amd64").to_string_lossy().into_owned(),
+                    act_binary: dir.join("forgelet-act-linux-amd64").to_string_lossy().into_owned(),
                 });
             }
         }

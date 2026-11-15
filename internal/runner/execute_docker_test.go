@@ -107,3 +107,53 @@ func TestDockerCLIFake(t *testing.T) {
 		os.Exit(0)
 	}
 }
+
+// plainBackend has no distribution binaries, like a native desktop build.
+type plainBackend struct{}
+
+func (plainBackend) executeLease(context.Context, *client, string, run.ExternalGrant, string, func(Status)) Status {
+	return Status{}
+}
+func (plainBackend) buildPlatforms(context.Context) string { return "none" }
+func (plainBackend) describe() descriptor                  { return descriptor{} }
+
+// distributionBackend stands in for a backend whose binaries live inside a
+// distribution: its Docker CLI can only copy paths that exist there.
+type distributionBackend struct{ worker, act string }
+
+func (distributionBackend) executeLease(context.Context, *client, string, run.ExternalGrant, string, func(Status)) Status {
+	return Status{}
+}
+func (distributionBackend) buildPlatforms(context.Context) string { return "none" }
+func (distributionBackend) describe() descriptor                  { return descriptor{} }
+func (b distributionBackend) containerBinaries() (string, string, bool) {
+	return b.worker, b.act, true
+}
+
+func TestActBinariesFollowTheBackendIntoTheDistribution(t *testing.T) {
+	host := t.TempDir()
+	for _, name := range []string{"forgelet-runner-linux-amd64", "forgelet-act-linux-amd64"} {
+		if err := os.WriteFile(filepath.Join(host, name), []byte("worker"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The distribution paths win: copying a host path with the distribution's
+	// Docker CLI fails because that path does not exist inside it.
+	d := &dockerExecutor{binaryDir: host, execution: distributionBackend{
+		worker: "/home/runner/.local/share/forgelet/forgelet-runner",
+		act:    "/home/runner/.local/share/forgelet/forgelet-act",
+	}}
+	worker, act, err := d.actBinaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker != "/home/runner/.local/share/forgelet/forgelet-runner" || act != "/home/runner/.local/share/forgelet/forgelet-act" {
+		t.Fatalf("worker=%s act=%s", worker, act)
+	}
+	// A backend without distribution binaries still falls back to the bundle
+	// beside the supervisor, as the native macOS build does.
+	plain := &dockerExecutor{binaryDir: host, execution: plainBackend{}}
+	if worker, _, err := plain.actBinaries(); err != nil || filepath.Dir(worker) != host {
+		t.Fatalf("bundle fallback returned %q, err %v", worker, err)
+	}
+}

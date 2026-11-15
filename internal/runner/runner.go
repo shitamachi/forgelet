@@ -40,6 +40,7 @@ type WSL2Config struct {
 	Distro       string `json:"distro,omitempty"`        // Empty means the WSL default distribution.
 	User         string `json:"user,omitempty"`          // Empty means the distribution's default user.
 	RunnerBinary string `json:"runner_binary,omitempty"` // Host path of the Linux runner to install.
+	ActBinary    string `json:"act_binary,omitempty"`    // Host path of the act worker to install beside it.
 }
 
 type Status struct {

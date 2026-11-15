@@ -111,10 +111,24 @@ func (c Client) Home(ctx context.Context, distro, user string) (string, error) {
 	return home, nil
 }
 
-// InstallRunner copies binary into the distribution atomically and returns its
-// absolute path there. A file of the same size is left alone.
+// InstallDir is where the distribution keeps the binaries forgelet runs there.
+const InstallDir = ".local/share/forgelet"
+
+// InstallRunner copies the Linux executor into the distribution atomically and
+// returns its absolute path there. A file of the same size is left alone.
 func (c Client) InstallRunner(ctx context.Context, distro, user, home, binary string, size int64) (string, error) {
-	target := home + "/" + RunnerPath
+	return c.InstallFile(ctx, distro, user, home, "forgelet-runner", binary, size)
+}
+
+// InstallFile copies one binary into the distribution's forgelet directory and
+// returns its path inside the distribution. That path matters for the full act
+// sandbox: the Docker CLI runs inside the distribution, so it can only copy
+// sources that exist there.
+func (c Client) InstallFile(ctx context.Context, distro, user, home, name, binary string, size int64) (string, error) {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("执行器名称无效")
+	}
+	target := home + "/" + InstallDir + "/" + name
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	if current, err := c.size(ctx, distro, user, target); err == nil && current == size {

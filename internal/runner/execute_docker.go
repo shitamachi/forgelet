@@ -23,6 +23,7 @@ const dockerOwnerLabel = "forgelet.dev/runner-owner"
 
 type dockerExecutor struct {
 	binaryDir string
+	execution backend
 	command   dockerCommand
 	owner     string
 	approved  []run.RunnerContainer
@@ -43,8 +44,8 @@ func newDockerExecutor(execution backend, root string) *dockerExecutor {
 	host, _ := os.Hostname()
 	owner := sha256.Sum256([]byte(host + "\x00" + root))
 	executable, _ := os.Executable()
-	return &dockerExecutor{binaryDir: filepath.Dir(executable), command: command, owner: fmt.Sprintf("%x", owner[:16]),
-		checked: make(map[run.RunnerContainer]time.Time)}
+	return &dockerExecutor{binaryDir: filepath.Dir(executable), execution: execution, command: command,
+		owner: fmt.Sprintf("%x", owner[:16]), checked: make(map[run.RunnerContainer]time.Time)}
 }
 
 func (d *dockerExecutor) prepare(ctx context.Context, status func(Status)) {
@@ -138,6 +139,13 @@ func (d *dockerExecutor) execute(ctx context.Context, c *client, grant run.Exter
 }
 
 func (d *dockerExecutor) actBinaries() (string, string, error) {
+	// A backend that keeps its binaries inside a distribution reports paths its
+	// own Docker CLI can read; host paths do not exist there.
+	if source, ok := d.execution.(interface{ containerBinaries() (string, string, bool) }); ok {
+		if worker, act, ok := source.containerBinaries(); ok {
+			return worker, act, nil
+		}
+	}
 	for _, dir := range []string{d.binaryDir, filepath.Join(d.binaryDir, "..", "Resources")} {
 		worker := filepath.Join(dir, "forgelet-runner-linux-"+goruntime.GOARCH)
 		act := filepath.Join(dir, "forgelet-act-linux-"+goruntime.GOARCH)

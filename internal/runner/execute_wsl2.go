@@ -23,6 +23,7 @@ type wsl2Backend struct {
 	distro       string
 	user         string
 	runner       string
+	act          string
 	engine       string
 	dockerHost   string
 	dockerConfig string
@@ -67,6 +68,19 @@ func newWSL2Backend(ctx context.Context, cfg Config, status func(Status)) (backe
 	if err != nil {
 		return nil, err
 	}
+	// The full act sandbox copies both binaries into itself with the
+	// distribution's Docker CLI, so the act worker lives in the distribution too.
+	actPath := ""
+	if cfg.WSL2.ActBinary != "" {
+		actInfo, err := os.Stat(cfg.WSL2.ActBinary)
+		if err != nil {
+			return nil, fmt.Errorf("读取内置 act 执行器: %w", err)
+		}
+		actPath, err = client.InstallFile(start, cfg.WSL2.Distro, cfg.WSL2.User, home, "forgelet-act", cfg.WSL2.ActBinary, actInfo.Size())
+		if err != nil {
+			return nil, err
+		}
+	}
 	engine := ""
 	if version := client.DockerVersion(start, cfg.WSL2.Distro, cfg.WSL2.User); version != "" {
 		engine = "Docker " + version
@@ -76,7 +90,16 @@ func newWSL2Backend(ctx context.Context, cfg Config, status func(Status)) (backe
 		status(Status{State: "preparing", Message: "已连接 WSL2：" + engine})
 	}
 	return &wsl2Backend{client: client, distro: cfg.WSL2.Distro, user: cfg.WSL2.User, runner: runnerPath,
-		engine: engine, dockerHost: dockerHost, dockerConfig: home + "/.docker"}, nil
+		act: actPath, engine: engine, dockerHost: dockerHost, dockerConfig: home + "/.docker"}, nil
+}
+
+// containerBinaries reports the executor paths the distribution's Docker CLI can
+// copy from: host paths do not exist there.
+func (b *wsl2Backend) containerBinaries() (string, string, bool) {
+	if b.runner == "" || b.act == "" {
+		return "", "", false
+	}
+	return b.runner, b.act, true
 }
 
 func (b *wsl2Backend) describe() descriptor {
