@@ -1580,4 +1580,4 @@ run d9645a85 的 Mac reliability 全部测试门禁成功：static 331.42s、uni
   - 首次失败与修复过程：旧镜像内的执行器要求显式 workspace（`执行配置缺少任务或工作区`），换成当次源码构建的镜像后通过；镜像缺少 uid 1000 用户时 `id -un` 报 `unknown ID 1000`，补 `adduser -u 1000` 后通过。
 - **act 内核（完整 Actions）未在 Windows 验证成功，原因明确**：`ubuntu-latest` 的 `act.data_limit` 是 24 GiB，而本机发行版只剩约 4.7 GiB，`checkAct` 直接报「Docker 可用空间不足」；拉取 `executor-act-web-tools` 还会进一步占满磁盘，已在 4.7 GiB 时中止并让 Docker 自行清理。控制面配置已恢复原样（仅 `ubuntu-latest: ubuntu-latest`），临时 profile 与 fallback 已删除。
 - **自动测试**。Windows：`internal/runner`、`internal/wsl`、`internal/wslc`、`cmd/runner`、`internal/run` 通过；Linux 容器内：`internal/server`、`internal/storage`、`internal/run`、`internal/actworker`、`internal/executor` 通过；Rust 端 6 项测试通过（新增固定名替换用例）。
-- **产物**。`dist/Forgelet Runner.exe` 89.7 MB（新增 act worker），SHA256 `296b2a95b9b17e345733b73d3ff832caa834e877723dd350d4b29a74d115e02c`。
+- **产物**。`dist/Forgelet Runner.exe` 89.7 MB（新增 act worker）。从干净提交重建后 SHA256 `350d813b7ec6729ade5aab2c75c349ccbd6ad09c81187e54c5bc4eac3f4a450b`，设备自报版本 `v0.0.0-20261115103653-9f727ae310fa`（不带 `+dirty`）。
