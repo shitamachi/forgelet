@@ -1587,3 +1587,12 @@ run d9645a85 的 Mac reliability 全部测试门禁成功：static 331.42s、uni
 - **结论**。act 不可行：WSLC 3.0.5 的 `run`/`create` 拒绝 `--privileged`、`--security-opt`、`--platform`、`--cpuset-cpus`；容器内 `CapEff=0xa80425fb`（Docker 默认能力集）+ root。实测把 `docker-engine` 镜像跑进 wslc 容器，`dockerd` 以 `vfs`、`--iptables=false --bridge=none` 能启动并监听 `/var/run/docker.sock`，但创建容器即失败：`failed to register layer: unshare: operation not permitted`（缺 CAP_SYS_ADMIN）。act 要求沙箱内再起一层容器，因此 WSLC 无法承担 act 内核。
 - **部分可行**。非 act 容器（控制面选镜像 + 就绪探测 + 便携标签路由）可用 `wslc` 等价命令实现：`run --interactive --rm --pull=never --name --label --user --cap-drop ALL --workdir --entrypoint` 全部可用（实测），`inspect -t image`、`list -a -q -f label=…`、`remove -f -v` 也在。缺口是无 `--security-opt=no-new-privileges`（硬化弱于 Docker 路径）与无 `--platform`（WSLC 只有 amd64，digest 已锁架构）。
 - **未实施**。act 是这轮统一执行的主要目标，WSLC 承担不了；实现半套适配层会新增一个 `docker`→`wslc` 翻译层并降低硬化，需先确认是否真有「WSLC 设备接便携标签」的需求。评估细节记在 `docs/architecture.md`，本次未改代码。
+
+## 2026-11-15 晚：WSL2 跑通 steam-tasks 的真实 act 任务
+
+- **前置**。用户把 WSL2 发行版扩到 394 GB（可用 98 GB），`ubuntu-latest` 的 `act.data_limit`（24 GiB）不再卡住 `checkAct`；设备自报标签从 `linux-amd64-wsl2` 扩展为 `linux-amd64-wsl2,ubuntu-latest`，说明 act 环境已就绪。
+- **发现的缺陷**。真实 `steam-tasks` 任务在 `docker cp` 阶段失败（桌面显示「无法安装任务执行内核」）：`executeAct` 用分发版里的 Docker CLI 把执行器与 act worker 拷进沙箱，而当时传给它的仍是 **Windows 宿主路径**（`C:\Users\…`），在 WSL 里不存在。修复：supervisor 把 act worker 也安装进发行版（`~/.local/share/forgelet/forgelet-act`），并为 Docker 执行器提供「后端内的路径」；原生 macOS 那种「二进制在 supervisor 旁边」的布局继续走旧查找。应用侧把内嵌 act worker 的宿主路径通过 `wsl2.act_binary` 一起传入。
+- **真实验收**。`shitamachi/steam-tasks` 的 `reliability.yml`（`runs-on: ubuntu-latest`，main `340ca424`）以 workflow_dispatch 提交，落在 `windows-wslc-01`，run `fe9e0133b58c4bb65ba00c2f` **success**。日志显示真实 act 链路：`actions/checkout@v4` → `actions/setup-go@v5`（缓存命中）→ `git config insteadOf` 私有模块 → `go mod download/verify`、`go vet`、`go build` → `actions/cache@v4` 恢复 Atlas 缓存 → `scripts/ci/install-atlas.sh` → 两个迁移目录 `atlas migrate validate` → `go test -short -race ./...`（全仓包覆盖）→ 收尾 `Post actions/checkout`，最后 `Job succeeded`。全程约 6 分钟，容器在内层引擎里跑，宿主 Docker socket 未挂入。
+- **测试**。新增 `TestActBinariesFollowTheBackendIntoTheDistribution`：后端提供发行版内路径时优先使用，未提供时回落到 supervisor 旁的内置包；`internal/runner` 全部通过（Windows 与 Linux）。
+- **产物**。`dist/Forgelet Runner.exe` 89.7 MB，SHA256 `9a2566496795134138a7119c729a9331338d42dcca8f358af319d8cd0ba18e74`，设备自报版本 `v0.0.0-20261115113440-7f361f403a1b`（不带 `+dirty`）。
+- **过程说明**。为让任务先落在 Windows，临时暂停了 Mac 设备并在结束后恢复（`paused=false`）；测试后 WSL 内无残留沙箱容器，磁盘 98 GB 可用。
