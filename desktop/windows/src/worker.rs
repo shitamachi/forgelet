@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -14,10 +14,14 @@ use std::{
 };
 
 /// The Go runners are compiled by `build.rs` and shipped inside this executable,
-/// so the app is one file with nothing to install beside it.
+/// so the app is one file with nothing to install beside it. Their fingerprints
+/// name the cached copies: a rebuilt runner of the same size still replaces the
+/// one on disk.
 const EMBEDDED_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-runner.exe"));
+const RUNNER_ID: &str = env!("FORGELET_RUNNER_ID");
 /// The Linux executor the WSL2 backend installs into the distribution.
 const EMBEDDED_LINUX_RUNNER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forgelet-runner-linux"));
+const LINUX_RUNNER_ID: &str = env!("FORGELET_LINUX_RUNNER_ID");
 
 #[derive(Serialize)]
 pub struct Connection<'a> {
@@ -82,7 +86,7 @@ impl Worker {
     /// backend additionally needs the Linux executor on disk; it is written from
     /// the same embedded copy.
     pub fn start(settings: &Settings, logs: Arc<Mutex<Tail>>) -> Result<Self, String> {
-        let program = materialize("forgelet-runner.exe", EMBEDDED_RUNNER)?;
+        let program = materialize("forgelet-runner.exe", RUNNER_ID, EMBEDDED_RUNNER)?;
         let mut connection = Connection {
             url: settings.url.trim(),
             wslc: None,
@@ -94,7 +98,7 @@ impl Worker {
                 connection.wsl2 = Some(Wsl2Connection {
                     distro: settings.wsl2.distro.trim().to_owned(),
                     user: settings.wsl2.user.trim().to_owned(),
-                    runner_binary: materialize("forgelet-runner-linux", EMBEDDED_LINUX_RUNNER)?
+                    runner_binary: materialize("forgelet-runner-linux", LINUX_RUNNER_ID, EMBEDDED_LINUX_RUNNER)?
                         .to_string_lossy()
                         .into_owned(),
                 })
@@ -176,31 +180,69 @@ impl Worker {
     }
 }
 
-/// Writes an embedded runner to the account's cache and returns its path. A
-/// matching file is reused, so repeated starts cost one size check; a mismatched
-/// one is replaced atomically (a running copy keeps working until it exits).
-fn materialize(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+/// Writes an embedded runner to the account's cache and returns its path. The
+/// fingerprint is part of the file name, so a rebuilt runner of the same size
+/// never reuses a stale copy; older copies are removed once they are not in use.
+fn materialize(name: &str, id: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let root = Settings::work_root().ok_or("无法定位本机缓存目录")?;
     let dir = root.join("bin");
     fs::create_dir_all(&dir).map_err(|_| "无法创建执行器目录")?;
-    let path = dir.join(name);
-    if let Ok(metadata) = fs::metadata(&path)
-        && metadata.len() == bytes.len() as u64
-    {
-        return Ok(path);
-    }
-    let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
-    fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
-    match fs::rename(&temporary, &path) {
-        Ok(()) => Ok(path),
-        Err(_) => {
+    let (stem, extension) = split_name(name);
+    let path = dir.join(format!("{stem}-{id}{extension}"));
+    if !matches!(fs::metadata(&path), Ok(metadata) if metadata.len() == bytes.len() as u64) {
+        let temporary = dir.join(format!("{stem}.{}.tmp", std::process::id()));
+        fs::write(&temporary, bytes).map_err(|_| "无法写入内置执行器")?;
+        if fs::rename(&temporary, &path).is_err() {
             let _ = fs::remove_file(&temporary);
             // Another instance may be running the old copy; use it if its size
             // still matches, otherwise report the failure.
             match fs::metadata(&path) {
-                Ok(metadata) if metadata.len() == bytes.len() as u64 => Ok(path),
-                _ => Err("无法更新内置执行器，请关闭其他实例后重试".into()),
+                Ok(metadata) if metadata.len() == bytes.len() as u64 => {}
+                _ => return Err("无法更新内置执行器，请关闭其他实例后重试".into()),
             }
         }
+    }
+    prune(&dir, stem, &path);
+    Ok(path)
+}
+
+/// prune removes superseded copies, leaving the one about to run in place. A
+/// copy still executing cannot be deleted on Windows; that failure is harmless.
+fn prune(dir: &Path, stem: &str, keep: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep || !path.is_file() {
+            continue;
+        }
+        let matches_stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value == stem || value.starts_with(&format!("{stem}-")));
+        if matches_stem {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// split_name separates a cached runner's stem from its extension: the Windows
+/// copy keeps `.exe`, the Linux one has none.
+fn split_name(name: &str) -> (&str, String) {
+    match name.split_once('.') {
+        Some((stem, extension)) => (stem, format!(".{extension}")),
+        None => (name, String::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_runners_are_named_by_fingerprint() {
+        assert_eq!(split_name("forgelet-runner.exe"), ("forgelet-runner", ".exe".into()));
+        assert_eq!(split_name("forgelet-runner-linux"), ("forgelet-runner-linux", String::new()));
     }
 }
