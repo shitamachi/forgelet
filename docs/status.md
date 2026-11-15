@@ -1581,3 +1581,9 @@ run d9645a85 的 Mac reliability 全部测试门禁成功：static 331.42s、uni
 - **act 内核（完整 Actions）未在 Windows 验证成功，原因明确**：`ubuntu-latest` 的 `act.data_limit` 是 24 GiB，而本机发行版只剩约 4.7 GiB，`checkAct` 直接报「Docker 可用空间不足」；拉取 `executor-act-web-tools` 还会进一步占满磁盘，已在 4.7 GiB 时中止并让 Docker 自行清理。控制面配置已恢复原样（仅 `ubuntu-latest: ubuntu-latest`），临时 profile 与 fallback 已删除。
 - **自动测试**。Windows：`internal/runner`、`internal/wsl`、`internal/wslc`、`cmd/runner`、`internal/run` 通过；Linux 容器内：`internal/server`、`internal/storage`、`internal/run`、`internal/actworker`、`internal/executor` 通过；Rust 端 6 项测试通过（新增固定名替换用例）。
 - **产物**。`dist/Forgelet Runner.exe` 89.7 MB（新增 act worker）。从干净提交重建后 SHA256 `350d813b7ec6729ade5aab2c75c349ccbd6ad09c81187e54c5bc4eac3f4a450b`，设备自报版本 `v0.0.0-20261115103653-9f727ae310fa`（不带 `+dirty`）。
+
+## 2026-11-15：WSLC 接入统一容器执行的评估
+
+- **结论**。act 不可行：WSLC 3.0.5 的 `run`/`create` 拒绝 `--privileged`、`--security-opt`、`--platform`、`--cpuset-cpus`；容器内 `CapEff=0xa80425fb`（Docker 默认能力集）+ root。实测把 `docker-engine` 镜像跑进 wslc 容器，`dockerd` 以 `vfs`、`--iptables=false --bridge=none` 能启动并监听 `/var/run/docker.sock`，但创建容器即失败：`failed to register layer: unshare: operation not permitted`（缺 CAP_SYS_ADMIN）。act 要求沙箱内再起一层容器，因此 WSLC 无法承担 act 内核。
+- **部分可行**。非 act 容器（控制面选镜像 + 就绪探测 + 便携标签路由）可用 `wslc` 等价命令实现：`run --interactive --rm --pull=never --name --label --user --cap-drop ALL --workdir --entrypoint` 全部可用（实测），`inspect -t image`、`list -a -q -f label=…`、`remove -f -v` 也在。缺口是无 `--security-opt=no-new-privileges`（硬化弱于 Docker 路径）与无 `--platform`（WSLC 只有 amd64，digest 已锁架构）。
+- **未实施**。act 是这轮统一执行的主要目标，WSLC 承担不了；实现半套适配层会新增一个 `docker`→`wslc` 翻译层并降低硬化，需先确认是否真有「WSLC 设备接便携标签」的需求。评估细节记在 `docs/architecture.md`，本次未改代码。

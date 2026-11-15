@@ -772,6 +772,14 @@ flowchart LR
 
 Windows 端先用 CLI 做薄适配。用唯一 attempt 名称和 forgelet 所有权标记执行 create/start、inspect、stop 和 remove，启动响应丢失时先核对容器再决定下一步。用容器自己的文件系统保存工作区，凭据通过私有启动通道进入容器，命令行和容器配置元数据中无明文。Windows 桌面 App 在用户启用接单期间管理 agent，WSLC VM 可在容器退出后空闲关停。首轮以专用用户前台启动，实测停止接单、关闭 App、睡眠唤醒和 Windows 重启。若 CLI 无法可靠传递启动凭据或观测退出，再考虑官方 SDK 的 `Session`、`Container` 和 `Process` 接口。[固定提交的 CLI 与 API 文档](https://github.com/MicrosoftDocs/WSL/blob/526e57752f7241dc7e98f14b1033905e8e675587/WSL/wsl-container.md)、[WSL API reference](https://wsl.dev/api-reference/)
 
+### WSLC 能否接入统一容器执行（2026-11-15 评估）
+
+桌面统一执行路径要求后端提供 `docker` 形态的命令（`image inspect`、`pull`、`run`、`ps`、`rm`），act 还要在沙箱内启动嵌套 Docker 引擎。对 WSLC 3.0.5 的实测结论：
+
+- **act 不可行（硬卡点）**。`wslc run`/`create` 明确拒绝 `--privileged`、`--security-opt`、`--platform`、`--cpuset-cpus`；容器内是 Docker 默认能力集（`CapEff 0xa80425fb`）加 root。把 `docker-engine` 镜像放进 wslc 容器后，`dockerd` 用 `vfs` + `--iptables=false --bridge=none` 能启动并监听 socket，但一旦创建容器就失败：`failed to register layer: unshare: operation not permitted`（缺 CAP_SYS_ADMIN）。act 的 job 容器必须在沙箱里再创建一层容器，因此 WSLC 无法承担 act 内核；act 仍由 WSL2 发行版 Docker 与 macOS OrbStack 承担。
+- **非 act 容器部分可行**。`wslc` 具备 `run`/`create`/`start`/`cp`/`pull`/`inspect`/`list`/`remove`，且 `--interactive --rm --pull=never --name --label --user --cap-drop ALL --workdir --entrypoint` 均被接受（实测），`remove -f -v`、`list -a -q -f label=…` 也可用。要接入统一路径需要在 runner 内加一层 `docker`→`wslc` 适配：`image inspect`→`inspect -t image`、`pull`→`pull`（无 `--platform`，WSLC 只有 amd64，digest 已锁架构）、`ps -aq --filter`→`list -a -q -f`、`rm -f -v`→`remove -f -v`。代价是两处能力缺失：没有 `--security-opt=no-new-privileges`（硬化弱于 Docker 路径，只能靠 `--cap-drop ALL` 与非 root 用户补），以及无法按平台选择镜像（只能服务 amd64 容器）。
+- **建议**。act 保持 WSL2/macOS 专属；WSLC 继续用应用内固定镜像的既有模式。只有当「WSLC 设备也要接 `linux-ci` 这类便携标签、镜像由控制面选」成为需求时，才值得实现上述适配层，并在文档里写明硬化差异。
+
 ### WSL2 后端（2026-11-10）
 
 WSL2 的 Buildx 能力从选定发行版和 Linux 用户探测，使用与发布步骤一致的 Docker endpoint 与用户 Docker 配置。Windows 宿主的 Docker CLI 不参与该探测。
