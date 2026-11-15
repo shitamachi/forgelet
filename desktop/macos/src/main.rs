@@ -43,6 +43,7 @@ fn accent() -> AdaptiveColor {
 fn state_label(state: &str) -> &'static str {
     match state {
         "connecting" => "连接中",
+        "preparing" => "准备环境",
         "pairing" => "等待配对",
         "available" | "succeeded" | "failed" | "stopped" | "timed_out" => "空闲",
         "running" => "正在构建",
@@ -58,7 +59,7 @@ fn state_color(state: &str) -> AdaptiveColor {
         "available" | "succeeded" | "failed" | "stopped" | "timed_out" => {
             colors(0x237150, 0x6dd8a6)
         }
-        "running" | "connecting" | "pairing" => accent(),
+        "running" | "connecting" | "pairing" | "preparing" => accent(),
         "reconnecting" | "stopping" => colors(0x8c570b, 0xffc978),
         "error" => colors(0xa63246, 0xff9eac),
         _ => secondary(),

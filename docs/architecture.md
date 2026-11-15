@@ -1,6 +1,10 @@
 # forgelet：homelab 设计
 
 更新：2026-10-29。当前实现与测试记录见 [status.md](status.md)，后续顺序见 [plan.md](plan.md)。
+
+2026-11-11：act profile 可显式配置 `platform: linux/amd64` 或 `linux/arm64`。该值同时指定 job 容器平台和任务中的 `DOCKER_DEFAULT_PLATFORM`，使未写 `platforms` 的原 Docker Actions 使用管理员选定的默认构建平台。私有 Docker 引擎仍可按宿主架构运行；镜像发布后还须核验实际 registry 配置。此参数不改变已有 profile 的缺省行为，也不表示桌面 Runner 已接通完整 act 调度。
+
+原 YAML 使用 `secrets.GITHUB_TOKEN` 读取私有 Go 依赖时，管理员可用 `repository_dependencies` 为来源仓库列出至多 16 个同组织依赖仓库。计划冻结依赖名称，凭据请求前后复核 GitHub App 授权和当前策略，只签发该来源与依赖集合的短期 `contents: read` token。未配置时仍限于来源仓库；修改已冻结的集合需要创建新运行。库仓库无需启用自己的 CI。
 暂停 spec 模式；设计随代码更新，不设审批或资源基线门禁。
 
 ## 当前结构
@@ -770,6 +774,12 @@ Windows 端先用 CLI 做薄适配。用唯一 attempt 名称和 forgelet 所有
 
 ### WSL2 后端（2026-11-10）
 
+WSL2 的 Buildx 能力从选定发行版和 Linux 用户探测，使用与发布步骤一致的 Docker endpoint 与用户 Docker 配置。Windows 宿主的 Docker CLI 不参与该探测。
+
+为 native 回退 profile 配置 `runner_platform` 后，可移植 job 在计划中冻结 OCI 镜像引用与 Linux 平台。Mac OrbStack 和 Windows WSL2 Docker 共用容器生命周期与 stdin/stdout 协议。控制面从已配置 profile 发布允许的镜像清单，Runner 实际启动镜像探测架构与 worker 后才申报就绪；Runner 优先匹配和 Pod 回退共用同一环境条件。Pod 使用计划中原镜像和平台，容器以 UID 1000 运行，工作区独立，不挂载宿主目录或 Docker socket。原生 WSL2 发布路径独立提供 Buildx 和按仓库授权的目标平台。
+
+调度期限覆盖尚未绑定节点的 Pending Pod。超时在 SQLite 里核对 job 仍是 Starting、尚未领取且 Pod UID 一致，再结束 attempt；清理沿用 UID 前置条件和既有终态回收。已绑定 Pod 和外部 Runner 使用原执行期限或租约。
+
 选型：用 `wsl.exe` 的 CLI 通道，而不是 `WslLaunch`（`wslapi.h`）或 WSL 的 C++/C API。理由是同一条通路已经承担协议里的 stdin/stdout/退出码和隐藏控制台，不需要在 Windows 侧常驻 COM、句柄和回调管理：
 
 - `wsl.exe --distribution <d> --user <u> --exec <argv…>` 把子进程的 stdin/stdout/stderr 直接接到管道，退出码原样成为 `wsl.exe` 的退出码（实测 `exit 7` 返回 7），因此现有「stdin 传配置、stdout 逐行 JSON、关闭 stdin 即取消」的协议可以原样复用。[wsl.exe 内部实现](https://wsl.dev/technical-documentation/wsl.exe/)、[WSL 启动流程与 stdio 交接](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/boot-process.md)
@@ -793,7 +803,7 @@ WSLC 的容器生命周期支持一次性 workspace；Windows 信任边界仍按
 
 ### 首轮能力边界
 
-首轮仅白名单仓库和 workflow 的受信 ref，跑固定 SHA checkout、编译、测试和有界 artifact。GitHub App 私钥、管理员 token、生产发布和 GitOps 凭据留在控制面或既有受控路径；checkout 使用同仓库短时只读权限。首轮外部 job 不注入仓库 secrets，也不作为现有生产发布的唯一前置检查。外部 cache 接入前按仓库、ref、执行平台和信任范围隔离读写，避免个人机器写入生产 job 可恢复的缓存。
+首轮仅白名单仓库和 workflow 的受信 ref，跑固定 SHA checkout、编译、测试和有界 artifact。GitHub App 私钥、管理员 token、生产发布和 GitOps 凭据留在控制面或既有受控路径；checkout 使用同仓库短时只读权限。首轮外部 job 默认不注入仓库 secrets，只有管理员把仓库列入 `runner_secrets` 时才按 attempt 租约下发；无论是否列入，都不作为现有生产发布的唯一前置检查。外部 cache 接入前按仓库、ref、执行平台和信任范围隔离读写，避免个人机器写入生产 job 可恢复的缓存。
 
 现有依赖 Docker API、services、Testcontainers 或 act 的完整业务 workflow 继续由 k3s 执行。Mac 的 OCI 发布使用显式配置的 Docker Buildx。Linux/WSL2 的按需 BuildKit、Windows WSLC 的构建和缓存分别验收。WSLC 首轮先验证运行固定 digest 的 OCI 镜像。[微软 WSLC 教程](https://learn.microsoft.com/en-us/windows/nodejs/containers)、[BuildKit rootless](https://github.com/moby/buildkit/blob/master/docs/rootless.md)
 
@@ -843,3 +853,15 @@ Windows 桌面端沿用同一租约协议，但 job 不在 Windows 账户下直�
 `runner_fallbacks` 显式声明可移植标签与对应 native Pod profile，计划持久化该回退 profile。`prefer_runner` 默认开启。控制面用最近 10 秒的轮询、暂停状态和 SQLite 活跃租约判断 Runner 是否空闲，构建任务进一步匹配 Buildx 报告的目标平台。Pod 预约与 Runner 轮询串行选择，并在 SQLite 事务里固定执行身份。等待空闲 Runner 的兼容任务保留当轮可用槽位，设备下次轮询后才真正取得租约。不可用时用原计划创建一个回退 Pod。已发放的租约或 Pod 身份不自动重放到另一端。
 
 两种后端共用计划中固定的镜像仓库和 OCI 平台。Mac 用 Buildx `--platform`，集群用 BuildKit `--opt platform=...`，并把构建 Pod 限定到相应 OS 和架构。控制面都核对实际镜像 digest、系统和架构，再允许后续自动部署。
+
+### 2026-11-15：完整 act 的桌面租约路径
+
+`runner_act_image` 固定每个 attempt 的独立 Docker 引擎基础镜像，`runner_registry_config` 指向控制面上的只读工具镜像拉取配置目录。管理员用 `runner_fallbacks: {ubuntu-latest: ubuntu-latest}` 将现有 act profile 加入 Runner 优先队列，并用 `runner_secrets` 明确授权可信仓库。未授权仓库保持 Pod 执行；无就绪设备时也回退 Pod。逻辑 profile、reusable 编译与原步骤/超时不变，控制节点仍由控制面推进。
+
+环境快照包含固定引擎/工作镜像、Linux 目标平台、CPU/内存、BuildKit 配置与缓存预算；设备只领取完全匹配且已准备的环境。Mac 在 OrbStack 上创建与宿主同架构的 privileged 独立引擎沙箱，复制应用内置 Linux arm64 监督器和 act worker，通过 stdin 传当前 attempt。工作容器和默认镜像构建平台按集群指定 linux/amd64，CPU affinity 限制并行工具所见核数。没有宿主 Docker socket、源码目录或控制面密钥挂载。设备认证留在桌面，工作容器拿不到设备 token。
+
+执行器复用 RunRemote、现有 act worker、控制/日志/结果与 scoped cache API。工具拉取配置经当前 attempt 的 credentials 端点短时返回，并在执行器私有临时目录使用，任务结束清除；它只允许读取工具镜像。业务 publisher 仍使用仓库已有的 Zot secrets。沙箱按设备所有权和 attempt 命名清理，正常结束及孤儿回收同时删除匿名卷。安装包缺少 Linux 内核时不得声明完整 act 就绪；当前仅 Mac 包含此资源，Windows 完整路径尚未验收。
+
+完整 act 快照还包含现有 `act.data_limit` 对应的磁盘预算（默认24GiB）。桌面在上报就绪前探测引擎所在 Docker 文件系统的实际可用空间，读取失败或不足预算不声明完整环境；不能用 macOS 外置盘剩余空间代替 VM 内可写空间。这是准入检查，不是共享宿主磁盘的配额或预留。
+
+2026-11-15交接修正：控制面首次接受portable容器job终态时，与Pod预约共用runner锁，并为同一设备的精确环境设置最多一个60秒租期的回接期限，供桌面清理与下一次轮询。后续poll的实际能力报告覆盖此临时状态；暂停立即跳过、超时恢复Pod回退、重复终态不续期。避免先完成的Mac job使其依赖job在清理间隙错误回退Pod；设备身份仍由实际grant决定。

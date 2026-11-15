@@ -21,6 +21,13 @@ var testMachineToken = "frr_" + strings.Repeat("a", 64)
 
 func externalHarness(t *testing.T, slots int) *harness {
 	t.Helper()
+	return externalHarnessWith(t, slots, nil)
+}
+
+// externalHarnessWith lets a test change the configuration before the second
+// server start, which is where device-specific settings must be in place.
+func externalHarnessWith(t *testing.T, slots int, configure func(*harness)) *harness {
+	t.Helper()
 	h := newHarness(t, slots)
 	h.http.Close()
 	// A paired device with a known credential; tests that need more devices
@@ -37,6 +44,9 @@ func externalHarness(t *testing.T, slots int) *harness {
 	h.cfg.Blobs, err = blob.Open(filepath.Join(t.TempDir(), "artifacts"), blob.Limits{ObjectBytes: 1 << 20, TotalBytes: 4 << 20, Objects: 20})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if configure != nil {
+		configure(h)
 	}
 	h.start()
 	return h

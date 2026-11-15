@@ -23,6 +23,23 @@ func TestWorkerRejectsNegativeCPUBeforeStartingJob(t *testing.T) {
 	}
 }
 
+func TestWorkerExecutionPlatform(t *testing.T) {
+	for _, platform := range []string{"", "linux/amd64", "linux/arm64"} {
+		env := runtimeEnvironment(run.ActRequest{Platform: platform})
+		if env["DOCKER_DEFAULT_PLATFORM"] != platform {
+			t.Fatalf("platform %q: Docker default is %q", platform, env["DOCKER_DEFAULT_PLATFORM"])
+		}
+	}
+	request := run.ActRequest{Platform: "darwin/arm64", Image: "runner:test", Workspace: "/workspace", Plan: run.Plan{Kernel: "act", JobID: "job"}}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Run(t.Context(), bytes.NewReader(data), io.Discard); err == nil || !strings.Contains(err.Error(), "invalid act job identity or profile") {
+		t.Fatalf("unsupported execution platform was not rejected: %v", err)
+	}
+}
+
 func TestWorkerProtocolPreservesExitCodesAndDecodedMasks(t *testing.T) {
 	for _, tc := range []struct {
 		name, stage, text, command, arg string

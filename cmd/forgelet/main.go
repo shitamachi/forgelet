@@ -43,37 +43,42 @@ type authConfig struct {
 	GitHubWebURL           string `yaml:"github_web_url"`
 }
 type config struct {
-	ActionAPIURL         string                     `yaml:"action_api_url"`
-	Auth                 authConfig                 `yaml:"auth"`
-	AdminAccess          string                     `yaml:"admin_access"`
-	Targets              map[string]delivery.Target `yaml:"targets"`
-	Blobs                blob.Limits                `yaml:"blobs"`
-	SecretKeyFile        string                     `yaml:"secret_key_file"`
-	Retention            retentionConfig            `yaml:"retention"`
-	DiskSpace            server.DiskSpace           `yaml:"disk_space"`
-	Listen               string                     `yaml:"listen"`
-	DataDir              string                     `yaml:"data_dir"`
-	Namespace            string                     `yaml:"namespace"`
-	PublicURL            string                     `yaml:"public_url"`
-	InternalURL          string                     `yaml:"internal_url"`
-	MaxParallel          int                        `yaml:"max_parallel"`
-	Repositories         []string                   `yaml:"repositories"`
-	Workflows            []string                   `yaml:"workflows"`
-	PackageTokens        map[string]string          `yaml:"package_tokens"`
-	RepositoryTokens     server.RepositoryTokens    `yaml:"repository_tokens"`
-	Profiles             map[string]kube.Profile    `yaml:"profiles"`
-	Kubeconfig           string                     `yaml:"kubeconfig"`
-	GitHubAPIURL         string                     `yaml:"github_api_url"`
-	AppID                string                     `yaml:"github_app_id"`
-	AppKeyFile           string                     `yaml:"github_app_key_file"`
-	TLSCertFile          string                     `yaml:"tls_cert_file"`
-	TLSKeyFile           string                     `yaml:"tls_key_file"`
-	CASecret             string                     `yaml:"runtime_ca_secret"`
-	AllowInsecureRuntime bool                       `yaml:"allow_insecure_runtime"`
+	RunnerActImage         string                     `yaml:"runner_act_image"`
+	RunnerRegistryConfig   string                     `yaml:"runner_registry_config"`
+	RepositoryDependencies map[string][]string        `yaml:"repository_dependencies"`
+	ActionAPIURL           string                     `yaml:"action_api_url"`
+	Auth                   authConfig                 `yaml:"auth"`
+	AdminAccess            string                     `yaml:"admin_access"`
+	Targets                map[string]delivery.Target `yaml:"targets"`
+	Blobs                  blob.Limits                `yaml:"blobs"`
+	SecretKeyFile          string                     `yaml:"secret_key_file"`
+	Retention              retentionConfig            `yaml:"retention"`
+	DiskSpace              server.DiskSpace           `yaml:"disk_space"`
+	Listen                 string                     `yaml:"listen"`
+	DataDir                string                     `yaml:"data_dir"`
+	Namespace              string                     `yaml:"namespace"`
+	PublicURL              string                     `yaml:"public_url"`
+	InternalURL            string                     `yaml:"internal_url"`
+	MaxParallel            int                        `yaml:"max_parallel"`
+	PodScheduleTimeout     time.Duration              `yaml:"pod_schedule_timeout"`
+	Repositories           []string                   `yaml:"repositories"`
+	Workflows              []string                   `yaml:"workflows"`
+	PackageTokens          map[string]string          `yaml:"package_tokens"`
+	RepositoryTokens       server.RepositoryTokens    `yaml:"repository_tokens"`
+	Profiles               map[string]kube.Profile    `yaml:"profiles"`
+	Kubeconfig             string                     `yaml:"kubeconfig"`
+	GitHubAPIURL           string                     `yaml:"github_api_url"`
+	AppID                  string                     `yaml:"github_app_id"`
+	AppKeyFile             string                     `yaml:"github_app_key_file"`
+	TLSCertFile            string                     `yaml:"tls_cert_file"`
+	TLSKeyFile             string                     `yaml:"tls_key_file"`
+	CASecret               string                     `yaml:"runtime_ca_secret"`
+	AllowInsecureRuntime   bool                       `yaml:"allow_insecure_runtime"`
 
 	ExternalBuilds  []server.ExternalBuildPolicy `yaml:"external_builds"`
 	PreferRunner    *bool                        `yaml:"prefer_runner"`
 	RunnerFallbacks map[string]string            `yaml:"runner_fallbacks"`
+	RunnerSecrets   []string                     `yaml:"runner_secrets"`
 }
 
 func main() {
@@ -184,6 +189,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.MaxParallel < 1 || cfg.MaxParallel > 1024 {
 		return errors.New("max_parallel must be between 1 and 1024")
+	}
+	if cfg.PodScheduleTimeout < 0 {
+		return errors.New("pod_schedule_timeout must be positive")
 	}
 	if strings.TrimSpace(cfg.DataDir) == "" || strings.TrimSpace(cfg.Namespace) == "" {
 		return errors.New("data_dir and namespace are required")
@@ -325,7 +333,7 @@ func serve(ctx context.Context, path string) error {
 			return err
 		}
 	}
-	app, err := server.New(server.Config{PackageTokens: cfg.PackageTokens, GitHubAPIURL: cfg.GitHubAPIURL, ActionResolver: &action.Resolver{APIURL: cfg.ActionAPIURL}, RepositoryTokens: cfg.RepositoryTokens, Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, ExternalBuilds: cfg.ExternalBuilds, PreferRunner: cfg.PreferRunner, RunnerFallbacks: cfg.RunnerFallbacks, DataDir: cfg.DataDir}, db, runtime, provider)
+	app, err := server.New(server.Config{RunnerActImage: cfg.RunnerActImage, RunnerRegistryConfig: cfg.RunnerRegistryConfig, RepositoryDependencies: cfg.RepositoryDependencies, PackageTokens: cfg.PackageTokens, GitHubAPIURL: cfg.GitHubAPIURL, ActionResolver: &action.Resolver{APIURL: cfg.ActionAPIURL}, RepositoryTokens: cfg.RepositoryTokens, Auth: authentication, AdminAccess: cfg.AdminAccess, Targets: cfg.Targets, Delivery: coordinator, Blobs: blobs, SecretKey: secretKey, Retention: retention, DiskSpace: cfg.DiskSpace, AdminToken: adminToken, WebhookSecret: os.Getenv("FORGELET_WEBHOOK_SECRET"), PublicURL: cfg.PublicURL, MaxParallel: cfg.MaxParallel, PodScheduleTimeout: cfg.PodScheduleTimeout, Repositories: cfg.Repositories, Workflows: cfg.Workflows, Profiles: cfg.Profiles, ExternalBuilds: cfg.ExternalBuilds, PreferRunner: cfg.PreferRunner, RunnerFallbacks: cfg.RunnerFallbacks, RunnerSecrets: cfg.RunnerSecrets, DataDir: cfg.DataDir}, db, runtime, provider)
 	if err != nil {
 		return err
 	}

@@ -27,6 +27,8 @@ type wslcBackend struct {
 	version string
 }
 
+func (*wslcBackend) buildPlatforms(context.Context) string { return "none" }
+
 const (
 	// stopGrace is how long a cancelled job may shut down inside the container
 	// before the runner asks wslc to stop it.
@@ -299,71 +301,10 @@ func (b *wslcBackend) executeLease(ctx context.Context, c *client, _ string, gra
 	return result
 }
 
-// jobTerminal reports whether a container's state line ends the attempt. The
-// container emits control-plane states (success, cancelled, ...) or the desktop
-// ones it reports for a stop, so both vocabularies count.
-func jobTerminal(state string) bool {
-	if run.State(state).Terminal() {
-		return true
-	}
-	switch state {
-	case "succeeded", "failed", "stopped", "timed_out":
-		return true
-	}
-	return false
-}
-
 // removeContainer frees the attempt's disk. Its result is not reported: the job
 // verdict already came from the control plane or the container exit status.
 func removeContainer(ctx context.Context, cli wslc.Client, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	_ = cli.Command(ctx, wslc.RemoveArgs(name)...).Run()
-}
-
-type tailWriter struct {
-	mu    sync.Mutex
-	data  []byte
-	limit int
-}
-
-func (t *tailWriter) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.data = append(t.data, p...)
-	if len(t.data) > t.limit {
-		t.data = t.data[len(t.data)-t.limit:]
-	}
-	return len(p), nil
-}
-
-func (t *tailWriter) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return strings.TrimSpace(string(t.data))
-}
-
-// Meaningful returns the first stderr line that is not the CLI's standing
-// warning about the session's missing swap accounting, which it prints for
-// every container on a host without cgroup swap support.
-func (t *tailWriter) Meaningful() string {
-	for line := range strings.SplitSeq(t.String(), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "swap limit capabilities") {
-			continue
-		}
-		if len(line) > 200 {
-			line = line[:200]
-		}
-		return line
-	}
-	return ""
-}
-
-func firstLine(text string) string {
-	line, _, _ := strings.Cut(text, "\n")
-	if len(line) > 200 {
-		line = line[:200]
-	}
-	return strings.TrimSpace(line)
 }

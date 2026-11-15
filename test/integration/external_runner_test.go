@@ -4,9 +4,7 @@ package integration_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,30 +22,25 @@ import (
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
-var fixtureDeviceToken = "frr_" + strings.Repeat("a", 64)
-
 func configureExternalFixture(config *corev1.ConfigMap) {
 	config.Data["forgelet.yaml"] = strings.Replace(config.Data["forgelet.yaml"], "  - test/project\n", "  - test/project\n  - test/runner-other\n", 1)
-	config.Data["forgelet.yaml"] += fmt.Sprintf(`
+	config.Data["forgelet.yaml"] += `
 runner_fallbacks:
   portable: homelab
-external_runners:
-  macos-arm64:
-    repository: test/project
-    workflow: .github/workflows/manual.yml
-    ref: refs/heads/main
-    token_sha256: %x
-`, sha256.Sum256([]byte(fixtureDeviceToken)))
+`
 }
 
 func testExternalRunner(t *testing.T, ctx context.Context, client *kubernetes.Clientset, httpClient *http.Client, endpoint string,
 	create func(*testing.T, string) run.Run, get func(*testing.T, string) run.Run) {
 	t.Run("external desktop runner shares capacity and survives control plane restart", func(t *testing.T) {
 		const profile = "web-macos-arm64"
+		var pairing struct{ ID, Secret string }
+		must(t, json.Unmarshal(api(t, ctx, httpClient, endpoint, "POST", "/runner/v1/pair", map[string]string{
+			"hostname": profile, "os": "darwin", "arch": "arm64",
+		}, "", 200), &pairing))
+		api(t, ctx, httpClient, endpoint, "POST", "/api/runner-pairings/"+pairing.ID+"/approve", map[string]string{"name": profile}, token, 200)
 		var registration struct{ Token string }
-		must(t, json.Unmarshal(api(t, ctx, httpClient, endpoint, "POST", "/api/runners", map[string]string{
-			"name": profile,
-		}, token, 201), &registration))
+		must(t, json.Unmarshal(api(t, ctx, httpClient, endpoint, "GET", "/runner/v1/pair/"+pairing.ID, nil, pairing.Secret, 200), &registration))
 		mac := create(t, `on: push
 jobs:
   native:

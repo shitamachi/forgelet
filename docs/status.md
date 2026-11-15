@@ -1481,6 +1481,40 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **测试**。`internal/wsl` 单测覆盖 UTF-16LE 解码、`--distribution/--user` 参数拼装与默认发行版显示；`cmd/runner` 覆盖注入环境变量名的校验；`internal/runner`（Windows）覆盖后端选择与标签推导；`internal/server` 与 `internal/run` 在 Linux 容器内全量通过。macOS 端不涉及此改动。
 - **边界**。WSL2 后端以发行版当前用户运行，可访问该用户文件，只用于可信仓库；需要 Node/Python 等工具时由设备自行在发行版里维护，应用不安装运行时。`forgelet/build@v1` 的镜像仓库授权规则未变。
 
+## 2026-11-10：设备上的仓库 secrets（一条配置开关）
+
+- **简化决定**。上一版把 secret 给 runner 拆成五层（策略表、准入、文件投递、运行期守卫、审计表）。复审后认为层数本身就是负担：现有机制已经覆盖主要风险——AES-256-GCM 存储、计划只存名称、claim 之后按 attempt 租约取值、日志脱敏、外部 job 只接受分支 push 与手动触发。因此只保留一个开关，不建新表、不加新端点、不改投递格式。
+- **实现**。`server.Config` 增加 `RunnerSecrets []string`，构造时按 `owner/repo` 格式校验；`validateExternalPlans` 从「有 secret 就拒」改成「仓库未列入 `runner_secrets` 才拒」，诊断里带上仓库名和字段名；凭据端点对 external job 写一条 `slog`（job、设备、仓库、数量），不记录值。`cmd/forgelet` 增加 `runner_secrets` YAML 字段。
+- **自动测试**。新增 `internal/server/external_secrets_test.go`：未列入时 `/api/runs` 返回 422 且诊断含 `runner_secrets` 与仓库名；同一 workflow 换成 Pod profile 仍正常运行；列入后 poll → claim → `/credentials` 取到实际值（大小写不敏感匹配）。`internal/server` 全量、`cmd/forgelet`、`internal/run`、`internal/storage`、`internal/workflow` 通过。
+- **边界**。未执行 `make verify`（含 Web 与浏览器用例的完整链），未在真实 k3s 或真实 WSL2 上验证本轮改动；没有 Web 开关，目前只改配置文件；secrets 仍以环境变量进入步骤，没有文件投递或产物守卫。
+
+## 2026-11-10：OrbStack 与 WSL2 Docker 统一执行
+
+- **实现**。WSL2 在指定发行版和用户下探测 Buildx，发布步骤使用同一个 daemon endpoint 和 builder 配置。显式上报缺少目标架构时，外部构建不予分配。新增 `pod_schedule_timeout`，默认 5 分钟，未绑定 Pending Pod 超时后写入 Kubernetes 调度原因、释放槽位并按 UID 清理。SQLite 事务保留并发领取和取消的正确终态。
+- **执行环境**。配置 `runner_platform` 的回退 profile 将镜像 digest 和 Linux 平台冻结到计划。Mac OrbStack 和 Windows WSL2 Docker 使用同一个容器执行器；镜像实际通过探测后设备才可领取。Pod 按相同镜像和平台启动。普通 CI 容器以 UID 1000 运行，使用一次性工作区，宿主目录和 Docker socket 都不进入容器。旧控制面可继续解码新版 Runner 的原格式轮询请求。
+- **自动验证**。`GOFLAGS=-p=2 make verify` 通过，包含 Go race、lint、42 项 Web 单测和 18 项浏览器用例。新增环境精确匹配、旧轮询格式、显式 Buildx 平台、超时与并发领取、终态保留的回归覆盖。
+- **临时 k3s**。`TestK3sPodScheduleTimeout` 通过（22.048 秒）。真实调度器产生 Unschedulable，控制面重开 SQLite 后沿用原期限，清理首个 Pod，下一任务占用释放的槽位。专项用例使用独立集群与临时数据。
+- **Mac 业务试点**。`steam-lake-ingest` 固定提交 `bf4acc7d9e4a6e5b19528c9d4fc3b0e172fd3b21` 在 OrbStack 的 `linux/amd64` 容器执行原 `uv sync --frozen`、pytest 和 Go 测试。使用实际 Dockerfile 目标 `executor-ci-python-go`，本地 manifest 为 `sha256:f68de54dedc0de88592ff42e73c3766e47b070edf446302d472bab7e382ee3b2`。Pytest 70 通过、15 项按原 marker 排除，Go 客户端通过，16 段日志已确认。使用本机临时 registry 和测试控制面，输入为 Git 固定提交归档。首轮公网 Go 模块下载到达试点期限，后续用保留 `go.sum` 校验的本机模块缓存重跑成功。
+- **交接**。Mac 应用签名验证通过，Windows Go 监督进程与 Windows 专项测试交叉编译通过。Windows 桌面包在实际 Windows 上通过 `desktop/windows/package.ps1 -SkipImage` 构建。homelab 的三端同 digest 验证与 `steam-admin-web` 的 Windows → Zot → Flux → 健康检查待实际验收；现网控制面未升级，WSLC 仍保留。操作步骤见 [统一 Linux 执行环境](deployment.md#mac-orbstackwindows-wsl2-docker-与-pod-共用-linux-环境)。
+
+## 2026-11-11：Mac 原 YAML 快速验证（Admin Web 完成，Tasks 跳过）
+
+- **代码实现**。act profile 新增可选 `platform`，贯穿 executor 请求、任务容器架构及 `DOCKER_DEFAULT_PLATFORM`。新增 `repository_dependencies`：管理员明确授权同组织私有依赖，计划冻结名称，取凭据前后检查 App 授权，只签发来源与依赖集合的短期 contents-read token；未配置保持仅来源权限。没有修改业务 YAML。
+- **自动测试**。平台与 token 范围/缓存隔离、授权撤回、冻结策略变更的回归通过；最终 `GOFLAGS=-p=2 make verify` 通过，包含 Go race、lint、42 项前端单测、18 项浏览器测试。本轮未重跑完整 Testcontainers 套件。
+- **试跑方式**。Mac 上的临时控制面复用现有完整 workflow compiler/act 内核，OrbStack 每个 job 使用独立 Docker 引擎，实际任务为 Linux amd64；使用固定远端提交和原 YAML。原工作流文件逐字节与 Git 对象核对一致。此验证没有把已安装桌面 Runner 接到完整 act 租约路径，也没有升级现网控制面。
+- **Tasks 未通过**。远端 `main@b163d504b62cb6afd078c25e8f25da7a9d7b419e` 已通过 Go 1.26.4、私有模块、mod verify/vet/build、Atlas、完整 unit/race；真实 PG18 启动后在 `internal/app` 等待，原 1200 秒预算超时，publisher 被跳过。Darwin arm64/Go 1.27.3 的独立诊断取得 handler/target 数量、显式 online shard、writer scope 等合同不一致，以及 lifecycle 测试同步等待 RunCallback 的堆栈；诊断不计为原 YAML 验收。业务工作区有 6 个未推送提交和大量改动，本轮保留未动。owner 随后明确要求先跳过 Tasks；本轮不再重跑，也不将其作为 Admin Web 发布门禁。
+- **Admin Web 发布发现**。原 `image.yml`（含 reusable CI）曾完整通过并推送实际 linux/amd64 镜像，但当前 BuildKit 0.33.1 对原 Dockerfile `COPY --chmod=0644` 创建的父目录也应用 0644，Nginx 模板未生效。真实发布健康检查捕获 404 和重启，已通过 Forgelet 实际回滚至同 digest 迁入 Zot 的基线，服务恢复。GitOps readiness 改为 `/healthz`，阻止默认静态首页导致假就绪。0.20.2 的同一最小样例生成 0755 目录，正在用该固定工具版本重跑原 YAML；结果在下方收尾记录。
+
+证据位于本机私有 `/Volumes/Dev/forgelet-proofs/mac-original-20261111`，包括原 YAML 哈希、运行/日志、PG 容器、独立诊断、registry 配置、GitOps 提交与回滚记录。日志和报告不包含凭据值。
+
+### Admin Web 收尾结果
+
+- 原提交 `d957bd47a25a2cc1218171eadba9fb7155b122e6`、原 `image.yml` 与 reusable `ci.yml` 通过；最终本机 run `4400c7c87cb362abe4730e52`。固定 4 核亲和性、BuildKit 0.20.2，并隔离本地 Admin 缓存后重新构建；切版本时曾复用旧错误 COPY 层，已有相同 layer digest 证据。所有原步骤、32 项测试和超时均保留。
+- 最终镜像 `zot.k.mygo.rocks/forgelet/apps/steam-admin-web@sha256:b7693782c8449756bb8f592f6bebc91113cf5a7dd0c5274d78b8f86b23ea9393`；同一 digest 在 Mac 容器中确认目录 0755、Nginx 模板生效及 healthz 200，发布脚本强制匹配 smoke digest 后才提交。首轮不健康发布已实际回滚；另一次 smoke 失败后误串联发布也已回滚，该串联错误已修正。
+- 真实 homelab 发布 run `02231080c87ec1558faaee0d`、delivery `c76097d4abc4bdf0186d3a119d25bfcb`，GitOps/Flux revision `15c7ed4088eb229088cbd908b4973990699a227d`。实际 Pod `steam-admin-web-84c75b4b45-s6mqk` 在 `node1`（amd64）运行同一 digest，复核重启数 0；Service、外网首页、JS、healthz 均 200，匿名 session API 401。
+- 原基线镜像等价迁入 Zot（digest `sha256:d73d028af85c2f8bec3466694cc1f4264511b5f19fbeaf1f34e7ef4651c67caf`），readiness 已改 `/healthz`。当前发布可通过 Forgelet 原回滚 API 恢复该基线。仅试跑配置固定旧 BuildKit；业务 Dockerfile 后续应显式保证模板目录权限后再升级工具链。
+- 报告与回滚步骤：本机私有 `/Volumes/Dev/forgelet-proofs/mac-original-20261111/REPORT.md`。现网控制面、安装版桌面应用和原 Pending 任务未在本轮升级/取消；完整 act 的设备调度接入与 Windows 验收仍待后续完成。
+
 ## 2026-11-15：Windows 端验收与桌面端对齐
 
 - **拉取结果**。`origin/main` 仍是 `2126547`（`git ls-remote` 与本地 HEAD 一致），本次没有可拉取的新提交，工作区干净。homelab 上 Mac 设备自报版本为 `v0.0.0-20261110092451-2126547124d4+dirty` 且声明 `macos-arm64,ubuntu-latest` 两个标签，而仓库里 Darwin 只声明 `macos-<arch>`——说明那台机器上是**未提交的本地改动**，没有推到 main，因此无法从远程取得。
@@ -1489,3 +1523,47 @@ Tasks镜像job `045bec616ecae12b0540ba75` 真实使用Buildx及内网镜像源�
 - **本机验收（Windows + homelab）**。删掉凭据与设置重来：应用显示配对码 `VLJW-5S2Q` → Web 批准为 `windows-wslc-01` → 设备空闲，自报 `wslc 3.0.5.0`。两个后端各跑一次真实任务：`linux-amd64-wsl2` 的任务 `cb8367a489e893262dcb7da2` 输出 `server=29.9.2` 与 `final-acceptance`（job 内 `docker run alpine` 成功）；切回 `linux-amd64-wslc` 后任务 `dff80ed3721bd4124b53f770` 输出 `node v24.22.2`、`git 2.39.5`、`wslc-final-ok`。暂停测试：任务 `089317d3fcb057984c0d8f06` 运行中点「暂停」，控制面 run/job 均为 `cancelled`，窗口显示「已暂停」与「任务停止」，没有出现 `context canceled` 错误文案。
 - **产物**。`dist/Forgelet Runner.exe` 重新打包（SHA256 `aad68e91ee0d134a3c54d6d04536f2cc38f6effb3c0d84f5ee7c8756cd726bfd`）。先在改动未提交时打包过一次，随后 `cargo clean -p forgelet-desktop` 从干净提交重建，设备自报版本因此不带 `+dirty`：`v0.0.0-20261115083145-9654c42e908f`；用该产物再跑一次任务 `6c050e546ea0acaca2bde889` 成功。Rust 测试 5 项通过。
 - **待确认**。Mac 上那台设备的 `ubuntu-latest` 标签与新后端语义不在仓库里；是否要让 Windows WSL2 也声明 `ubuntu-latest`（它同样是完整 Linux + Docker）需要先确定语义，未擅自实现。
+
+## 2026-11-15：安装版 Mac Runner 接入完整 act 队列，等待 Tasks 新提交
+
+- **代码**：原 `ubuntu-latest` 可通过管理员 act 自映射优先选就绪 Runner，保留 Pod 回退；reusable 控制节点不发给设备。快照固定引擎、工作镜像、linux/amd64、CPU/内存、BuildKit/缓存设置。正式应用内置 Linux arm64 监督器与 act worker，每个 attempt 的 OrbStack 独立引擎经 stdin 收取短期 attempt，复用 RunRemote/act、日志/终态及 scoped cache。新增只读工具 registry 凭据路径；未授权仓库继续 Pod，撤回 Runner 授权后拒绝再取凭据。清理核对设备所有权，移除沙箱和匿名卷。
+- **自动测试**：完整 `make verify` 通过（race、lint、前端 42 单测及浏览器 18 项）；新增完整 act 设备/Pod 选择、原 20 分钟预算、只读凭据、cache、撤权与沙箱安装失败回收测试。最后小改后 `go test -race ./internal/server ./internal/runner` 与 `golangci-lint run --build-tags integration` 通过。初次多项编译并行时登录测试请求超时，编译结束后复跑通过；完整 Testcontainers 套件、失联/取消实机专项本轮未运行。
+- **实际部署**：SQLite 备份与旧 CM/Deployment/应用保存在本机私有 `/Volumes/Dev/forgelet-proofs/mac-runner-20261115`。备份 `backup-dff3d13a8f7585616dd2f9b93c76306f.db`；控制面升级为 `zot.k.mygo.rocks/forgelet/server@sha256:de800da0456e6727dd523cac0936fcc537d43959a62d878f7a2a3c1acc168c68`，ubuntu-latest supervisor 为 `zot.k.mygo.rocks/forgelet/executor-act@sha256:62c5074358e70e2b1eed62b01589e2f24a451fa78c7dfa45bf1514a71d812208`。工作镜像仍为原 pinned web-tools。Tasks 加入 runner_secrets 和三项 contents-read 私有依赖授权；源 YAML 未改。
+- **正式应用实测**：`/Applications/Forgelet Runner.app` 打包、签名核验并从 UI 启动，复用原配对设备 `guodemac-mini-lan`；在线标签包含 macos-arm64、ubuntu-latest。真实 homelab run `a4de7473d348a6f455ff65ae` / job `ef5eb7aa94cb86659a29800f` 在该设备运行成功：Linux amd64 工作容器内启动私有 Docker，amd64 Alpine 打印 `MAC_RUNNER_AMD64_OK`，日志与 success 回传，任务沙箱实际回收。
+- **边界/待验收**：这次成功的是执行链短测试，不能算 Tasks 原 YAML 业务成功。就绪时远端 main 为 `574b4a058a3a5f006fd878c58d360b2c1a072b40`；已通知 owner 可推送，等待新 SHA，随后跟踪原 reliability/image、镜像平台、Flux 与业务健康。Windows 完整 act 路径尚未安装/验收，保留 WSLC；本轮未自动提交或推送源码。
+
+### Tasks 提交准入修正
+
+owner 已推送 main `340ca424f938705dd0ec63e9c9e8ff1882627004`，GitHub delivery `553ef8e2-e0cb-11f1-858e-9d0e5b55e9fc`。首轮在准入阶段遇到私有依赖检查把自动生成的 contents:none 部署 job 也计入，未产生业务执行。现在所有自动部署 job 均携带 AutomaticDeployment 标记，依赖策略只应用实际源码 job；保留原 YAML 权限。补充自动部署+私有依赖回归（含 push/default push/其他分支/manual/PR），workflow/server 定向测试通过。控制面更新后重试同一 event，不要求额外提交。
+
+准入修正后 `GOFLAGS=-p=2 make verify` 全部通过（含 18 项浏览器测试）。同一 webhook 已创建正式 run `3f84e6fde887616154d8ac5d`；job `d7c4d7288834d166bc846356` 由 `guodemac-mini-lan` 领取，环境快照 linux/amd64、4CPU/4Gi。已通过原 checkout、Go1.26.4 与私有模块配置，业务仍在运行；不能提前写成发布成功。控制面 Pod `forgelet-7fc474c47d-wxmwv` / UID `2c8e63ad-f7ad-4625-b5ef-c0890749c4f0`；安装版监督器 SHA256 `a7a1afd5e89d4ece302acacc79db9aa151b2856be55381d2344132855ac42ce6`。
+
+### 首轮业务执行磁盘失败与接单容量修正
+
+原 webhook run `3f84e6fde887616154d8ac5d` 在正式 Mac 上完成前七个原步骤，含模块校验、vet/build（448.54s）、Atlas 和两套迁移验证。原 unit/race 步骤冷编译约 177s 后因 Docker 文件系统 `no space left on device` 失败（Go 编译器随后 SIGBUS，act post hooks 亦因 ENOSPC 无法启动）；PG、publisher 和 Deploy 均跳过，没有产生/部署新业务镜像。失败按 infrastructure 保留，不归因为业务断言或 YAML 不兼容。沙箱和匿名卷已回收。
+
+OrbStack 当时实际仅有约 9.4GiB 可写空间。新增 RunnerContainer.disk_bytes，冻结现有 act.data_limit（默认 24GiB）；应用在声明完整 act 就绪前读取 Docker 文件系统可用空间，低于预算或无法读取就拒绝声明，显示可用/所需空间。此为准入探测，非宿主磁盘预留。真实 UI 已显示需要24.0/当前6.8GiB，控制面仅记录设备 native 标签；释放空间后自动恢复 ubuntu-latest。新增足量/恰好/不足/负值/未知输出回归，`GOFLAGS=-p=2 make verify` 与 Rust 10 项测试通过。
+
+仅清理可再生成的宿主 Go 编译缓存和本项目 Cargo target（8.5GiB），保留模块缓存、所有源码、Docker 镜像、未知卷和其他 builder；宿主 Dev 可用空间恢复72GiB，OrbStack 刷新后实际可写27.5GiB。最新控制面为 `server@sha256:b0f6e58280f2988e64838bdb3aac789e490868b4bc69d2321703b31fcfb91c4a`；新签名应用已安装，监督器 SHA256 `9a71d5398e232dca319d50434babb0f4709c1e1f34c6883ebe74e4dfb3686dc3`。计划使用原固定提交/原 YAML 重试，无额外提交。Tasks observer 登记已由不存在的 steam-tasks/steam-tasks 改为实际 steam-tasks-controller/controller；现网还包括独立 worker，且当前 GitOps 文件没有旧登记需要的 images 映射，真正发布前仍需核对。
+
+### 同提交重试最终结果：原 20 分钟预算耗尽，尚未发布
+
+- 重新按固定 `340ca424f938705dd0ec63e9c9e8ff1882627004` 和原始 image.yml 创建 run `00102cb35acf3528fec81e44`（管理 API 的 push 语义重试，首轮真实 webhook 与失败保留）；原 reusable 从同 SHA 获取，没有修改步骤、测试或超时。中间两次 codeload Action 下载 EOF 在准入前返回503，重试后成功创建此唯一运行。root YAML SHA256 `cd10a64e1a2ce0814ccbcdd19a5ea8307b8be86f2db873e7d5af0ddfac8319c2`，reliability SHA256 `3c7e243d45707cd151c31a64012c55d2c8b43afec0326103e20719aab2170efe`。
+- 正式 Mac `guodemac-mini-lan` 执行 job `38f35048910721639ed80e72`。准备 08:35:38Z→08:36:41Z；原1200s工作流预算从08:36:41Z开始。前七步通过，模块/vet/build耗时636.35s，随后 Atlas 与迁移成功。unit/race 从08:47:50Z开始，尚未完成时在原20分钟上限被取消，最终 job `timed_out`，run 聚合 `failure`。
+- 日志中51个包返回 `ok`，无已输出的 FAIL/断言失败标记；按固定提交Git tree核对，有测试文件却未返回包级结果的是 `scripts/ci` 与 `scripts/ci/pg18`。不能把这些观察表述为全部unit/race通过，也不能仅凭超时断定两个包阻塞还是编译未完成。已证实的开销为amd64冷环境中的静态检查/编译636s、后续race剩余预算不足；后续应单独定位两个CI辅助包与缓存/跨架构编译开销。
+- 本轮无ENOSPC；接近结束时Docker仍有17,540,960KiB（约16.7GiB）可写。unit整步未通过，原PG集成、coverage、publisher与Deploy跳过，未生成新Tasks镜像或delivery，未声称Zot/Flux/服务验收成功。预检查发现GitOps当前已拆controller/worker且根kustomization无旧的images映射；observer已校正controller，映射与多workload发布仍需后续处理，未为此次失败CI变更业务GitOps或部署。
+- 超时结果在正式桌面显示为“任务超时”，控制面一致；沙箱实际回收（设备所有权标签下无残留容器），应用保持在线、就绪并继续接单。最新控制面Pod `forgelet-864db47779-dk7hs` / UID `8f37c7e7-1905-4125-b443-e08dc0a559b4`。证据、完整脱敏日志、原YAML、备份和部署/应用哈希见 `/Volumes/Dev/forgelet-proofs/mac-runner-20261115`。本轮代码与文档未自动提交/推送；Windows完整act路径、完整Testcontainers及取消/失联实机专项尚未验收。
+
+## 2026-11-15：按 owner 要求延长 Tasks 超时并重跑完整发布（进行中）
+
+owner 明确授权延长原20分钟 job超时，目标是跑完实际流程。本次固定源码仍为 `340ca424f938705dd0ec63e9c9e8ff1882627004`；手动验收 bundle 仅将 reusable reliability 的 timeout-minutes 20→60，原步骤和 Go测试 -timeout=15m 保留。run `d9645a85dd8af010ed2fe4b6`，Mac实际job `909fda96030f7b1f95d216bb` 持久化3600s，已由 `guodemac-mini-lan` 领取。业务工作区 `.github/workflows/reliability.yml` 同步单行改60，保留未提交状态，其余文件未动；验收不等于远端workflow已经更新。
+
+GitOps补充当前镜像的identity images映射，前后37个渲染对象完全一致，GitOps提交 `281c6aa12d3632106e3e0f012c17ca2621064cc0` 已被Flux Ready应用，未因此变更业务镜像。现网baseline `registry.shitamchi.com/steam-task@sha256:e61f2a99fd307acb0504208e6d5d8857ab36a3009bc507cecc41d8c15b32c830` 已按相同digest复制到 Zot 的 apps/steam-task，标签rollback-e61f2a99-20261115，为后续正常发布的回滚保留。baseline镜像标记源码98a53d3；GitHub compare证实98a53d3→340ca424仅文档/验证记录变化，无协议或业务代码变更。GitHub连接器对此私有GitOps仓库返回404，改用本机已认证CLI完成。证据在前述proof目录的 `timeout-60/`。
+
+### 60分钟首轮测试全通过，修复Mac连续任务交接
+
+run d9645a85 的 Mac reliability 全部测试门禁成功：static 331.42s、unit/race 328.16s、真实PG18 331.06s。原来的两个辅助测试包执行仅约2.2/1.4s，均通过，之前未返回不能被解释为它们业务阻塞。Codecov无token的外部上传失败，原fail_ci_if_error:false使步骤成功；没有冒充覆盖率已上传。Atlas与Go缓存保存成功，Go压缩对象1,512,112,823 bytes，post-save约228.68s。整个原reliability加post处理跨过20分钟，60分钟预算允许正常结束。
+
+发现已完成job的设备清理期间，控制面直接把依赖build-push预约成Pod。该Pod仍在preparing、未发布，已按API取消该run；成功CI历史保留，未把Pod镜像构建记为Mac成功。新增终态/Pod预约互斥及精确环境回接窗口：portable容器job首次成功保存终态后，为该设备的同一环境保留最多一个60s租期，下一次poll覆盖状态；暂停立即失效、到期仍回退Pod，幂等重复result不延长窗口。HTTP+SQLite回归覆盖正常续接/失联/暂停/重复结果；`GOFLAGS=-p=2 make verify`完整通过，Go工具链本机已为1.27.4。升级前快照timeout-60/before-handoff-fix.db，控制面镜像server@sha256:4caaa8378f8f9cd2187709c0ab2e34bb8b700196280f754c432fc67ac64993c8。
+
+新完整run `b17eb0aca7007c29349aae80` 使用相同SHA、相同60分钟bundle；Mac reliability `dd0b547d20e905f8813a8a31` 已命中Go/Atlas缓存，static 34.44s、unit/race 52.25s成功，正在PG。后续build-push `c51a0b934cbe7bd94c6cba51` 的真实设备身份与CD仍待验收。现有cf-registry pull Secret保留原域凭据并合并已有forgelet-steam-tasks-pull中的Zot只读入口；未变更PodTemplate/现网镜像，副本在新发布前可读取两个registry。

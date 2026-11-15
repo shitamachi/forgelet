@@ -74,10 +74,10 @@ func AttachDeployments(plans []run.Plan, bindings []DeploymentBinding) ([]run.Pl
 		}
 		p := &out[publisher]
 		output := key + "_digest"
-		var externalTarget, externalImage string
+		var externalImage string
 		if p.ExternalBuild != nil {
 			output = run.ExternalImageDigestOutput
-			externalTarget, externalImage = b.Target, p.ExternalBuild.Image
+			externalImage = p.ExternalBuild.Image
 		}
 		value := fmt.Sprintf("${{ steps['%s'].outputs.digest }}", step)
 		if _, exists := p.Outputs[output]; exists {
@@ -99,7 +99,7 @@ func AttachDeployments(plans []run.Plan, bindings []DeploymentBinding) ([]run.Pl
 		deploy.Inputs = map[string]string{"target": b.Target, "digest": fmt.Sprintf("${{ needs['%s'].outputs['%s'] }}", p.Key, output)}
 		sum := sha256.Sum256([]byte(p.RunID + "\x00" + key))
 		out = append(out, run.Plan{
-			AutomaticDeployment: externalTarget, ExternalDeploymentImage: externalImage,
+			AutomaticDeployment: b.Target, ExternalDeploymentImage: externalImage,
 			JobID: hex.EncodeToString(sum[:])[:24], RunID: p.RunID, Key: key, Group: key, Name: "Deploy " + b.Target,
 			Repository: p.Repository, SHA: p.SHA, Ref: p.Ref, EventName: p.EventName, BaseRef: p.BaseRef,
 			WorkflowName: p.WorkflowName, SourceWorkflow: p.SourceWorkflow, Event: append([]byte(nil), p.Event...),

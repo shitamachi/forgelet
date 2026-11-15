@@ -110,11 +110,16 @@ type CallInput struct {
 	Value    any    `json:"value"`
 }
 type Plan struct {
-	External                bool           `json:"external,omitempty"`
-	FallbackProfile         string         `json:"fallback_profile,omitempty"`
-	ExternalBuild           *ExternalBuild `json:"external_build,omitempty"`
-	AutomaticDeployment     string         `json:"automatic_deployment,omitempty"`
-	ExternalDeploymentImage string         `json:"external_deployment_image,omitempty"`
+	RepositoryDependenciesSelected bool           `json:"repository_dependencies_selected,omitempty"`
+	RepositoryDependencies         []string       `json:"repository_dependencies,omitempty"`
+	External                       bool           `json:"external,omitempty"`
+	FallbackProfile                string         `json:"fallback_profile,omitempty"`
+	ExternalBuild                  *ExternalBuild `json:"external_build,omitempty"`
+	AutomaticDeployment            string         `json:"automatic_deployment,omitempty"`
+	ExternalDeploymentImage        string         `json:"external_deployment_image,omitempty"`
+
+	RunnerContainer *RunnerContainer `json:"runner_container,omitempty"`
+
 	// Explicitly selected mirrors are a fixed administrator-owned snapshot.
 	ImageMirrorsSelected bool              `json:"image_mirrors_selected,omitempty"`
 	ImageMirrors         map[string]string `json:"image_mirrors,omitempty"`

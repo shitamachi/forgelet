@@ -3,17 +3,25 @@
 更新：2026-10-29。包含阶段 10 当前实现，以下为实际实现的子集，测试结果见 [status.md](status.md)。
 forgelet 独立接收事件、调度和执行；兼容 workflow 的常用行为，不提供完整 GitHub Actions 云服务。
 
+act profile 的可选 `platform` 接受 `linux/amd64`、`linux/arm64`，同时传给 job 容器和 `DOCKER_DEFAULT_PLATFORM`；原 YAML 中显式的 Docker `platforms` 仍按 Action 自身规则处理。未配置时保持原行为。Mac OrbStack 的原 YAML 实测与桌面 Runner 调度接入分别记录，不能互相替代。
+
+`secrets.GITHUB_TOKEN` 默认只读当前仓库。管理员配置 `repository_dependencies` 后，可读取同一 GitHub App installation 下明确列出的私有依赖；不需要修改 YAML 或保存 PAT，也不授予写权限。该行为与 GitHub 默认仅限当前仓库的 token 范围不同，依赖列表是 Forgelet 管理策略。
+
 专用生产形态测试仓库的 act/Docker 实验单独记录在 [test/productionlike](../test/productionlike/README.md)。
 该历史实验执行官方 Actions，并使用真实 GitHub、私有 SDK、PostgreSQL 和 registry。
 正式 act executor 已在 10.5b 接入；实验、正式临时 k3s 验证和 homelab 原始业务 workflow 验收分别记录，不能互相替代。
 
-已启用仓库的 `runs-on: macos-arm64` / `linux-amd64-wslc` / `linux-amd64-wsl2` job 进入共享桌面队列，由配对并经管理员批准的设备领取。配对的设备显示一次性码，Web 批准后自动取得凭据；一台机器是一个 runner，没有额外的 profile 或标签映射配置。支持分支 `push`、管理端手动触发、原生 `actions/checkout@v4` 子集、`bash`/`sh`、artifact v4 内置适配器，以及显式启用的 `forgelet/build@v1`。每个镜像 job 允许一个 build 步骤，`image` 须与控制面按仓库、workflow 和 ref 配置的镜像仓库一致。目标 OCI 平台由控制面配置，支持 `linux/amd64` 和 `linux/arm64`，产出为单平台 manifest。Apple Silicon 设备的 `runner.os` 和 `runner.arch` 仍分别是 `macOS` 与 `ARM64`。匹配 push 的控制面自动部署任务可与外部 job 同 run。仓库 YAML 中的 Pod、act、cache、仓库 secrets、Packages 和直接部署仍超出外部 Runner 能力。[接入与构建](deployment.md#从-mac-发布集群镜像)
+已启用仓库的 `runs-on: macos-arm64` / `linux-amd64-wslc` / `linux-amd64-wsl2` job 进入共享桌面队列，由配对并经管理员批准的设备领取。配对的设备显示一次性码，Web 批准后自动取得凭据；一台机器是一个 runner，没有额外的 profile 或标签映射配置。支持分支 `push`、管理端手动触发、原生 `actions/checkout@v4` 子集、`bash`/`sh`、artifact v4 内置适配器，以及显式启用的 `forgelet/build@v1`。每个镜像 job 允许一个 build 步骤，`image` 须与控制面按仓库、workflow 和 ref 配置的镜像仓库一致。目标 OCI 平台由控制面配置，支持 `linux/amd64` 和 `linux/arm64`，产出为单平台 manifest。Apple Silicon 设备的 `runner.os` 和 `runner.arch` 仍分别是 `macOS` 与 `ARM64`。匹配 push 的控制面自动部署任务可与外部 job 同 run。仓库 YAML 中的 Pod、act、cache、Packages 和直接部署仍超出外部 Runner 能力。仓库 secrets 默认仍只在集群 Pod 使用；把仓库列入 `runner_secrets` 后，设备按原有 attempt 租约领取同一套 secrets，加密存储、运行时取值和日志脱敏不变；未列入的仓库在准入时直接拒绝并给出诊断。[接入与构建](deployment.md#从-mac-发布集群镜像)
 
 `runs-on: linux-amd64-wslc` 的 job 由 Windows 设备在 WSL 容器内执行：`runner.os` 为 `Linux`，`runner.arch` 来自容器平台（首轮 `amd64`）。支持范围与 macOS 外部 Runner 相同（分支 push、管理端手动触发、原生 checkout、`bash`/`sh`、artifact v4 内置适配器和配置的镜像构建），工具来自设备配置的执行镜像，不承诺镜像之外的工具。容器内不提供 Docker API 或 Buildx，需要它们的 workflow 继续由集群、Mac Runner 或 WSL2 后端执行。设备睡眠或断网超过租期时，attempt 按 `interrupted` 结束，恢复后显式重跑。
 
 `runs-on: linux-amd64-wsl2` 的 job 由 Windows 设备在已安装的 WSL2 发行版内原生执行：`runner.os` 为 `Linux`，`runner.arch` 为 `amd64`。与 WSLC 的差别是工具来自发行版本身，`docker`、`docker buildx` 和 `docker run` 可用（使用发行版当前用户的 Docker context，rootless 与 rootful 都支持），因此可以跑镜像构建和依赖容器的 workflow 步骤。控制面不启用按仓库的镜像是 `forgelet/build@v1` 的门槛之外的能力；该动作仍要求控制面授权的镜像仓库与平台。发行版内的工具链由设备维护，不承诺发行版之外的工具；job 以发行版当前用户运行，仅用于可信仓库。
 
 ## Workflow 与触发
+
+2026-11-15 起，Mac OrbStack 的**完整 act 容器路径**可接收原 `runs-on: ubuntu-latest`，支持范围沿用下文 act profile（含同仓库 reusable、Node Actions、Docker/Buildx、Testcontainers、GHA cache），无需修改业务 YAML。由管理员配置 `runner_act_image`、只读 `runner_registry_config`、act 自映射 `runner_fallbacks`，并明确把可信仓库加入 `runner_secrets`。目标工作环境为控制面指定的 Linux 平台，Mac ARM64 可执行 Linux amd64 工作容器；不代表托管 GitHub 镜像的全部工具都存在。旧设备标签的 native 子集和完整 act 容器路径分别声明能力，前文子集限制只适用于旧路径。Windows 完整 act 资源打包和实际验收尚未完成。
+
+设置 `runner_platform` 的 native 回退 profile 支持同一个 Linux 容器在 Mac OrbStack、Windows WSL2 Docker 或 Pod 上执行。执行镜像必须固定 digest，含 Linux Runner 和 Pod executor。该路径支持现有外部 shell、checkout、artifact 子集，镜像发布用现有 `forgelet/build@v1` 的原生桌面发布路径。WSLC 和旧客户端不声明这一容器能力。
 
 管理员可通过 `runner_fallbacks` 为可移植标签配置集群内 native profile。默认 `prefer_runner: true` 会让可运行该任务的空闲 Runner 优先领取，否则使用回退 Pod。镜像构建要求两端使用同一个控制面目标平台。显式的设备标签（`macos-arm64`、`linux-amd64-wslc`、`linux-amd64-wsl2`）与原有 Kubernetes 执行 profile 保留各自的执行语义；设备通过轮询声明的能力标签决定它能领取哪些内建标签的 job。多台空闲设备同时可接单时，控制面按设备自述的负载与内存余量优先让余量更多者领取，其余设备延后一个轮询周期重试；这不改变 `runs-on` 的匹配语义，也不提供按 job 的资源预留。
 
@@ -398,3 +406,5 @@ PR Check使用原始head SHA并命名为 `forgelet / PR / …`，与分支push�
 
 
 阶段14运行环境修正：homelab Ubuntu工具镜像取消历史全局 `GODEBUG=http2client=0`，业务Go程序恢复正常HTTP/2协商；网络代理绕行如需保留，显式限定在仓库的依赖下载step。现存执行Pod不回写镜像，新Pod按profile选择固定digest。API的真实Redis测试需要 `postgres` 镜像组（含Redis别名），否则短测试预算可能被首次公网拉取耗尽；不扩大测试预算或跳过断言。
+
+2026-11-15正式安装版Mac的Tasks原 `image.yml`/`reliability.yml` 实测：共享队列/租约、reusable控制节点、linux/amd64工具容器、checkout、setup-go、私有依赖、静态检查/编译、Atlas、迁移与unit/race执行已进入实际路径；首轮因宿主Docker磁盘不足失败，增加24GiB准入探测并释放生成缓存后重试无ENOSPC，但在原20分钟预算内未完成unit/race。51包返回ok，两个CI辅助包无结果；本轮不能视为Tasks全workflow、PG、镜像发布和CD兼容验收通过。

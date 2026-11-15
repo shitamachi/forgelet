@@ -41,6 +41,7 @@ type Profile struct {
 	ControlTimeout time.Duration     `yaml:"control_plane_timeout,omitempty" json:"control_plane_timeout,omitempty"`
 	Build          *BuildProfile     `yaml:"build,omitempty" json:"build,omitempty"`
 	Image          string            `yaml:"image" json:"image"`
+	RunnerPlatform string            `yaml:"runner_platform,omitempty" json:"runner_platform,omitempty"`
 	CPURequest     string            `yaml:"cpu_request" json:"cpu_request"`
 	MemoryRequest  string            `yaml:"memory_request" json:"memory_request"`
 	CPULimit       string            `yaml:"cpu_limit" json:"cpu_limit"`
@@ -50,6 +51,12 @@ type Profile struct {
 }
 
 func (p Profile) Validate() error {
+	if p.RunnerPlatform != "" {
+		container := run.RunnerContainer{Image: p.Image, Platform: p.RunnerPlatform}
+		if p.Act != nil || !container.Valid() {
+			return errors.New("runner_platform requires a native profile with a digest-pinned Linux image")
+		}
+	}
 	if p.Act != nil {
 		if p.Build != nil {
 			return errors.New("act and native BuildKit profiles cannot be combined")
@@ -96,10 +103,13 @@ type Identity struct {
 }
 
 type Observation struct {
-	UID     string
-	Phase   corev1.PodPhase
-	Missing bool
-	Reason  string
+	UID              string
+	Phase            corev1.PodPhase
+	Missing          bool
+	Reason           string
+	CreatedAt        time.Time
+	Scheduled        bool
+	SchedulingReason string
 }
 
 type Runtime struct {
@@ -226,7 +236,16 @@ func (r *Runtime) Observe(ctx context.Context, job run.Job) (Observation, error)
 	if err != nil {
 		return Observation{}, err
 	}
-	return Observation{UID: uid, Phase: p.Status.Phase, Reason: p.Status.Reason}, nil
+	observation := Observation{UID: uid, Phase: p.Status.Phase, Reason: p.Status.Reason,
+		CreatedAt: p.CreationTimestamp.Time, Scheduled: p.Spec.NodeName != ""}
+	for _, condition := range p.Status.Conditions {
+		if condition.Type == corev1.PodScheduled {
+			observation.Scheduled = observation.Scheduled || condition.Status == corev1.ConditionTrue
+			observation.SchedulingReason = strings.TrimSpace(condition.Reason + " " + condition.Message)
+			break
+		}
+	}
+	return observation, nil
 }
 
 func (r *Runtime) Delete(ctx context.Context, job run.Job) error {

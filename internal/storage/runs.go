@@ -305,6 +305,27 @@ func (s *Store) Interrupt(ctx context.Context, id, reason string) error {
 	})
 }
 
+// InterruptUnscheduledPod fences late claims against the timeout. The UID ties
+// the decision to the observed Pod, even when a create response was lost.
+func (s *Store) InterruptUnscheduledPod(ctx context.Context, id, uid, reason string) (bool, error) {
+	var interrupted bool
+	err := s.transaction(ctx, func(tx *sql.Tx) error {
+		job, err := getJob(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if job.State != run.Starting || job.Plan.External || !job.ClaimedAt.IsZero() || uid == "" || job.PodUID != uid {
+			return nil
+		}
+		if job.CancelRequested {
+			reason = "execution pod cancelled while waiting to schedule"
+		}
+		interrupted = true
+		return interruptJob(ctx, tx, job, reason)
+	})
+	return interrupted && err == nil, err
+}
+
 func interruptJob(ctx context.Context, tx *sql.Tx, job run.Job, reason string) error {
 	var last int64
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(max(seq),0) FROM logs WHERE job_id=?", job.ID).Scan(&last); err != nil {

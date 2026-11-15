@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -74,7 +76,7 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 		_, pod := s.cfg.Profiles[p.Profile]
 		fallback := s.cfg.RunnerFallbacks[p.Profile]
 		if s.external == nil || fallback == "" && (pod || !run.ExternalRunnerLabel(p.Profile)) {
-			if p.External {
+			if p.External || p.RunnerContainer != nil {
 				return fmt.Errorf("external runner label %q is no longer available", p.Profile)
 			}
 			continue
@@ -82,10 +84,38 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 		if p.EventName != "push" && p.EventName != "workflow_dispatch" || !strings.HasPrefix(p.Ref, "refs/heads/") {
 			return fmt.Errorf("external runner label %q requires an authorized branch push or manual run", p.Profile)
 		}
-		if p.Control != "" || p.Kernel == "act" || p.ParentGate != "" || len(p.SecretNames) > 0 ||
-			len(p.SecretBindings) > 0 || len(p.RequiredSecrets) > 0 || p.PackageTokenSecret != "" ||
+		if fallback != "" && s.cfg.Profiles[fallback].Act != nil && s.cfg.RunnerActImage != "" {
+			if p.Control != "" {
+				continue
+			}
+			if !s.runnerSecretsAllowed(p.Repository) {
+				if p.External {
+					return fmt.Errorf("act runner authorization revoked for %q", p.Repository)
+				}
+				continue
+			}
+			container, err := actRunnerContainer(s.cfg, s.cfg.Profiles[fallback])
+			if err != nil {
+				return err
+			}
+			if p.RunnerContainer != nil && *p.RunnerContainer != container {
+				return fmt.Errorf("act runner environment changed; create a new run")
+			}
+			p.RunnerContainer = &container
+			p.FallbackProfile = fallback
+			p.External = true
+			p.Kernel = "act"
+			hasExternal = true
+			continue
+		}
+		if p.Control != "" || p.Kernel == "act" || p.ParentGate != "" || p.PackageTokenSecret != "" ||
 			p.Permissions["packages"] != "" || p.ImageMirrorsSelected {
-			return fmt.Errorf("external profile %q requires a standalone native workflow without secrets or package permissions", p.Profile)
+			return fmt.Errorf("external profile %q requires a standalone native workflow without package permissions", p.Profile)
+		}
+		if len(p.SecretNames) > 0 || len(p.SecretBindings) > 0 || len(p.RequiredSecrets) > 0 {
+			if !s.runnerSecretsAllowed(p.Repository) {
+				return fmt.Errorf("external profile %q needs %q in runner_secrets before repository secrets can run on a device", p.Profile, p.Repository)
+			}
 		}
 		var buildStep string
 		var build *run.ExternalBuild
@@ -125,6 +155,13 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 		}
 		p.FallbackProfile = fallback
 		if fallback != "" {
+			profile := s.cfg.Profiles[fallback]
+			if p.RunnerContainer == nil && profile.RunnerPlatform != "" {
+				if p.NeedsBuild() {
+					return fmt.Errorf("runner container profile %q does not run image publishing steps", p.Profile)
+				}
+				p.RunnerContainer = &run.RunnerContainer{Image: profile.Image, Platform: profile.RunnerPlatform}
+			}
 			if _, err := s.fallbackPodProfile(*p); err != nil {
 				return err
 			}
@@ -139,6 +176,17 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 	for _, p := range plans {
 		if p.External {
 			continue
+		}
+		if !hasExternalOnly && p.AutomaticDeployment != "" {
+			actPublisher := false
+			for _, publisher := range plans {
+				if publisher.RunnerContainer != nil && publisher.RunnerContainer.Kernel == "act" && publisher.FallbackProfile != "" {
+					actPublisher = true
+				}
+			}
+			if actPublisher {
+				continue
+			}
 		}
 		if p.AutomaticDeployment == "" {
 			if !hasExternalOnly {
@@ -163,6 +211,18 @@ func (s *Server) validateExternalPlans(plans []run.Plan) error {
 		}
 	}
 	return nil
+}
+
+// runnerSecretsAllowed reports whether this repository opted in to using its
+// repository secrets on paired devices. A device is a personal machine, so the
+// gate is one line of configuration per repository; cluster Pods are unchanged.
+func (s *Server) runnerSecretsAllowed(repository string) bool {
+	for _, name := range s.cfg.RunnerSecrets {
+		if strings.EqualFold(name, repository) {
+			return true
+		}
+	}
+	return false
 }
 
 type externalJobRoute struct{}
@@ -234,7 +294,36 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid runner capabilities", http.StatusBadRequest)
 		return
 	}
-	s.recordRunnerReport(r.Context(), runnerID, input.Info, labels)
+	capacity := storage.RunnerCapacity{Platforms: platforms, Labels: labels}
+	if header := r.Header.Get(run.RunnerContainersHeader); header != "" {
+		var reported []run.RunnerContainer
+		if json.Unmarshal([]byte(header), &reported) != nil || len(reported) > run.MaxRunnerContainers {
+			http.Error(w, "invalid runner container environments", http.StatusBadRequest)
+			return
+		}
+		approved := approvedRunnerContainers(s.cfg)
+		for _, ready := range reported {
+			if slices.Contains(approved, ready) && !slices.Contains(capacity.Containers, ready) {
+				capacity.Containers = append(capacity.Containers, ready)
+			}
+		}
+		if len(approved) > 0 {
+			data, err := json.Marshal(approved)
+			if err != nil {
+				serverError(w, err)
+				return
+			}
+			w.Header().Set(run.RunnerContainersHeader, string(data))
+		}
+	}
+	for label, fallback := range s.cfg.RunnerFallbacks {
+		if s.cfg.Profiles[fallback].Act != nil {
+			if c, err := actRunnerContainer(s.cfg, s.cfg.Profiles[fallback]); err == nil && slices.Contains(capacity.Containers, c) && !slices.Contains(capacity.Labels, label) {
+				capacity.Labels = append(capacity.Labels, label)
+			}
+		}
+	}
+	s.recordRunnerReport(r.Context(), runnerID, input.Info, capacity.Labels)
 	if err := s.disk.check(r.Context(), s.now()); err != nil {
 		serverError(w, err)
 		return
@@ -253,8 +342,8 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 	if limit > 0 {
 		// Announce readiness before deciding, so a device that steps aside is
 		// still visible to the peer it makes room for.
-		s.runnerReady[runnerID] = runnerAvailability{at: now, platforms: platforms, labels: labels}
-		if s.stepAsideForPeer(r.Context(), runnerID, labels, platforms, now) {
+		s.runnerReady[runnerID] = runnerAvailability{expiresAt: now.Add(runnerReadyWindow), capacity: capacity}
+		if s.stepAsideForPeer(r.Context(), runnerID, capacity, now) {
 			s.runnerSeen[runnerID] = now
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -262,7 +351,7 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.external.ReserveExternal(r.Context(), limit, storage.ExternalReservation{
 		RunnerID: runnerID, AttemptID: attempt, Repositories: repositories,
-		PodFirst: !s.preferRunner(), Platforms: platforms, Labels: labels,
+		PodFirst: !s.preferRunner(), Platforms: platforms, Labels: labels, Containers: capacity.Containers,
 	})
 	if err != nil {
 		serverError(w, err)
@@ -270,13 +359,13 @@ func (s *Server) runnerPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	s.runnerSeen[runnerID] = now
 	if job.ID == "" {
-		s.runnerReady[runnerID] = runnerAvailability{at: now, platforms: platforms, labels: labels}
+		s.runnerReady[runnerID] = runnerAvailability{expiresAt: now.Add(runnerReadyWindow), capacity: capacity}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	delete(s.runnerReady, runnerID)
 	grant := run.ExternalGrant{JobID: job.ID, RunID: job.RunID, Name: job.Name,
-		Repository: job.Plan.Repository, SHA: job.Plan.SHA, Seconds: leaseSeconds(job)}
+		Repository: job.Plan.Repository, SHA: job.Plan.SHA, Seconds: leaseSeconds(job), Container: job.Plan.RunnerContainer}
 	if job.Plan.ExternalBuild != nil {
 		grant.Platform = job.Plan.ExternalBuild.Platform
 	}

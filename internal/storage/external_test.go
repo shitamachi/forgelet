@@ -8,6 +8,29 @@ import (
 	"github.com/shitamachi/forgelet/internal/run"
 )
 
+func TestExternalOnlyImageBuildHonorsReportedPlatforms(t *testing.T) {
+	job := run.Job{Plan: run.Plan{External: true, Profile: run.WSL2RunnerLabel, Repository: "me/repo",
+		ExternalBuild: &run.ExternalBuild{Platform: "linux/amd64"}}}
+	for _, tc := range []struct {
+		name      string
+		platforms []string
+		match     bool
+	}{
+		{"legacy", nil, true},
+		{"reported none", []string{}, false},
+		{"wrong architecture", []string{"linux/arm64"}, false},
+		{"matching architecture", []string{"linux/amd64"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reservation := ExternalReservation{Repositories: map[string]bool{"me/repo": true},
+				Labels: []string{run.WSL2RunnerLabel}, Platforms: tc.platforms}
+			if got := reservation.matches(job); got != tc.match {
+				t.Fatalf("match = %v, want %v", got, tc.match)
+			}
+		})
+	}
+}
+
 func TestReserveExternalHonoursDeviceLabels(t *testing.T) {
 	ctx := t.Context()
 	store := openTest(t)

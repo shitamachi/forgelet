@@ -49,3 +49,15 @@ func TestDisplayNamesTheDefaultDistribution(t *testing.T) {
 		t.Fatal("unexpected display name")
 	}
 }
+
+func TestDockerProbeUsesSelectedDistributionAndEndpoint(t *testing.T) {
+	client := Client{Path: "wsl.exe"}
+	cmd := client.Docker(t.Context(), "forgelet-ci", "runner", "unix:///run/user/1000/docker.sock",
+		"/home/runner/.docker", "buildx", "inspect", "--timeout", "2s")
+	want := []string{"wsl.exe", "--distribution", "forgelet-ci", "--user", "runner", "--exec", "env",
+		"-u", "DOCKER_CONTEXT", "-u", "BUILDX_BUILDER", "DOCKER_CONFIG=/home/runner/.docker",
+		"DOCKER_HOST=unix:///run/user/1000/docker.sock", "docker", "buildx", "inspect", "--timeout", "2s"}
+	if !slices.Equal(cmd.Args, want) {
+		t.Fatalf("args = %v, want %v", cmd.Args, want)
+	}
+}

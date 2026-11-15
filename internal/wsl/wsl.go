@@ -169,12 +169,23 @@ func (c Client) DockerHost(ctx context.Context, distro, user string) string {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	command := c.Command(ctx, append(c.distroArgs(distro, user), "--exec", "sh", "-c",
-		`docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null`)...)
+		`if [ -z "$DOCKER_CONTEXT" ] && [ -n "$DOCKER_HOST" ]; then
+			printf '%s' "$DOCKER_HOST"
+		else
+			docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null
+		fi`)...)
 	output, err := command.Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// Docker selects the same daemon endpoint and builder configuration as an
+// attempt's publisher, whose HOME is isolated from the distribution account.
+func (c Client) Docker(ctx context.Context, distro, user, host, config string, args ...string) *exec.Cmd {
+	argv := append(c.distroArgs(distro, user), "--exec", "env", "-u", "DOCKER_CONTEXT", "-u", "BUILDX_BUILDER", "DOCKER_CONFIG="+config, "DOCKER_HOST="+host, "docker")
+	return c.Command(ctx, append(argv, args...)...)
 }
 
 // RunArgs builds the invocation for one job attempt. The Linux runner reads its

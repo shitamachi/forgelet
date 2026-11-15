@@ -43,14 +43,19 @@ type ExternalReservation struct {
 	PodFirst            bool
 	Platforms           []string // nil for a client that predates capability reporting.
 	Labels              []string // nil for a client that predates capability reporting.
+	Containers          []run.RunnerContainer
 }
 
 type RunnerCapacity struct {
-	Platforms []string
-	Labels    []string
+	Platforms  []string
+	Labels     []string
+	Containers []run.RunnerContainer
 }
 
 func (r RunnerCapacity) supports(plan run.Plan) bool {
+	if plan.RunnerContainer != nil && !slices.Contains(r.Containers, *plan.RunnerContainer) {
+		return false
+	}
 	return !run.DeviceLabelMismatch(plan.Profile, r.Labels) &&
 		(plan.ExternalBuild == nil || slices.Contains(r.Platforms, plan.ExternalBuild.Platform))
 }
@@ -59,9 +64,16 @@ func (r *ExternalReservation) matches(job run.Job) bool {
 	if r == nil {
 		return !job.Plan.External || job.Plan.FallbackProfile != ""
 	}
-	return job.Plan.External && r.Repositories[strings.ToLower(job.Plan.Repository)] &&
-		!run.DeviceLabelMismatch(job.Plan.Profile, r.Labels) &&
-		(job.Plan.FallbackProfile == "" || !r.PodFirst && (RunnerCapacity{Platforms: r.Platforms, Labels: r.Labels}).supports(job.Plan))
+	if !job.Plan.External || !r.Repositories[strings.ToLower(job.Plan.Repository)] ||
+		job.Plan.FallbackProfile != "" && r.PodFirst {
+		return false
+	}
+	if job.Plan.RunnerContainer == nil && job.Plan.FallbackProfile == "" && r.Platforms == nil {
+		// External-only jobs predate platform reporting. Preserve existing
+		// clients without overriding an explicit capability report.
+		return !run.DeviceLabelMismatch(job.Plan.Profile, r.Labels)
+	}
+	return (RunnerCapacity{Platforms: r.Platforms, Labels: r.Labels, Containers: r.Containers}).supports(job.Plan)
 }
 
 func (r *ExternalReservation) existing(ctx context.Context, tx *sql.Tx) (run.Job, bool, error) {

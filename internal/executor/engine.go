@@ -37,6 +37,7 @@ type Options struct {
 	ActCacheHost          string
 	ImageMirrors          map[string]string
 	ActImage              string
+	ActPlatform           string
 	ActWorker             string
 	Services              Services
 	Buildctl              string

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -92,10 +93,11 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 		return report(flushCtx, result)
 	}
 	var credentials struct {
-		CloneURL     string            `json:"clone_url"`
-		PackageToken string            `json:"package_token"`
-		CloneToken   string            `json:"clone_token"`
-		Secrets      map[string]string `json:"secrets"`
+		RegistryConfig json.RawMessage   `json:"registry_config"`
+		CloneURL       string            `json:"clone_url"`
+		PackageToken   string            `json:"package_token"`
+		CloneToken     string            `json:"clone_token"`
+		Secrets        map[string]string `json:"secrets"`
 	}
 	needsCheckout := false
 	for _, step := range plan.Steps {
@@ -106,7 +108,7 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	if plan.Kernel == "act" && (plan.Permissions == nil || plan.Permissions["contents"] == "read") {
 		needsCheckout = true
 	}
-	if needsCheckout || len(plan.SecretNames) > 0 {
+	if needsCheckout || len(plan.SecretNames) > 0 || plan.External && plan.Kernel == "act" {
 		if err := client.request(ctx, http.MethodGet, "/credentials", nil, &credentials); err != nil {
 			result := run.Result{State: run.Failed, Error: "clone credentials unavailable"}
 			cancelled := ctx.Err() != nil
@@ -142,6 +144,34 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 			}
 			return errors.New("executor: invalid act image mirror configuration")
 		}
+	}
+	failSetup := func(err error) error {
+		if reportErr := finish(run.Result{State: run.Failed, Error: err.Error()}); reportErr != nil {
+			return reportErr
+		}
+		return err
+	}
+	registryConfig := os.Getenv("FORGELET_REGISTRY_CONFIG")
+	actImage, actPlatform, buildkitConfig := os.Getenv("FORGELET_ACT_IMAGE"), os.Getenv("FORGELET_ACT_PLATFORM"), os.Getenv("FORGELET_BUILDKIT_CONFIG")
+	if c := plan.RunnerContainer; plan.External && c != nil && c.Kernel == "act" {
+		if !c.Valid() {
+			return failSetup(errors.New("executor: invalid act environment"))
+		}
+		actImage, actPlatform, buildkitConfig = c.JobImage, c.Platform, c.BuildkitConfig
+		options.ActCPUCount, options.ActCacheObjectBytes = c.CPUs, c.CacheObjectBytes
+		mirrors = plan.ImageMirrors
+		if len(credentials.RegistryConfig) == 0 {
+			return failSetup(errors.New("executor: runner registry credentials missing"))
+		}
+		dir, err := os.MkdirTemp("", "forgelet-registry-")
+		if err != nil {
+			return failSetup(fmt.Errorf("create registry directory: %w", err))
+		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		if err = os.WriteFile(filepath.Join(dir, "config.json"), credentials.RegistryConfig, 0600); err != nil {
+			return failSetup(fmt.Errorf("write registry configuration: %w", err))
+		}
+		registryConfig = dir
 	}
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -266,7 +296,7 @@ func RunRemote(ctx context.Context, options RemoteOptions) error {
 	if plan.ProgressVersion == 1 {
 		onProgress = progress.emit
 	}
-	result, executeErr := Execute(sessionCtx, plan, Options{Progress: onProgress, ActCPUCount: options.ActCPUCount, ActCacheObjectBytes: options.ActCacheObjectBytes, BuildkitConfig: os.Getenv("FORGELET_BUILDKIT_CONFIG"), PackageToken: credentials.PackageToken, ActCacheHost: os.Getenv("FORGELET_ACT_CACHE_HOST"), ImageMirrors: mirrors, ActImage: os.Getenv("FORGELET_ACT_IMAGE"), BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: os.Getenv("FORGELET_REGISTRY_CONFIG"), Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
+	result, executeErr := Execute(sessionCtx, plan, Options{Progress: onProgress, ActCPUCount: options.ActCPUCount, ActCacheObjectBytes: options.ActCacheObjectBytes, BuildkitConfig: buildkitConfig, PackageToken: credentials.PackageToken, ActCacheHost: os.Getenv("FORGELET_ACT_CACHE_HOST"), ImageMirrors: mirrors, ActImage: actImage, ActPlatform: actPlatform, BuildAddress: os.Getenv("FORGELET_BUILD_ADDR"), BuildImages: strings.Split(os.Getenv("FORGELET_BUILD_IMAGES"), "\n"), BuildInsecure: os.Getenv("FORGELET_BUILD_INSECURE") == "true", RegistryConfig: registryConfig, Services: client, Workspace: options.Workspace, ContextLog: log, CloneURL: credentials.CloneURL, CloneToken: credentials.CloneToken, Secrets: credentials.Secrets})
 	cancelSession()
 	watchErr := <-watchDone
 	logErr := <-logDone

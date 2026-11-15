@@ -8,6 +8,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func TestActExecutionPlatform(t *testing.T) {
+	for _, platform := range []string{"", "linux/amd64", "linux/arm64", "darwin/arm64"} {
+		t.Run(platform, func(t *testing.T) {
+			rt, client, job, profile := fixture(t)
+			profile.Act = &ActProfile{Platform: platform}
+			if platform == "darwin/arm64" {
+				if profile.Validate() == nil {
+					t.Fatal("accepted a non-Linux execution platform")
+				}
+				return
+			}
+			job.Plan.Kernel = "act"
+			if _, err := rt.Ensure(t.Context(), job, profile); err != nil {
+				t.Fatal(err)
+			}
+			pod, err := client.CoreV1().Pods(rt.Namespace).Get(t.Context(), job.PodName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := map[string]string{}
+			for _, e := range pod.Spec.Containers[0].Env {
+				env[e.Name] = e.Value
+			}
+			if env["FORGELET_ACT_PLATFORM"] != platform || env["DOCKER_DEFAULT_PLATFORM"] != platform {
+				t.Fatalf("execution/build platform was lost: %v", env)
+			}
+		})
+	}
+}
+
 func TestActMirrorsAreAdministratorConfigurationOnly(t *testing.T) {
 	rt, client, job, profile := fixture(t)
 	ref := "zot.example/engine@sha256:" + strings.Repeat("a", 64)

@@ -96,6 +96,10 @@ func (s *actionSession) build(ctx context.Context, plan run.Plan, in, env, files
 			env["DOCKER_CONFIG"] = s.opts.RegistryConfig
 		}
 		cmd.Env = environmentList(env)
+	} else if config := os.Getenv("FORGELET_RUNNER_DOCKER_CONFIG"); config != "" {
+		// The WSL2 supervisor selects a builder and registry credentials without
+		// exporting their Docker config to ordinary workflow steps.
+		cmd.Env = append(cmd.Environ(), "DOCKER_CONFIG="+config)
 	}
 	cmd.Stdout = sink
 	cmd.Stderr = sink

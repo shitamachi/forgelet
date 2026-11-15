@@ -39,9 +39,10 @@ jobs:
 `
 
 type fakePod struct {
-	job   run.Job
-	uid   string
-	phase corev1.PodPhase
+	job         run.Job
+	uid         string
+	phase       corev1.PodPhase
+	observation kube.Observation
 }
 
 type fakeRuntime struct {
@@ -78,7 +79,9 @@ func (f *fakeRuntime) Observe(_ context.Context, job run.Job) (kube.Observation,
 	if job.PodUID != "" && job.PodUID != pod.uid {
 		return kube.Observation{}, errors.New("Pod UID mismatch")
 	}
-	return kube.Observation{UID: pod.uid, Phase: pod.phase}, nil
+	result := pod.observation
+	result.UID, result.Phase = pod.uid, pod.phase
+	return result, nil
 }
 
 func (f *fakeRuntime) Delete(_ context.Context, job run.Job) error {

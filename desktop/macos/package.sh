@@ -23,6 +23,8 @@ iconutil -c icns "$iconset" -o "$bundle/Contents/Resources/RunnerIcon.icns"
 CARGO_NET_GIT_FETCH_WITH_CLI=true MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --manifest-path desktop/macos/Cargo.toml --target-dir desktop/macos/target --locked --release
 cp desktop/macos/target/release/forgelet-desktop "$bundle/Contents/MacOS/forgelet-desktop"
 go build -trimpath -o "$bundle/Contents/MacOS/forgelet-runner" ./cmd/runner
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$bundle/Contents/Resources/forgelet-runner-linux-arm64" ./cmd/runner
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o "$bundle/Contents/Resources/forgelet-act-linux-arm64" ./cmd/act-worker
 cp desktop/macos/Info.plist "$bundle/Contents/Info.plist"
 codesign --force --sign - "$bundle/Contents/MacOS/forgelet-runner"
 codesign --force --sign - "$bundle"

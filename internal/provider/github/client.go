@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ type tokenKey struct {
 	installation int64
 	permission   string
 	repository   string
+	dependencies string
 }
 
 type cachedToken struct {
@@ -136,6 +138,29 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID int64, repo
 	return c.installationToken(ctx, tokenKey{installation: installationID, permission: "contents", repository: repository})
 }
 
+// SourceToken reads only the source and its administrator-authorized private
+// dependencies. It cannot grant writes or span installation owners.
+func (c *Client) SourceToken(ctx context.Context, installationID int64, repository string, dependencies []string) (string, error) {
+	if !validRepository(repository) || len(dependencies) > 16 {
+		return "", errors.New("github: invalid source repository dependencies")
+	}
+	owner, _, _ := strings.Cut(repository, "/")
+	repositories := []string{strings.ToLower(repository)}
+	for _, dependency := range dependencies {
+		dependencyOwner, _, _ := strings.Cut(dependency, "/")
+		if !validRepository(dependency) || !strings.EqualFold(owner, dependencyOwner) {
+			return "", errors.New("github: dependency must belong to the source installation owner")
+		}
+		repositories = append(repositories, strings.ToLower(dependency))
+	}
+	slices.Sort(repositories)
+	repositories = slices.Compact(repositories)
+	if len(repositories) == 1 {
+		return c.RepositoryToken(ctx, installationID, repository)
+	}
+	return c.installationToken(ctx, tokenKey{installation: installationID, permission: "contents", repository: repository, dependencies: strings.Join(repositories, ",")})
+}
+
 func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, error) {
 	if key.installation <= 0 {
 		return "", errors.New("github: invalid installation ID")
@@ -192,7 +217,13 @@ func (c *Client) installationToken(ctx context.Context, key tokenKey) (string, e
 	if key.permission == "gitops" {
 		body["permissions"] = map[string]string{"contents": "write", "pull_requests": "write"}
 	}
-	if key.repository != "" {
+	if key.dependencies != "" {
+		repositories := strings.Split(key.dependencies, ",")
+		for i, repository := range repositories {
+			_, repositories[i], _ = strings.Cut(repository, "/")
+		}
+		body["repositories"] = repositories
+	} else if key.repository != "" {
 		body["repositories"] = []string{strings.SplitN(key.repository, "/", 2)[1]}
 	}
 	var response struct {

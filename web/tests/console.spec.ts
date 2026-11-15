@@ -9,6 +9,27 @@ test('runner inventory shows live jobs and manages credentials and intake', asyn
   let registered = false
   let paused = false
   const token = 'frr_' + 'a'.repeat(64)
+  await page.route('**/api/runner-pairings**', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        json: registered
+          ? []
+          : [
+              {
+                id: 'test-pair',
+                code: 'ABCD-1234',
+                hostname: 'new-mac',
+                expires_at: '2099-01-01T00:00:00Z',
+              },
+            ],
+      })
+    } else {
+      expect(route.request().url()).toMatch(/test-pair\/approve$/)
+      expect(route.request().postDataJSON()).toEqual({ name: 'new-mac' })
+      registered = true
+      await route.fulfill({ json: { name: 'new-mac' } })
+    }
+  })
   await page.route('**/api/runners**', async (route) => {
     const request = route.request()
     if (request.method() === 'GET') {
@@ -16,7 +37,6 @@ test('runner inventory shows live jobs and manages credentials and intake', asyn
         json: [
           {
             name: 'lab-mac',
-            source: 'yaml',
             status: 'busy',
             paused: false,
             run_id: 'run-success',
@@ -25,7 +45,6 @@ test('runner inventory shows live jobs and manages credentials and intake', asyn
             ? [
                 {
                   name: 'new-mac',
-                  source: 'web',
                   status: paused ? 'paused' : 'offline',
                   paused,
                 },
@@ -37,32 +56,32 @@ test('runner inventory shows live jobs and manages credentials and intake', asyn
       paused = request.postDataJSON().paused
       await route.fulfill({ json: { paused } })
     } else {
-      if (!request.url().endsWith('/rotate'))
-        expect(request.postDataJSON()).toEqual({ name: 'new-mac' })
-      registered = true
+      expect(request.url()).toMatch(/new-mac\/rotate$/)
       await route.fulfill({ json: { name: 'new-mac', token } })
     }
   })
   await page.goto('/runners')
   const busy = page.getByRole('article', { name: 'lab-mac' })
-  await expect(busy.getByText('执行中')).toBeVisible()
-  await expect(busy.getByRole('link', { name: '查看当前任务' })).toHaveAttribute(
+  await expect(busy.getByText('运行中')).toBeVisible()
+  await expect(busy.getByRole('link', { name: '查看任务' })).toHaveAttribute(
     'href',
     '/runs/run-success',
   )
-  await expect(busy.getByRole('button', { name: '轮换凭据' })).toBeDisabled()
-  await page.getByRole('button', { name: '登记 Runner' }).click()
+  await busy.getByRole('button', { name: '更多操作' }).click()
+  await expect(busy.getByRole('menuitem', { name: '轮换凭据' })).toBeDisabled()
+  await busy.getByRole('button', { name: '更多操作' }).click()
+  await page.getByRole('button', { name: '批准', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('设备名称').fill('new-mac')
-  await dialog.getByRole('button', { name: '登记 Runner' }).click()
-  await expect(dialog.getByLabel('仅显示一次')).toHaveValue(token)
-  await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+  await dialog.getByRole('button', { name: '批准', exact: true }).click()
+  await expect(page.getByText('ABCD-1234')).toHaveCount(0)
   const row = page.getByRole('article', { name: 'new-mac' })
   await expect(row.getByText('离线')).toBeVisible()
-  await row.getByRole('button', { name: '暂停接单' }).click()
-  await dialog.getByRole('button', { name: '暂停接单' }).click()
-  await expect(row.getByRole('button', { name: '恢复接单' })).toBeVisible()
-  await row.getByRole('button', { name: '轮换凭据' }).click()
+  await row.getByRole('button', { name: '暂停', exact: true }).click()
+  await dialog.getByRole('button', { name: '暂停', exact: true }).click()
+  await expect(row.getByRole('button', { name: '开始', exact: true })).toBeVisible()
+  await row.getByRole('button', { name: '更多操作' }).click()
+  await row.getByRole('menuitem', { name: '轮换凭据' }).click()
   await dialog.getByRole('button', { name: '轮换凭据' }).click()
   await expect(dialog.getByLabel('仅显示一次')).toHaveValue(token)
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()

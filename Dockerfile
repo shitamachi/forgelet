@@ -44,6 +44,33 @@ ENTRYPOINT ["/usr/local/bin/forgelet-executor"]
 FROM executor-base AS executor
 COPY --from=build /out/forgelet-executor /usr/local/bin/forgelet-executor
 
+# Shared native CI image for Python/Go jobs. The desktop and Pod entrypoints
+# use the same toolchain, and the controller pins the resulting image digest.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS runner-tools-build
+WORKDIR /src
+COPY go.mod go.sum ./
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN GOPROXY="$GOPROXY" go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+ARG TARGETARCH
+RUN GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 go build -trimpath -o /out/forgelet-runner ./cmd/runner && \
+    GOOS=linux GOARCH="$TARGETARCH" CGO_ENABLED=0 go build -trimpath -o /out/forgelet-executor ./cmd/executor
+
+FROM golang:1.24.13-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS ci-go124
+FROM ghcr.io/astral-sh/uv:0.9.26@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b AS ci-uv
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c AS executor-ci-python-go
+ARG DEBIAN_MIRROR=https://deb.debian.org
+RUN sed -i "s|http://deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates bash git tar xz-utils unzip && rm -rf /var/lib/apt/lists/*
+COPY --from=ci-go124 /usr/local/go /usr/local/go
+COPY --from=ci-uv /uv /usr/local/bin/uv
+COPY --from=runner-tools-build /out/ /usr/local/bin/
+ENV PATH="/usr/local/go/bin:$PATH" UV_PYTHON_DOWNLOADS=never GOTOOLCHAIN=local
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/forgelet-executor"]
+
 # Testcontainers uses the shipped executor environment and both actual binaries.
 FROM executor AS integration
 COPY --from=build /out/forgelet /usr/local/bin/forgelet

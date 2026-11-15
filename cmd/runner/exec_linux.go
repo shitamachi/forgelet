@@ -19,6 +19,8 @@ import (
 	"github.com/shitamachi/forgelet/internal/runner"
 )
 
+func runEngine(ctx context.Context, args []string) error { return executor.RunActEngine(ctx, args) }
+
 // validEnvKey keeps supervisor-provided names to what a shell can carry.
 func validEnvKey(key string) bool {
 	if key == "" || len(key) > 64 {

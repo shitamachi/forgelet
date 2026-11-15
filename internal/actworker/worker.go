@@ -69,7 +69,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	if err := dec.Decode(&request); err != nil {
 		return fmt.Errorf("decode job request: %w", err)
 	}
-	if request.Plan.Kernel != "act" || request.Plan.JobID == "" || request.Image == "" || request.Workspace == "" || request.CPUCount < 0 {
+	if request.Plan.Kernel != "act" || request.Plan.JobID == "" || request.Image == "" || request.Workspace == "" || request.CPUCount < 0 || request.Platform != "" && !run.ValidBuildPlatform(request.Platform) {
 		return fmt.Errorf("invalid act job identity or profile")
 	}
 	meta, err := os.MkdirTemp("", "forgelet-act-")
@@ -95,6 +95,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	if cfg.EventName == "" {
 		cfg.EventName = "push"
 	}
+	cfg.ContainerArchitecture = request.Platform
 	if request.CPUCount > 0 {
 		cfg.ContainerOptions += fmt.Sprintf(" --cpus=%d", request.CPUCount)
 	}
@@ -157,6 +158,9 @@ func index(steps []run.Step, id string) int {
 func runtimeEnvironment(request run.ActRequest) map[string]string {
 	env := map[string]string{"GITHUB_REPOSITORY": request.Plan.Repository, "GITHUB_SHA": request.Plan.SHA, "GITHUB_REF": request.Plan.Ref, "GITHUB_RUN_ID": request.Plan.RunID, "GITHUB_RUN_NUMBER": "1", "DOCKER_HOST": "unix:///var/run/docker.sock", "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE": run.ActSocket, "TESTCONTAINERS_HOST_OVERRIDE": "127.0.0.1"}
 	public, _ := request.Plan.Contexts()
+	if request.Platform != "" {
+		env["DOCKER_DEFAULT_PLATFORM"] = request.Platform
+	}
 	env["GITHUB_REF_TYPE"] = public["github.ref_type"]
 	env["GITHUB_REF_NAME"] = public["github.ref_name"]
 	if request.Plan.GitHubAPIURL != "" {

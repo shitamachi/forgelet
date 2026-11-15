@@ -135,6 +135,9 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	if opts.ActImage == "" || opts.Workspace == "" {
 		return result, fmt.Errorf("act requires an administrator-selected image and workspace")
 	}
+	if opts.ActPlatform != "" && !run.ValidBuildPlatform(opts.ActPlatform) {
+		return result, fmt.Errorf("invalid act execution platform %q", opts.ActPlatform)
+	}
 	if os.Getenv("DOCKER_HOST") != "unix://"+run.ActSocket {
 		return result, fmt.Errorf("act requires its Pod-owned Docker socket")
 	}
@@ -246,6 +249,9 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	// receives neither that config nor the control-plane workload token.
 	pull := exec.CommandContext(preparationCtx, "docker", "pull", opts.ActImage)
 	pull.Env = append(os.Environ(), "DOCKER_CONFIG="+opts.RegistryConfig)
+	if opts.ActPlatform != "" {
+		pull.Args = []string{"docker", "pull", "--platform=" + opts.ActPlatform, opts.ActImage}
+	}
 	pullSink := &logSink{mask: mask, stepID: "", emit: func(id string, b []byte) error {
 		if opts.ContextLog != nil {
 			return opts.ContextLog(preparationCtx, id, b)
@@ -290,7 +296,7 @@ func executeAct(ctx context.Context, plan run.Plan, opts Options) (result run.Re
 	workflowCtx, cancelWorkflow := context.WithTimeout(jobCtx, time.Duration(seconds)*time.Second)
 	defer cancelWorkflow()
 	protocol.ctx = workflowCtx
-	request := run.ActRequest{CPUCount: opts.ActCPUCount, BuildkitImage: opts.ImageMirrors["moby/buildkit:buildx-stable-1"], BuildkitConfig: opts.BuildkitConfig, PackageToken: opts.PackageToken, Plan: plan, Workspace: workspace, Image: image, Secrets: opts.Secrets, Token: opts.CloneToken, CacheURL: cache.URL(), CacheToken: cache.token, ActionBaseURL: opts.ActionBaseURL}
+	request := run.ActRequest{Platform: opts.ActPlatform, CPUCount: opts.ActCPUCount, BuildkitImage: opts.ImageMirrors["moby/buildkit:buildx-stable-1"], BuildkitConfig: opts.BuildkitConfig, PackageToken: opts.PackageToken, Plan: plan, Workspace: workspace, Image: image, Secrets: opts.Secrets, Token: opts.CloneToken, CacheURL: cache.URL(), CacheToken: cache.token, ActionBaseURL: opts.ActionBaseURL}
 	data, err := json.Marshal(request)
 	if err != nil {
 		return result, err

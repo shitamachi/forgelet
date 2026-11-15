@@ -31,6 +31,8 @@ func TestAutomaticDeploymentAdmissionScopeAndSQLiteRestart(t *testing.T) {
 	h.cfg.Profiles["actions"] = kube.Profile{Image: "executor:act", Act: &kube.ActProfile{}}
 	target := delivery.Target{Name: "web", SourceRepository: "me/repo", SourceRef: "refs/heads/main", Repository: "me/gitops", InstallationID: 42, Branch: "main", Path: "apps/kustomization.yaml", Mode: "direct", Image: "ghcr.io/me/app", ImageName: "app", FluxNamespace: "flux-system", Kustomization: "app", Namespace: "apps", Deployment: "app", Container: "app", OnSuccess: &delivery.OnSuccess{WorkflowPath: ".github/workflows/ci.yml", Job: "image", Profile: "small"}}
 	h.cfg.Targets = map[string]delivery.Target{"web": target}
+	// Generated deployments read no source and must not inherit dependency token policy.
+	h.cfg.RepositoryDependencies = map[string][]string{"me/repo": {"me/sdk"}}
 	h.cfg.Delivery = &delivery.Coordinator{Store: h.store, Now: time.Now}
 	h.start()
 	for _, profile := range []string{"missing", "actions"} {

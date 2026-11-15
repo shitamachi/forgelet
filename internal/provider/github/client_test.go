@@ -178,6 +178,45 @@ func TestRepositoryTokenScopesAndConcurrentCache(t *testing.T) {
 	}
 }
 
+func TestSourceTokenScopesDependenciesAndCache(t *testing.T) {
+	var scopes [][]string
+	client, _, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Repositories []string          `json:"repositories"`
+			Permissions  map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(body.Permissions) != 1 || body.Permissions["contents"] != "read" {
+			t.Errorf("unexpected token permissions: %v", body.Permissions)
+		}
+		scopes = append(scopes, body.Repositories)
+		writeToken(t, w)
+	})
+	for _, dependencies := range [][]string{{"owner/b", "owner/a"}, {"owner/a", "OWNER/B", "owner/a"}} {
+		if _, err := client.SourceToken(t.Context(), 7, "owner/source", dependencies); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := client.RepositoryToken(t.Context(), 7, "owner/source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.SourceToken(t.Context(), 7, "owner/source", []string{"owner/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(scopes); string(got) != `[["a","b","source"],["source"],["a","source"]]` {
+		t.Fatalf("token scope/cache isolation: %s", got)
+	}
+	for _, dependencies := range [][]string{{"other/repo"}, {"owner/../repo"}, make([]string, 17)} {
+		if _, err := client.SourceToken(t.Context(), 7, "owner/source", dependencies); err == nil {
+			t.Fatal("accepted invalid dependencies", dependencies)
+		}
+	}
+}
+
 func TestNewValidation(t *testing.T) {
 	key, private := testKey(t)
 	for _, tc := range []struct {

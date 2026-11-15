@@ -16,6 +16,7 @@ import (
 // ActProfile explicitly opts trusted jobs into a Pod-owned privileged engine.
 // The registry Secret is mounted only into the supervising executor.
 type ActProfile struct {
+	Platform         string              `yaml:"platform,omitempty" json:"platform,omitempty"`
 	ImageGroups      map[string][]string `yaml:"image_groups,omitempty" json:"image_groups,omitempty"`
 	CacheObjectBytes int64               `yaml:"cache_object_bytes,omitempty" json:"cache_object_bytes,omitempty"`
 	CPURequest       string              `yaml:"cpu_request,omitempty" json:"cpu_request,omitempty"`
@@ -34,6 +35,9 @@ type ActProfile struct {
 const ActEngineImage = "docker:28.5.1-dind"
 
 func (a ActProfile) Validate() error {
+	if a.Platform != "" && !run.ValidBuildPlatform(a.Platform) {
+		return fmt.Errorf("invalid act platform %q", a.Platform)
+	}
 	if len(a.ImageGroups) > 32 {
 		return fmt.Errorf("at most 32 image groups are allowed")
 	}
@@ -118,6 +122,9 @@ func addAct(pod *corev1.Pod, a ActProfile, image string) {
 	}
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "act-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}, corev1.Volume{Name: "act-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: quantityPointer(limit)}}})
 	main := &pod.Spec.Containers[0]
+	if a.Platform != "" {
+		main.Env = append(main.Env, corev1.EnvVar{Name: "FORGELET_ACT_PLATFORM", Value: a.Platform}, corev1.EnvVar{Name: "DOCKER_DEFAULT_PLATFORM", Value: a.Platform})
+	}
 	// A nested private cgroup hides the engine's quota from toolchain discovery.
 	// Advertise its rounded-up logical CPU count inside the job as well. The
 	// engine ancestor still enforces the exact fractional aggregate budget.

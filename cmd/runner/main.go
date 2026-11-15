@@ -19,7 +19,9 @@ func main() {
 	defer stop()
 	status := json.NewEncoder(os.Stdout)
 	var err error
-	if len(os.Args) > 1 && os.Args[1] == "--exec" {
+	if len(os.Args) > 1 && os.Args[1] == "--engine" {
+		err = runEngine(ctx, os.Args[2:])
+	} else if len(os.Args) > 1 && os.Args[1] == "--exec" {
 		// Container mode: one job, configured on stdin, no polling.
 		err = runExec(ctx, status, os.Stdin)
 	} else {

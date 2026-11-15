@@ -15,6 +15,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -63,6 +64,7 @@ type Store interface {
 	Claim(context.Context, string, string) (run.Plan, error)
 	Finish(context.Context, string, string, run.Result) error
 	Interrupt(context.Context, string, string) error
+	InterruptUnscheduledPod(context.Context, string, string, string) (bool, error)
 	CancelRun(context.Context, string) error
 	Active(context.Context) ([]run.Job, error)
 	AppendLog(context.Context, string, string, run.Log) error
@@ -97,29 +99,37 @@ type Provider interface {
 }
 
 type Config struct {
-	PackageTokens    map[string]string
-	GitHubAPIURL     string
-	ActionResolver   *action.Resolver
-	Auth             AuthConfig
-	AdminAccess      string
-	Targets          map[string]delivery.Target
-	Delivery         *delivery.Coordinator
-	Blobs            *blob.Store
-	SecretKey        []byte
-	Retention        Retention
-	DiskSpace        DiskSpace
-	AdminToken       string
-	WebhookSecret    string
-	PublicURL        string
-	MaxParallel      int
-	Repositories     []string
-	Workflows        []string
-	ExternalBuilds   []ExternalBuildPolicy
-	PreferRunner     *bool
-	RunnerFallbacks  map[string]string
-	Profiles         map[string]kube.Profile
-	RepositoryTokens RepositoryTokens
-	DataDir          string
+	RunnerActImage         string
+	RunnerRegistryConfig   string
+	RepositoryDependencies map[string][]string
+	PackageTokens          map[string]string
+	GitHubAPIURL           string
+	ActionResolver         *action.Resolver
+	Auth                   AuthConfig
+	AdminAccess            string
+	Targets                map[string]delivery.Target
+	Delivery               *delivery.Coordinator
+	Blobs                  *blob.Store
+	SecretKey              []byte
+	Retention              Retention
+	DiskSpace              DiskSpace
+	AdminToken             string
+	WebhookSecret          string
+	PublicURL              string
+	MaxParallel            int
+	Repositories           []string
+	Workflows              []string
+	ExternalBuilds         []ExternalBuildPolicy
+	PreferRunner           *bool
+	RunnerFallbacks        map[string]string
+	Profiles               map[string]kube.Profile
+	RepositoryTokens       RepositoryTokens
+	DataDir                string
+
+	PodScheduleTimeout time.Duration
+	// RunnerSecrets lists repositories whose workflows may use repository
+	// secrets on paired devices. Empty keeps every secret on cluster Pods.
+	RunnerSecrets []string
 }
 
 type Server struct {
@@ -151,6 +161,11 @@ type Server struct {
 }
 
 func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, error) {
+	dependencies, err := normalizeRepositoryDependencies(cfg.RepositoryDependencies)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RepositoryDependencies = dependencies
 	if err := validateGitHubAPIURL(cfg.GitHubAPIURL); err != nil {
 		return nil, err
 	}
@@ -163,6 +178,11 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 	}
 	if err := validatePackageTokens(cfg.PackageTokens); err != nil {
 		return nil, err
+	}
+	for _, repository := range cfg.RunnerSecrets {
+		if !configuredRepository(repository) {
+			return nil, fmt.Errorf("runner_secrets: invalid repository %q", repository)
+		}
 	}
 	cfg.PackageTokens = maps.Clone(cfg.PackageTokens)
 	bindings := RepositoryTokens{}
@@ -207,6 +227,12 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 	if cfg.MaxParallel < 1 || cfg.MaxParallel > 1024 {
 		return nil, errors.New("max_parallel must be between 1 and 1024")
 	}
+	if cfg.PodScheduleTimeout < 0 {
+		return nil, errors.New("pod_schedule_timeout must be positive")
+	}
+	if cfg.PodScheduleTimeout == 0 {
+		cfg.PodScheduleTimeout = 5 * time.Minute
+	}
 	if len(cfg.Profiles) == 0 {
 		return nil, errors.New("at least one execution profile is required")
 	}
@@ -236,13 +262,25 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 		return nil, err
 	}
 	cfg.ExternalBuilds = slices.Clone(cfg.ExternalBuilds)
+	if cfg.RunnerActImage != "" && (!run.PinnedImage(cfg.RunnerActImage) || cfg.RunnerRegistryConfig == "") {
+		return nil, fmt.Errorf("act runner requires a pinned engine image and registry reader configuration")
+	}
 	for label, fallback := range cfg.RunnerFallbacks {
 		p, ok := cfg.Profiles[fallback]
-		if external == nil || !runnerName.MatchString(label) || !ok || p.Act != nil || cfg.Profiles[label].Act != nil {
+		actFallback := p.Act != nil && cfg.RunnerActImage != "" && label == fallback
+		if external == nil || !runnerName.MatchString(label) || !ok || (p.Act != nil || cfg.Profiles[label].Act != nil) && !actFallback {
 			return nil, fmt.Errorf("runner fallback %q requires a portable label and a native Pod profile", label)
+		}
+		if actFallback {
+			if _, err := actRunnerContainer(cfg, p); err != nil {
+				return nil, fmt.Errorf("runner fallback %q: %w", label, err)
+			}
 		}
 	}
 	cfg.RunnerFallbacks = maps.Clone(cfg.RunnerFallbacks)
+	if len(approvedRunnerContainers(cfg)) > run.MaxRunnerContainers {
+		return nil, fmt.Errorf("at most %d distinct runner container environments can be configured", run.MaxRunnerContainers)
+	}
 	return &Server{authorizationWake: make(chan struct{}, 1), authorizationRefresh: make(chan struct{}, 1), cfg: cfg, store: store, external: external, runtime: runtime, provider: provider, now: time.Now, disk: newDiskGuard(cfg.DataDir, cfg.DiskSpace), runnerSeen: make(map[string]time.Time), runnerReady: make(map[string]runnerAvailability), runnerInfo: make(map[string]run.RunnerInfo), runnerLabels: make(map[string][]string), runnerSaved: make(map[string]time.Time), pairings: make(map[string]*runnerPairing), pairSeen: make(map[string]time.Time)}, nil
 }
 
@@ -686,12 +724,19 @@ func (s *Server) resolveActions(ctx context.Context, plans []run.Plan) error {
 }
 
 func (s *Server) validateProfiles(plans []run.Plan) error {
+	for i := range plans {
+		if plans[i].Control == "" && plans[i].AutomaticDeployment == "" {
+			if err := s.repositoryDependencyAdmission(&plans[i]); err != nil {
+				return err
+			}
+		}
+	}
 	if err := s.validateExternalPlans(plans); err != nil {
 		return err
 	}
 	for index := range plans {
 		p := &plans[index]
-		if p.Control != "" || p.External {
+		if p.Control != "" || p.External && (p.RunnerContainer == nil || p.RunnerContainer.Kernel != "act") {
 			continue
 		}
 		if p.Permissions != nil && p.Permissions["contents"] != "read" {
@@ -913,6 +958,18 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := map[string]any{"secrets": secrets}
+	if job.Plan.External && job.Plan.RunnerContainer != nil && job.Plan.RunnerContainer.Kernel == "act" {
+		if !s.runnerSecretsAllowed(job.Plan.Repository) {
+			http.Error(w, "act runner authorization revoked", http.StatusForbidden)
+			return
+		}
+		data, readErr := os.ReadFile(filepath.Join(s.cfg.RunnerRegistryConfig, "config.json"))
+		if readErr != nil || len(data) > 64<<10 || !json.Valid(data) {
+			http.Error(w, "runner registry credentials unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		response["registry_config"] = json.RawMessage(data)
+	}
 	if packageToken != "" {
 		response["package_token"] = packageToken
 	}
@@ -920,17 +977,27 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		serverError(w, err)
 		return
 	}
+	// One line per delivery: enough to answer "which device read which secret"
+	// later, without a second audit store.
+	if job.Plan.External && len(secrets) > 0 {
+		slog.Info("external job read repository secrets", "job", job.ID, "runner", job.ExternalRunnerID(),
+			"repository", item.Repository, "secrets", len(secrets))
+	}
 	if !needed {
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	token := ""
+	if err := s.requireSourceDependencies(job.Plan, item.InstallationID); err != nil {
+		http.Error(w, "source dependency authorization unavailable", http.StatusForbidden)
+		return
+	}
 	if item.InstallationID != 0 {
 		if s.provider == nil {
 			http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		token, err = s.provider.RepositoryToken(r.Context(), item.InstallationID, item.Repository)
+		token, err = s.sourceToken(r.Context(), job.Plan, item.InstallationID)
 		if err != nil {
 			reason, retryable := gh.CredentialFailure(err)
 			slog.Warn("job credential request failed", "job", job.ID, "repository", item.Repository, "reason", reason, "retryable", retryable)
@@ -956,6 +1023,10 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response["clone_url"] = "https://github.com/" + item.Repository + ".git"
+	if err := s.requireSourceDependencies(job.Plan, item.InstallationID); err != nil {
+		http.Error(w, "source dependency authorization unavailable", http.StatusForbidden)
+		return
+	}
 	response["clone_token"] = token
 	writeJSON(w, http.StatusOK, response)
 }
@@ -987,7 +1058,21 @@ func (s *Server) result(w http.ResponseWriter, r *http.Request) {
 	if !s.verifyExternalResult(w, r, job, &result) {
 		return
 	}
+	// Completion and the next Pod reservation share the runner lock. Preserve
+	// this exact environment briefly while the desktop removes its sandbox and
+	// announces its next poll, rather than racing a dependent job into a Pod.
+	if job.Plan.External {
+		s.runnerMu.Lock()
+		defer s.runnerMu.Unlock()
+	}
 	err = s.store.Finish(r.Context(), job.ID, who.id, result)
+	if err == nil && job.Plan.External && !job.State.Terminal() && job.Plan.RunnerContainer != nil && job.Plan.FallbackProfile != "" {
+		capacity := storage.RunnerCapacity{Labels: []string{job.Plan.Profile}, Containers: []run.RunnerContainer{*job.Plan.RunnerContainer}}
+		if job.Plan.ExternalBuild != nil {
+			capacity.Platforms = []string{job.Plan.ExternalBuild.Platform}
+		}
+		s.runnerReady[job.ExternalRunnerID()] = runnerAvailability{expiresAt: s.now().Add(run.ExternalLease), capacity: capacity}
+	}
 	if job.Plan.ExternalBuild != nil {
 		respond(w, map[string]any{"saved": err == nil, "state": result.State}, err)
 		return
@@ -1309,6 +1394,17 @@ func (s *Server) Tick(ctx context.Context) error {
 			}
 			continue
 		}
+		if reason := s.podScheduleTimeout(job, observation); reason != "" {
+			expired, err := s.store.InterruptUnscheduledPod(ctx, job.ID, job.PodUID, reason)
+			if err != nil {
+				problems = append(problems, err)
+			} else if expired {
+				if err := s.runtime.Delete(ctx, job); err != nil {
+					problems = append(problems, err)
+				}
+			}
+			continue
+		}
 		if observation.Phase == corev1.PodFailed || observation.Phase == corev1.PodSucceeded {
 			if err = s.store.Interrupt(ctx, job.ID, "executor stopped without an acknowledged result: "+observation.Reason); err != nil {
 				problems = append(problems, err)
@@ -1381,6 +1477,26 @@ func (s *Server) Tick(ctx context.Context) error {
 	}
 	return errors.Join(problems...)
 }
+
+func (s *Server) podScheduleTimeout(job run.Job, pod kube.Observation) string {
+	if job.State != run.Starting || pod.Phase != corev1.PodPending || pod.Scheduled {
+		return ""
+	}
+	// Do not charge time spent waiting to create a Pod to the kube scheduler.
+	since := job.ReservedAt
+	if pod.CreatedAt.After(since) {
+		since = pod.CreatedAt
+	}
+	if since.IsZero() || s.now().Before(since.Add(s.cfg.PodScheduleTimeout)) {
+		return ""
+	}
+	reason := fmt.Sprintf("execution pod could not be scheduled within %s", s.cfg.PodScheduleTimeout)
+	if pod.SchedulingReason != "" {
+		reason += ": " + pod.SchedulingReason
+	}
+	return reason
+}
+
 func (s *Server) start(ctx context.Context, job run.Job) error {
 	item, err := s.store.GetRun(ctx, job.RunID)
 	if err != nil {
@@ -1404,6 +1520,11 @@ func (s *Server) start(ctx context.Context, job run.Job) error {
 	}
 	if job.Plan.FallbackProfile != "" {
 		profile, err = s.fallbackPodProfile(job.Plan)
+		if err != nil {
+			return s.store.Interrupt(ctx, job.ID, err.Error())
+		}
+	} else if profile.RunnerPlatform != "" {
+		profile.NodeSelector, err = platformNodeSelector(profile.NodeSelector, profile.RunnerPlatform)
 		if err != nil {
 			return s.store.Interrupt(ctx, job.ID, err.Error())
 		}

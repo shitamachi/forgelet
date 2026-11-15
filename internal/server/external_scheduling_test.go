@@ -2,11 +2,72 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/shitamachi/forgelet/internal/kube"
 	"github.com/shitamachi/forgelet/internal/run"
 )
+
+func TestRunnerContainerRequiresExactReadyEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, label, platform, digest string
+		capable, runner               bool
+	}{
+		{"Mac", run.MacRunnerLabel, "linux/amd64", "a", true, true},
+		{"WSL2", run.WSL2RunnerLabel, "linux/amd64", "a", true, true},
+		{"wrong platform", run.MacRunnerLabel, "linux/arm64", "a", true, false},
+		{"wrong digest", run.WSL2RunnerLabel, "linux/amd64", "b", true, false},
+		{"legacy", run.WSLCRunnerLabel, "linux/amd64", "a", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := externalHarness(t, 1)
+			image := "registry.test/executors/ci@sha256:" + strings.Repeat("a", 64)
+			h.cfg.Profiles["ci"] = kube.Profile{Image: image, RunnerPlatform: "linux/amd64"}
+			h.cfg.RunnerFallbacks = map[string]string{"linux-ci": "ci"}
+			h.http.Close()
+			h.start()
+			token := pairDevice(t, h, "test-device")
+			report, err := json.Marshal([]run.RunnerContainer{{Image: "registry.test/executors/ci@sha256:" + strings.Repeat(tc.digest, 64), Platform: tc.platform}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := map[string]string{"Authorization": "Bearer " + token, "Content-Type": "application/json", run.RunnerLabelsHeader: tc.label}
+			if tc.capable {
+				headers[run.RunnerContainersHeader] = string(report)
+			}
+			poll := func() (int, []byte) {
+				return h.request("POST", "/runner/v1/poll", `{"attempt":"frja_`+strings.Repeat("b", 64)+`"}`, headers)
+			}
+			if code, body := poll(); code != http.StatusNoContent {
+				t.Fatalf("announce readiness: %d %s", code, body)
+			}
+			item := h.manual(strings.Replace(testWorkflow, "runs-on: small", "runs-on: linux-ci", 1))
+			h.tick()
+			code, body := poll()
+			job := podScheduleRun(h, item.ID).Jobs[0]
+			if tc.runner {
+				var grant run.ExternalGrant
+				if code != http.StatusOK || json.Unmarshal(body, &grant) != nil || grant.Container == nil ||
+					grant.Container.Image != image || grant.Container.Platform != "linux/amd64" || job.PodUID != "" {
+					t.Fatalf("wrong grant for matched environment: %d %s %+v", code, body, job)
+				}
+				return
+			}
+			if code != http.StatusNoContent || job.Plan.External || job.PodUID == "" || job.Plan.RunnerContainer == nil {
+				t.Fatalf("expected Pod fallback: %d %s %+v", code, body, job)
+			}
+			h.server.cfg.Profiles["ci"] = kube.Profile{Image: "registry.test/executors/ci@sha256:" + strings.Repeat("c", 64)}
+			profile, err := h.server.fallbackPodProfile(job.Plan)
+			if err != nil || profile.Image != image || profile.NodeSelector[corev1.LabelArchStable] != "amd64" {
+				t.Fatalf("fallback lost pinned environment: %+v %v", profile, err)
+			}
+		})
+	}
+}
 
 // pollRunner is one poll from a device with the given capabilities and numbers.
 func pollRunner(t *testing.T, h *harness, token, nonce, labels, platforms string, info *run.RunnerInfo) (int, []byte) {

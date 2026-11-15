@@ -5,7 +5,11 @@ package runner
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/shitamachi/forgelet/internal/executor"
@@ -23,6 +27,34 @@ func newBackend(context.Context, Config, func(Status)) (backend, error) {
 
 // describe reports the native backend: jobs run directly in this account.
 func (nativeBackend) describe() descriptor { return descriptor{backend: "native"} }
+
+func (nativeBackend) buildPlatforms(ctx context.Context) string {
+	return probeBuildPlatforms(ctx, func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "docker", args...)
+	})
+}
+
+func (nativeBackend) dockerCommand() dockerCommand {
+	if goruntime.GOOS != "darwin" {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return func(ctx context.Context, args ...string) *exec.Cmd {
+		path := filepath.Join(home, ".orbstack", "bin", "docker")
+		if _, err := os.Stat(path); err != nil {
+			path = "/usr/local/bin/docker"
+		}
+		command := exec.CommandContext(ctx, path, append([]string{"--context", "orbstack"}, args...)...)
+		command.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+			key, _, _ := strings.Cut(entry, "=")
+			return key == "DOCKER_HOST" || key == "DOCKER_CONTEXT" || key == "DOCKER_CONFIG"
+		})
+		return command
+	}
+}
 
 func deviceLabels(Config) []string {
 	if goruntime.GOOS == "darwin" {

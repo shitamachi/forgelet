@@ -23,6 +23,35 @@ const (
 // original shared-queue behavior.
 const RunnerLabelsHeader = "X-Forgelet-Runner-Labels"
 
+// RunnerContainersHeader carries a device's ready environments on the poll
+// request and controller-approved environments on the response.
+const RunnerContainersHeader = "X-Forgelet-Runner-Containers"
+const MaxRunnerContainers = 8
+
+type RunnerContainer struct {
+	Image            string `json:"image"`
+	Platform         string `json:"platform"`
+	Kernel           string `json:"kernel,omitempty"`
+	JobImage         string `json:"job_image,omitempty"`
+	BuildkitConfig   string `json:"buildkit_config,omitempty"`
+	CPUs             int64  `json:"cpus,omitempty"`
+	CacheObjectBytes int64  `json:"cache_object_bytes,omitempty"`
+	MemoryBytes      int64  `json:"memory_bytes,omitempty"`
+	DiskBytes        int64  `json:"disk_bytes,omitempty"`
+}
+
+func (c RunnerContainer) Valid() bool {
+	if c.Kernel != "" {
+		if c.Kernel != "act" || !PinnedImage(c.JobImage) || c.CPUs < 1 || c.CPUs > 256 || c.MemoryBytes < 128<<20 || c.MemoryBytes > 64<<30 || c.DiskBytes < 1<<30 || c.DiskBytes > 1<<40 || len(c.BuildkitConfig) > 4096 || c.CacheObjectBytes < 0 || c.CacheObjectBytes > 2<<30 {
+			return false
+		}
+	} else if c.JobImage != "" || c.BuildkitConfig != "" || c.CPUs != 0 || c.CacheObjectBytes != 0 || c.MemoryBytes != 0 || c.DiskBytes != 0 {
+		return false
+	}
+	name, digest, ok := strings.Cut(c.Image, "@")
+	return ok && len(c.Image) <= 256 && ValidImage(name) && ValidDigest(digest) && ValidBuildPlatform(c.Platform)
+}
+
 var externalRunnerLabels = []string{MacRunnerLabel, WSLCRunnerLabel, WSL2RunnerLabel}
 
 // ExternalRunnerLabel reports whether label has a built-in device backend.
@@ -111,13 +140,14 @@ func ExternalAttempt(token string) string {
 }
 
 type ExternalGrant struct {
-	JobID      string `json:"job_id"`
-	RunID      string `json:"run_id"`
-	Repository string `json:"repository"`
-	Name       string `json:"name"`
-	SHA        string `json:"sha"`
-	Platform   string `json:"platform,omitempty"`
-	Seconds    int    `json:"lease_seconds"`
+	JobID      string           `json:"job_id"`
+	RunID      string           `json:"run_id"`
+	Repository string           `json:"repository"`
+	Name       string           `json:"name"`
+	SHA        string           `json:"sha"`
+	Platform   string           `json:"platform,omitempty"`
+	Container  *RunnerContainer `json:"container,omitempty"`
+	Seconds    int              `json:"lease_seconds"`
 }
 
 // RunnerInfo is the small, self-reported description of a device. A device

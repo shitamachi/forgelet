@@ -320,5 +320,40 @@ Owner授权对齐并推送本地已提交业务代码；未提交改动保留原
 - [x] **15.3 Windows WSLC 桌面端**。NSH Windows 应用、Go WSLC 监督进程、Linux 容器执行器和 `wslc build` 镜像配方已交付。轮询声明 `linux-<arch>-wslc` 能力标签，控制面按标签路由，不再由 Mac 领走 Linux 容器任务。容器按 attempt 命名并带所有权标签，配置和 CA 经 stdin 传入，取消先关 stdin 再 stop，强退遗留容器下次启动清理。已通过：三目标 `go build`、`wslc` 与标签单测、NSH 应用编译与 Rust 单测、`wslc build` 实际镜像、真实容器成功/取消专项（`go test -tags=wslc`），以及 Linux 容器内 `go test ./internal/storage ./internal/server`；真实 homelab 上用 `steam-admin-web` 完成 `npm ci`/检查/单测，应用内配对与启停已逐屏核对。
 - [x] **Windows WSL2 后端**。应用「执行后端」可在 WSLC 容器与 WSL2 发行版间切换，后者用 `wsl --distribution --user --exec` 在发行版内原生执行，执行器经 stdin 安装到 `~/.local/share/forgelet/`，`DOCKER_HOST` 由发行版的 `docker context inspect` 取得并注入，设备标签为 `linux-amd64-wsl2`。单文件同时内嵌 Windows 与 Linux 执行器。真实 Windows + `archlinux`（rootless Docker 29.9.2）验证：docker 版本、`docker run`、job 内 `docker buildx build --load` 构建并运行镜像均成功，切回 WSLC 后标签与执行恢复正常。
 - [ ] **WSL2 专用发行版验收**。当前验证用的是日常开发发行版（`archlinux`，用户 `guo`）：还差专用非管理员 Windows 账号 + 专用发行版的私网 DNS/TLS、重启后自动启动、睡眠唤醒，以及 k3s 临时集群里的外部 Runner 协议场景。
+- [x] **设备上的仓库 secrets**。只加一个开关：`runner_secrets` 列出允许在设备上使用仓库 secrets 的 `owner/repo`，未列入的 external 计划在准入阶段拒绝并给出诊断。沿用现有加密存储、attempt 租约取值和日志脱敏，不建策略表、不改编排格式、不加文件投递或审计表。自动测试覆盖拒绝、Pod 路径不变和 poll→claim→credentials 取到值；真实 k3s 与 WSL2 验收待做。
+
+- [x] **WSL2 Buildx 探测及 Pod 调度期限代码**。从实际 WSL2 发行版探测构建平台，Pending 未绑定 Pod 到期释放额度，事务防止覆盖并发领取。
+- [x] **统一 Linux 容器执行代码**。Mac OrbStack、Windows WSL2 Docker 共用容器执行协议与镜像就绪检查；Pod 回退沿用计划冻结的镜像与架构。
+- [ ] **真实三端试点**。用 `steam-lake-ingest` 的同一 SHA 与 CI 镜像 digest 在 Mac、Windows 和 homelab amd64 Pod 上通过原测试。
+- [ ] **Windows 发布与 WSLC 退役**。用 `steam-admin-web` 完成真实 Windows 构建、Zot 推送、Flux 部署及服务健康；三端与发布均通过且旧队列排空后移除 WSLC 执行入口。
 
 各项随实现运行 `make verify` 及相关 `make test-integration` 场景。真实临时 k3s 同时运行 Pod 和外部 agent，覆盖控制面重启、网络故障、取消和失效凭据。Mac、WSL2 和 WSLC 的平台验收分别记录。
+
+### 15.6 原 YAML 的完整内核快速验证（2026-11-11）
+
+- [x] 明确 act 任务容器/默认构建平台，并实现只读私有依赖授权；单测、HTTP/SQLite/race 和 make verify 通过。
+- [x] 在 Mac/OrbStack 用固定远端提交执行两份原 YAML，不修改步骤和超时；记录成功和真实失败。
+- [ ] Tasks 原 YAML 全绿：main 的 PG 业务合同和 lifecycle 测试阻塞待同步，未产生 Tasks 镜像；owner 已要求本轮先跳过。
+- [x] Admin Web 原 YAML 通过，最终候选镜像经 Mac 容器 smoke、真实 Forgelet/Flux 发布和业务健康验证；已实际回滚失败发布并修正 readiness。固定工具版本及缓存隔离边界见 status。
+- [x] 将完整 act 内核接入桌面 Runner 的共享调度/租约，交付日常安装包；2026-11-15 正式安装版与 homelab 共享队列的 amd64/Docker 短测试通过，业务验收单列如下。
+- [ ] Windows WSL2 Docker 验收；保留 WSLC 至真实验收完成。
+
+### 15.7 steam-tasks 正式 Mac 接单试点（2026-11-15）
+
+- [x] 原 `ubuntu-latest` act profile 可选择完整桌面执行环境；无就绪设备则回退同平台 Pod，reusable 控制节点仍由控制面处理。
+- [x] 正式 `.app` 打包 Linux arm64 监督/act 内核，独立 job Docker 引擎、Linux amd64 工作容器、私有镜像只读凭据和 scoped cache 接入现有协议。
+- [x] homelab 备份、控制面/执行镜像升级、Tasks 私有依赖授权，正式应用安装与启动；真实队列短测试成功，容器已回收。
+- [x] 原提交340ca424在正式 Mac 跑到 unit/race；发现并修复低磁盘仍声明就绪的问题，实机验证容量不足拦截及恢复，保留首轮 ENOSPC 失败。
+- [x] 同一提交原 image/reliability YAML 真实重试至终态：原20分钟预算在unit/race耗尽，51包返回ok，CI辅助包未返回；沙箱清理、终态回传和恢复接单已核对。
+- [ ] Tasks全绿与日常发布验收：定位CI辅助包/冷缓存跨架构开销，再验证PG、linux/amd64镜像推送、更新GitOps映射与Flux controller/worker健康；本轮未发布。
+- [ ] Windows 完整 act 内核打包/真实接单与取消、失联专项；WSLC 保留。
+
+### 15.8 Tasks 60分钟完整发布验收（2026-11-15）
+
+- [x] owner授权20→60分钟，固定340ca424启动正式Mac完整流程；本地业务workflow单行更新，未自动推送。
+- [x] 保留同digest Zot回滚基线；补齐GitOps images映射，渲染前后37对象相同、Flux Ready。
+- [ ] unit/race、真实PG18、Mac镜像构建推送、linux/amd64验证、Flux controller/worker发布与服务/业务健康。
+
+- [x] 60分钟首轮Mac static/unit/race/真实PG全部通过，缓存保存；错误落Pod的publisher在准备阶段取消，未发布。
+- [x] 修复portable环境连续任务交接窗口；HTTP/SQLite边界回归和完整make verify通过。
+- [ ] b17eb0ac真实链验证CI→同Mac构建交接、Zot镜像平台与Flux/业务健康。

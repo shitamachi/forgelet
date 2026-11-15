@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/shitamachi/forgelet/internal/kube"
 	"github.com/shitamachi/forgelet/internal/run"
@@ -31,21 +33,22 @@ const peerMargin = 0.15
 // The peer must cover every label and build platform this device has, so a job
 // that only this device could run is never held back for a peer that cannot
 // take it. If the peer disappears, its readiness expires within the window.
-func (s *Server) stepAsideForPeer(ctx context.Context, runnerID string, labels, platforms []string, now time.Time) bool {
+func (s *Server) stepAsideForPeer(ctx context.Context, runnerID string, capacity storage.RunnerCapacity, now time.Time) bool {
 	self, known := s.runnerInfo[runnerID]
-	if !known || len(labels) == 0 {
+	if !known || len(capacity.Labels) == 0 {
 		return false
 	}
-	queued, err := s.external.HasQueuedExternal(ctx, labels)
+	queued, err := s.external.HasQueuedExternal(ctx, capacity.Labels)
 	if err != nil || !queued {
 		return false
 	}
 	selfScore := self.Score()
 	for id, ready := range s.runnerReady {
-		if id == runnerID || now.Sub(ready.at) >= runnerReadyWindow || s.runners[id].Paused {
+		if id == runnerID || !now.Before(ready.expiresAt) || s.runners[id].Paused {
 			continue
 		}
-		if !covers(ready.labels, labels) || !covers(ready.platforms, platforms) {
+		if !covers(ready.capacity.Labels, capacity.Labels) || !covers(ready.capacity.Platforms, capacity.Platforms) ||
+			!covers(ready.capacity.Containers, capacity.Containers) {
 			continue
 		}
 		peer, ok := s.runnerInfo[id]
@@ -59,7 +62,7 @@ func (s *Server) stepAsideForPeer(ctx context.Context, runnerID string, labels, 
 
 // covers reports whether a peer advertises everything this device does. An
 // empty self list is covered by anything.
-func covers(peer, self []string) bool {
+func covers[T comparable](peer, self []T) bool {
 	for _, value := range self {
 		if !slices.Contains(peer, value) {
 			return false
@@ -69,9 +72,33 @@ func covers(peer, self []string) bool {
 }
 
 type runnerAvailability struct {
-	at        time.Time
-	platforms []string
-	labels    []string
+	expiresAt time.Time
+	capacity  storage.RunnerCapacity
+}
+
+func approvedRunnerContainers(cfg Config) []run.RunnerContainer {
+	var containers []run.RunnerContainer
+	for _, name := range cfg.RunnerFallbacks {
+		profile := cfg.Profiles[name]
+		container := run.RunnerContainer{Image: profile.Image, Platform: profile.RunnerPlatform}
+		if profile.Act != nil && cfg.RunnerActImage != "" {
+			var err error
+			container, err = actRunnerContainer(cfg, profile)
+			if err != nil {
+				continue
+			}
+		}
+		if container.Valid() && !slices.Contains(containers, container) {
+			containers = append(containers, container)
+		}
+	}
+	slices.SortFunc(containers, func(a, b run.RunnerContainer) int {
+		if n := strings.Compare(a.Image, b.Image); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Platform, b.Platform)
+	})
+	return containers
 }
 
 func (s *Server) preferRunner() bool {
@@ -102,7 +129,7 @@ func (s *Server) reservePods(ctx context.Context, limit int, repos []string) ([]
 	var idle map[string]storage.RunnerCapacity
 	now := s.now()
 	for id, ready := range s.runnerReady {
-		if now.Sub(ready.at) >= runnerReadyWindow {
+		if !now.Before(ready.expiresAt) {
 			delete(s.runnerReady, id)
 			continue
 		}
@@ -110,7 +137,7 @@ func (s *Server) reservePods(ctx context.Context, limit int, repos []string) ([]
 			if idle == nil {
 				idle = map[string]storage.RunnerCapacity{}
 			}
-			idle[id] = storage.RunnerCapacity{Platforms: ready.platforms, Labels: ready.labels}
+			idle[id] = ready.capacity
 		}
 	}
 	var capacity []storage.RunnerCapacity
@@ -131,8 +158,43 @@ func (s *Server) reservePods(ctx context.Context, limit int, repos []string) ([]
 func (s *Server) fallbackPodProfile(plan run.Plan) (kube.Profile, error) {
 	name := plan.FallbackProfile
 	profile, ok := s.cfg.Profiles[name]
-	if !ok || profile.Act != nil {
+	if !ok {
 		return kube.Profile{}, fmt.Errorf("runner fallback %q requires a native Pod profile", name)
+	}
+	if c := plan.RunnerContainer; c != nil && c.Kernel == "act" {
+		if !c.Valid() || profile.Act == nil {
+			return kube.Profile{}, fmt.Errorf("invalid act fallback environment")
+		}
+		a := *profile.Act
+		a.RunnerImage = c.JobImage
+		a.Platform = c.Platform
+		a.BuildkitConfig = c.BuildkitConfig
+		a.CPULimit = strconv.FormatInt(c.CPUs, 10)
+		a.CacheObjectBytes = c.CacheObjectBytes
+		a.MemoryLimit = strconv.FormatInt(c.MemoryBytes, 10)
+		a.DataLimit = strconv.FormatInt(c.DiskBytes, 10)
+		profile.Act = &a
+		selector, err := platformNodeSelector(profile.NodeSelector, c.Platform)
+		if err != nil {
+			return kube.Profile{}, err
+		}
+		profile.NodeSelector = selector
+		return profile, nil
+	}
+	if profile.Act != nil {
+		return kube.Profile{}, fmt.Errorf("runner fallback %q requires a native Pod profile", name)
+	}
+	if container := plan.RunnerContainer; container != nil {
+		if !container.Valid() {
+			return kube.Profile{}, fmt.Errorf("runner fallback %q has an invalid container environment", name)
+		}
+		profile.Image = container.Image
+		profile.RunnerPlatform = container.Platform
+		selector, err := platformNodeSelector(profile.NodeSelector, container.Platform)
+		if err != nil {
+			return kube.Profile{}, fmt.Errorf("runner fallback %q: %w", name, err)
+		}
+		profile.NodeSelector = selector
 	}
 	build := plan.ExternalBuild
 	if build == nil {
@@ -142,17 +204,69 @@ func (s *Server) fallbackPodProfile(plan run.Plan) (kube.Profile, error) {
 		profile.Build.InsecureRegistry != build.InsecureRegistry {
 		return kube.Profile{}, fmt.Errorf("runner fallback %q does not authorize the configured image repository and registry policy", name)
 	}
-	os, arch, _ := strings.Cut(build.Platform, "/")
-	selector := maps.Clone(profile.NodeSelector)
+	selector, err := platformNodeSelector(profile.NodeSelector, build.Platform)
+	if err != nil {
+		return kube.Profile{}, fmt.Errorf("runner fallback %q: %w", name, err)
+	}
+	profile.NodeSelector = selector
+	return profile, nil
+}
+
+func actRunnerContainer(cfg Config, p kube.Profile) (run.RunnerContainer, error) {
+	a := p.Act
+	if a == nil {
+		return run.RunnerContainer{}, fmt.Errorf("act profile required")
+	}
+	platform := a.Platform
+	if platform == "" {
+		platform = "linux/amd64"
+	}
+	image := a.RunnerImage
+	if image == "" {
+		image = p.Image
+	}
+	cpus := int64(3)
+	if a.CPULimit != "" {
+		q, err := resource.ParseQuantity(a.CPULimit)
+		if err != nil {
+			return run.RunnerContainer{}, err
+		}
+		cpus = q.Value()
+	}
+	memory := int64(4 << 30)
+	if a.MemoryLimit != "" {
+		q, err := resource.ParseQuantity(a.MemoryLimit)
+		if err != nil {
+			return run.RunnerContainer{}, err
+		}
+		memory = q.Value()
+	}
+	disk := int64(24 << 30)
+	if a.DataLimit != "" {
+		q, err := resource.ParseQuantity(a.DataLimit)
+		if err != nil {
+			return run.RunnerContainer{}, err
+		}
+		disk = q.Value()
+	}
+	c := run.RunnerContainer{Image: cfg.RunnerActImage, Platform: platform, Kernel: "act", JobImage: image, BuildkitConfig: a.BuildkitConfig, CPUs: cpus, CacheObjectBytes: a.CacheObjectBytes, MemoryBytes: memory, DiskBytes: disk}
+	if !c.Valid() {
+		return c, fmt.Errorf("invalid act runner environment")
+	}
+	return c, nil
+}
+
+func platformNodeSelector(base map[string]string, platform string) (map[string]string, error) {
+	os, arch, _ := strings.Cut(platform, "/")
+	selector := maps.Clone(base)
 	if selector == nil {
 		selector = map[string]string{}
 	}
 	for key, value := range map[string]string{corev1.LabelOSStable: os, corev1.LabelArchStable: arch} {
 		if current, exists := selector[key]; exists && current != value {
-			return kube.Profile{}, fmt.Errorf("runner fallback %q node selector conflicts with image platform %s", name, build.Platform)
+			return nil, fmt.Errorf("node selector conflicts with image platform %s", platform)
 		}
 		selector[key] = value
 	}
-	profile.NodeSelector = selector
-	return profile, nil
+	return selector, nil
 }

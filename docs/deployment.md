@@ -121,6 +121,77 @@ Runner 必须近期轮询、空闲且未暂停，镜像任务还要求其 Buildx
 
 发布镜像的目标是工作负载运行节点所需的平台。例如 amd64 节点部署 `linux/amd64`，即使 Mac Runner 本机是 Apple Silicon。回退 Pod 的构建节点按目标 OS 和架构选择，BuildKit 同样显式收到目标。控制面校验两条路径返回的镜像 digest 和平台。本机 `go test` 或未交叉编译的 `go build` 仍报告 Darwin arm64。
 
+### Mac OrbStack、Windows WSL2 Docker 与 Pod 共用 Linux 环境
+
+在 macOS 先启动 OrbStack，在 Windows 桌面应用选择 **WSL2 发行版**，填专用发行版和 Linux 用户。安装 Docker Engine 与 Buildx 到该发行版，同一用户执行 `docker version`、`docker context inspect` 和 `docker buildx inspect --bootstrap`，确认引擎可达且 builder 报告 `linux/amd64`。Windows 应用用 `pwsh -File desktop/windows/package.ps1 -SkipImage` 打包。连接控制面并完成一次配对。普通容器 CI 沿用设备身份，应用侧无需配置仓库或镜像列表。
+
+用工作区源码构建并推送试点 CI 镜像。使用有权推送该路径的 registry 账号，并让 Runner 的 Docker 和 Pod 执行账号能读取同一镜像。Mac 的镜像拉取使用 `orbstack` context，Windows 使用指定 WSL2 用户的 `~/.docker` 和 daemon endpoint。
+
+```sh
+docker buildx build --platform linux/amd64 --target executor-ci-python-go \
+  --provenance=false --sbom=false --push \
+  -t zot.k.mygo.rocks/forgelet/executor-ci-python-go:pilot .
+docker buildx imagetools inspect zot.k.mygo.rocks/forgelet/executor-ci-python-go:pilot
+```
+
+构建镜像时可用 `--build-arg GOPROXY=...` 复用已有 Go 模块镜像。业务检查如需指定 Go 模块镜像，在三端的试点计划中使用相同配置。
+
+将以下字段合并进控制面配置。`image` 填上一条命令确认的单平台 manifest digest。
+
+```yaml
+pod_schedule_timeout: 5m
+prefer_runner: true
+runner_fallbacks:
+  linux-ci: ci-python-go
+profiles:
+  ci-python-go:
+    image: zot.k.mygo.rocks/forgelet/executor-ci-python-go@sha256:<digest>
+    runner_platform: linux/amd64
+    node_selector: {forgelet.dev/execution: 'true'}
+    cpu_request: 100m
+    memory_request: 256Mi
+```
+
+`pod_schedule_timeout` 默认 5 分钟。从未绑定 Pod 的创建时间开始计时，重启沿用原时间。超时记录调度器原因并释放并发额度。已绑定且仍在拉镜像的 Pod 沿用执行期限。
+
+用 `steam-lake-ingest` 做同一 SHA、同一计划的试点。管理端手动提交以下 workflow，使用 `refs/heads/main` 和同一个完整提交 SHA。提交每次测试前，只恢复目标 Runner 的接单并等待它上线、完成镜像探测。两台都暂停后再提交第三次，从运行详情确认是 Pod，且执行节点为 amd64。分别保存三个 run 的执行落点、SHA、计划的镜像 digest 和完整测试结果。
+
+```yaml
+name: Lake Linux runner parity
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: linux-ci
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(uname -m)" = x86_64
+          python --version
+          go version
+      - run: uv sync --frozen
+      - run: uv run pytest -q -m "not integration"
+      - run: cd clients/go && go test ./...
+```
+
+Windows 发布试点沿用 `steam-admin-web` 的现有发布 workflow 路径和 `admin-web` 的自动部署绑定。把发布 job 路由到 `linux-amd64-wsl2`，保留 checkout、所有原检查和 `forgelet/build@v1` 输入。保持 `external_builds` 的仓库、workflow 路径、`refs/heads/main` 和目标镜像一致，平台为 `linux/amd64`。用 WSL2 专用账号登录 Zot，凭据仅授权该应用镜像路径。经一次真实 main push 触发，核对 job 落在 Windows 设备、Zot 中的 OCI config 为 `linux/amd64`、Flux Ready 的 GitOps revision 和 Deployment 使用同一 digest、服务 `/healthz` 返回 200。手动任务可先验证构建和推送，自动部署绑定由 push 触发。回滚按 [现有 Admin Web 操作](#steam-admin-web-日常发布与回滚)。
+
+### 设备上的仓库 secrets
+
+设备是个人机器，默认拿不到仓库 secrets：使用 `secrets` 的 external job 在准入阶段就被拒绝。管理员把仓库列入 `runner_secrets` 后，这些仓库的设备任务才和 Pod 一样领取 secrets。
+
+```yaml
+runner_secrets:
+  - owner/project
+```
+
+- 只影响执行位置。同一份计划在设备上按 attempt 租约、在 claim 之后通过原有凭据端点取值，加密存储、运行时读取和日志脱敏都没有分叉。
+- 未列入的仓库不会被静默改派到 Pod，而是返回诊断；把仓库加进列表或继续使用集群 profile。
+- 列表只校验 `owner/repo` 格式，不要求仓库已存在，因此可以先登记配置再在 Web 启用仓库。
+- 只给可信仓库和设备开这个开关。设备上执行的任务能读到该账号可访问的文件，也没有出网限制。
+
 ### Web 管理 Runner
 
 管理员在左侧 **Runners** 查看配置文件与 Web 登记的设备、最近连接和当前任务。最近 30 秒内有成功轮询或续租时，空闲设备显示「在线」。执行中的状态来自当前任务租约。控制面重启后，最近连接时间会在设备下一次连接时更新。
@@ -296,6 +367,7 @@ kubectl -n forgelet create secret generic forgelet-auth \
 | `profiles.homelab.control_plane_timeout` | 临时控制面中断容忍窗口，例如 `5m`；默认 5 分钟，最大 1 小时 |
 | `profiles.homelab.image` | 已导入或可以拉取的执行镜像；workflow 使用 `runs-on: homelab` |
 | `max_parallel` | 默认 4，按集群余量调整；starting/running 都占额度 |
+| `runner_secrets` | 允许在桌面设备上使用仓库 secrets 的 `owner/repo` 列表；默认空，只允许集群 Pod |
 | `public_url` | 用户打开 Checks 详情时访问的地址；token/open 可省略，此时 Checks 不带详情链接；session 必填 |
 | `internal_url` / TLS / CA | 与上节 Service 和证书一致 |
 | `github_app_id` / `github_app_key_file` | 手动模式都设为 `''`；接 GitHub 时同时填写 |
@@ -1112,3 +1184,41 @@ profiles:
 
 act 省略该项时仍256MiB；其暂存预算为对象预算两倍，可能同时存在分块/封装文件，应为节点临时磁盘预留容量。
 控制面的磁盘低水位仅检测 data_dir，不能代替执行节点临时磁盘容量管理。真实部署结果与自动测试范围分别见 status。
+
+## 原 YAML 的私有依赖授权（2026-11-11）
+
+原 workflow 用 `secrets.GITHUB_TOKEN` 下载其他私有仓库时，默认来源仓库 token 无法读取依赖。可在控制面配置中列出实际依赖，不改业务 YAML：
+
+```yaml
+repository_dependencies:
+  shitamachi/steam-tasks:
+    - shitamachi/steam-lake-ingest
+    - shitamachi/steam-proto-go
+    - shitamachi/task-engine-go
+```
+
+来源和依赖必须属于同一 GitHub App installation 所在组织，且 App 仍有授权。每个来源最多配置 16 个依赖；签发的短期 token 只含来源及依赖集合的 `contents: read`，没有写权限。未配置的仓库保持仅来源仓库权限。计划保存名称快照，取凭据前后检查授权；修改集合后应创建新运行，旧计划不能自动扩大权限。依赖库无需开启自己的 CI。
+
+跨架构 act 试跑可在对应管理员 profile 的 `act` 下配置 `platform: linux/amd64`；它同时选择任务容器平台和 Docker 默认构建平台。镜像验收以 registry 的实际 `os/architecture` 和 revision label 为准。此配置代码需随新版控制面、executor 和 act worker 一起发布；本机原型验证不代表已安装桌面应用完成接入。
+
+### Mac 完整 act 接单（2026-11-15）
+
+使用包含 Linux arm64 Runner/act worker 的正式 Mac 应用，OrbStack 必须可用。控制面配置示意：
+
+```yaml
+runner_act_image: docker.io/library/docker@sha256:ea9d20492ca1caaaba78e68453433895d256173c79281756e88b745647fcbcfd
+runner_registry_config: /runner-registry
+runner_fallbacks:
+  ubuntu-latest: ubuntu-latest
+runner_secrets:
+  - shitamachi/steam-tasks
+repository_dependencies:
+  shitamachi/steam-tasks:
+    - shitamachi/steam-proto-go
+    - shitamachi/task-engine-go
+    - shitamachi/steam-lake-ingest
+```
+
+`runner_registry_config/config.json` 由只读工具镜像 reader Secret 挂载到控制面；不得使用管理员或业务 publisher Docker 配置。现有 ubuntu-latest.act 指定固定 runner_image、platform: linux/amd64、CPU/内存、镜像目录与 BuildKit 设置。引擎镜像必须写完整 registry/repository 名称。应用只配置控制面 URL 并复用设备认证；原生 `forgelet/build@v1` 的可选 Docker 配置不参与此 act 路径，publisher 用原 YAML 的仓库 secrets。
+
+无匹配的就绪设备则走原 Pod。Tasks main 的原 image.yml 先执行 reusable reliability，通过后构建/推送，既有 tasks 自动 CD 负责 Flux；失败不会发布。设备停止或关窗会取消当前任务。安装或升级应用请在空闲时进行，并保留旧应用、ConfigMap、Deployment 和 SQLite 备份。Windows 包尚不包含完整 act Linux 双内核，不能把 WSL2 native 通过视作此路径已通过。

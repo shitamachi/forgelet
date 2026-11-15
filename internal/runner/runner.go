@@ -17,10 +17,10 @@ import (
 	"os/exec"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/shitamachi/forgelet/internal/proc"
 	"github.com/shitamachi/forgelet/internal/run"
 	"github.com/shitamachi/forgelet/internal/sysinfo"
 	"github.com/shitamachi/forgelet/internal/wslc"
@@ -68,11 +68,13 @@ type client struct {
 	http    http.Client
 	config  Config
 	backend backend
+	docker  *dockerExecutor
 }
 
 // backend starts one job attempt in the environment this platform provides.
 type backend interface {
 	executeLease(ctx context.Context, client *client, workRoot string, grant run.ExternalGrant, token string, status func(Status)) Status
+	buildPlatforms(context.Context) string
 	// describe names the backend and, where one exists, its engine version.
 	describe() descriptor
 }
@@ -145,7 +147,7 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 	if err != nil {
 		return err
 	}
-	c := client{url: u, config: cfg, backend: execution, http: http.Client{
+	c := client{url: u, config: cfg, backend: execution, docker: newDockerExecutor(execution, workRoot), http: http.Client{
 		Timeout:       5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -168,6 +170,9 @@ func Run(ctx context.Context, cfg Config, workRoot string, status func(Status)) 
 			nextInfo = time.Now().Add(infoInterval)
 		}
 		var grant run.ExternalGrant
+		if c.docker != nil {
+			c.docker.prepare(ctx, status)
+		}
 		sent := time.Now()
 		code, err := c.send(ctx, "/poll", request{Attempt: attempt, Info: info}, &grant)
 		select {
@@ -232,7 +237,15 @@ func (c *client) execute(ctx context.Context, workRoot string, grant run.Externa
 		defer cancel()
 		c.renew(execution, request{JobID: grant.JobID, Attempt: token}, deadline)
 	}()
-	result := c.backend.executeLease(execution, c, workRoot, grant, token, status)
+	var result Status
+	switch {
+	case grant.Container == nil:
+		result = c.backend.executeLease(execution, c, workRoot, grant, token, status)
+	case c.docker != nil:
+		result = c.docker.execute(execution, c, grant, token, status)
+	default:
+		result = Status{State: "failed", Job: &grant, Message: "设备没有 Linux 容器执行能力"}
+	}
 	cancel()
 	<-done
 	return result
@@ -281,9 +294,16 @@ func (c *client) send(ctx context.Context, endpoint string, input request, outpu
 	req.Header.Set("Authorization", "Bearer "+c.config.Token)
 	req.Header.Set("Content-Type", "application/json")
 	if endpoint == "/poll" {
-		req.Header.Set(run.RunnerBuildPlatformsHeader, buildPlatforms(ctx))
+		req.Header.Set(run.RunnerBuildPlatformsHeader, c.backend.buildPlatforms(ctx))
 		if labels := deviceLabels(c.config); len(labels) > 0 {
 			req.Header.Set(run.RunnerLabelsHeader, strings.Join(labels, ","))
+		}
+		if c.docker != nil {
+			data, err := json.Marshal(c.docker.ready)
+			if err != nil {
+				return 0, err
+			}
+			req.Header.Set(run.RunnerContainersHeader, string(data))
 		}
 	}
 	res, err := c.http.Do(req)
@@ -291,6 +311,14 @@ func (c *client) send(ctx context.Context, endpoint string, input request, outpu
 		return 0, err
 	}
 	defer func() { _ = res.Body.Close() }()
+	if endpoint == "/poll" && c.docker != nil && (res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusOK) {
+		var approved []run.RunnerContainer
+		header := res.Header.Get(run.RunnerContainersHeader)
+		if header != "" && (json.Unmarshal([]byte(header), &approved) != nil || len(approved) > run.MaxRunnerContainers) {
+			return 0, errors.New("控制面返回的 Linux 执行环境配置无效")
+		}
+		c.docker.approved = slices.DeleteFunc(approved, func(c run.RunnerContainer) bool { return !c.Valid() })
+	}
 	if res.StatusCode == http.StatusOK {
 		err = json.NewDecoder(io.LimitReader(res.Body, 16<<10)).Decode(output)
 	}
@@ -312,12 +340,11 @@ func DesktopState(state run.State) string {
 	return string(state)
 }
 
-func buildPlatforms(ctx context.Context) string {
+func probeBuildPlatforms(ctx context.Context, command func(context.Context, ...string) *exec.Cmd) string {
 	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	command := exec.CommandContext(probe, "docker", "buildx", "inspect", "--timeout", "2s")
-	proc.Hide(command)
-	output, err := command.Output()
+	cmd := command(probe, "buildx", "inspect", "--timeout", "2s")
+	output, err := cmd.Output()
 	if err != nil {
 		return "none"
 	}
