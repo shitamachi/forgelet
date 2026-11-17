@@ -268,7 +268,7 @@ func New(cfg Config, store Store, runtime Runtime, provider Provider) (*Server, 
 	for label, fallback := range cfg.RunnerFallbacks {
 		p, ok := cfg.Profiles[fallback]
 		actFallback := p.Act != nil && cfg.RunnerActImage != "" && label == fallback
-		if external == nil || !runnerName.MatchString(label) || !ok || (p.Act != nil || cfg.Profiles[label].Act != nil) && !actFallback {
+		if external == nil || !run.ValidRunnerLabel(label) || !ok || (p.Act != nil || cfg.Profiles[label].Act != nil) && !actFallback {
 			return nil, fmt.Errorf("runner fallback %q requires a portable label and a native Pod profile", label)
 		}
 		if actFallback {

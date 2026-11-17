@@ -14,26 +14,29 @@ import (
 )
 
 func TestActDeviceExecutesOriginalStepsAndUsesScopedCache(t *testing.T) {
-	for _, ready := range []bool{true, false} {
-		t.Run(map[bool]string{true: "device", false: "pod"}[ready], func(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		ready bool
+	}{{"ubuntu-latest", true}, {"ubuntu-latest", false}, {"ubuntu-24.04", true}, {"ubuntu-24.04", false}} {
+		t.Run(tc.label+"/"+map[bool]string{true: "device", false: "pod"}[tc.ready], func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"auths":{}}`), 0600); err != nil {
 				t.Fatal(err)
 			}
 			h := externalHarnessWith(t, 1, func(h *harness) {
-				h.cfg.Profiles["ubuntu-latest"] = kube.Profile{Image: "executor:act", Act: &kube.ActProfile{RunnerImage: "registry.test/tools@sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64", CPULimit: "4", MemoryLimit: "4Gi"}}
+				h.cfg.Profiles[tc.label] = kube.Profile{Image: "executor:act", Act: &kube.ActProfile{RunnerImage: "registry.test/tools@sha256:" + strings.Repeat("a", 64), Platform: "linux/amd64", CPULimit: "4", MemoryLimit: "4Gi"}}
 				h.cfg.RunnerActImage = "registry.test/engine@sha256:" + strings.Repeat("b", 64)
 				h.cfg.RunnerRegistryConfig = dir
-				h.cfg.RunnerFallbacks = map[string]string{"ubuntu-latest": "ubuntu-latest"}
+				h.cfg.RunnerFallbacks = map[string]string{tc.label: tc.label}
 				h.cfg.RunnerSecrets = []string{"me/repo"}
 			})
-			env, err := actRunnerContainer(h.cfg, h.cfg.Profiles["ubuntu-latest"])
+			env, err := actRunnerContainer(h.cfg, h.cfg.Profiles[tc.label])
 			if err != nil {
 				t.Fatal(err)
 			}
 			encoded, _ := json.Marshal([]run.RunnerContainer{env})
 			headers := map[string]string{"Authorization": "Bearer " + testMachineToken, "Content-Type": "application/json", run.RunnerLabelsHeader: run.MacRunnerLabel}
-			if ready {
+			if tc.ready {
 				headers[run.RunnerContainersHeader] = string(encoded)
 			}
 			attempt := "frja_" + strings.Repeat("c", 64)
@@ -43,7 +46,7 @@ func TestActDeviceExecutesOriginalStepsAndUsesScopedCache(t *testing.T) {
 			if code, b := poll(); code != 204 {
 				t.Fatal(code, string(b))
 			}
-			item := h.manual(`on: push
+			item := h.manual(strings.ReplaceAll(`on: push
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -52,14 +55,14 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version: '1.26.4'}
       - run: docker info
-`)
+`, "ubuntu-latest", tc.label))
 			if item.Jobs[0].Plan.TimeoutSeconds != 1200 {
 				t.Fatal("lost original timeout")
 			}
 			h.tick()
 			job := podScheduleRun(h, item.ID).Jobs[0]
 			code, b := poll()
-			if !ready {
+			if !tc.ready {
 				if code != 204 || job.PodUID == "" || job.Plan.External {
 					t.Fatalf("fallback: %d %s %+v", code, b, job)
 				}

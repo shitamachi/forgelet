@@ -103,7 +103,7 @@ func TestDockerCLIFake(t *testing.T) {
 	case strings.HasPrefix(mode, "print:"):
 		// Exit before the test framework prints its own summary, so the caller
 		// sees exactly what the fake Docker CLI would print.
-		os.Stdout.WriteString(strings.TrimPrefix(mode, "print:"))
+		_, _ = os.Stdout.WriteString(strings.TrimPrefix(mode, "print:"))
 		os.Exit(0)
 	}
 }

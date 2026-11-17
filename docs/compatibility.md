@@ -408,3 +408,5 @@ PR Check使用原始head SHA并命名为 `forgelet / PR / …`，与分支push�
 阶段14运行环境修正：homelab Ubuntu工具镜像取消历史全局 `GODEBUG=http2client=0`，业务Go程序恢复正常HTTP/2协商；网络代理绕行如需保留，显式限定在仓库的依赖下载step。现存执行Pod不回写镜像，新Pod按profile选择固定digest。API的真实Redis测试需要 `postgres` 镜像组（含Redis别名），否则短测试预算可能被首次公网拉取耗尽；不扩大测试预算或跳过断言。
 
 2026-11-15正式安装版Mac的Tasks原 `image.yml`/`reliability.yml` 实测：共享队列/租约、reusable控制节点、linux/amd64工具容器、checkout、setup-go、私有依赖、静态检查/编译、Atlas、迁移与unit/race执行已进入实际路径；首轮因宿主Docker磁盘不足失败，增加24GiB准入探测并释放生成缓存后重试无ENOSPC，但在原20分钟预算内未完成unit/race。51包返回ok，两个CI辅助包无结果；本轮不能视为Tasks全workflow、PG、镜像发布和CD兼容验收通过。
+
+2026-11-16 Windows WSL2正式桌面端完成 steam-cm `490ddd455687bf652f4f87e7aa9a5936c0d32b8a` 的原 rust-ci.yml，`workflow_dispatch`/`publish=true`，run `f93b038c7b1eda46cc2aeb0b` success。`ubuntu-24.04` profile标签的点号校验已修正；原Rust1.97、pwsh、Python检查、30/45分钟预算、release/只读非root smoke、精确镜像managed测试及tested tag推送全部保留，两个job均由同一Windows设备执行。registry digest/config与受测镜像一致，按digest拉取后原smoke再次通过。环境包含原固定Rust builder alias和仅替换apt源URL的固定Debian变体，具体digest/边界见deployment与status；不保证上游基础镜像字节一致，不表示连接真实Steam、生产部署、跨架构构建或失联专项通过。

@@ -108,11 +108,11 @@ func RunnerLabels(header string) []string {
 
 // ValidRunnerLabel matches the profile names a plan may use as runs-on.
 func ValidRunnerLabel(label string) bool {
-	if label == "" || len(label) > 64 || label[0] == '-' {
+	if label == "" || len(label) > 64 || label[0] == '-' || label[0] == '.' {
 		return false
 	}
 	for _, r := range label {
-		if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+		if r != '-' && r != '.' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
