@@ -63,6 +63,8 @@ open 'bin/Forgelet Runner.app'
 
 右侧切换「日志」和「状态」。点「复制记录」将两类记录复制到系统剪贴板，点「导出…」或按 `⇧⌘S` 可通过系统保存面板输出 `.txt`。窗口保留最近 1 MiB 构建日志，超出保留范围会标出省略。用「查看运行」打开控制面查看完整日志和产物。
 
+Windows 与 macOS 的「状态」记录按桌面系统的本地时区显示事件到达时间，例如 `2026-11-17 23:24:18 +08:00`，包含日期和 UTC 偏移。复制、导出沿用记录时的时间，不会按导出时的时区重算；构建日志仍保留执行器的原文。两端应用升级后生效。
+
 ### 从 Mac 发布集群镜像
 
 在控制面 YAML 的 `external_builds` 为来源仓库、workflow 和分支配置镜像仓库及目标平台。平台可选 `linux/amd64` 或 `linux/arm64`。状态栏及导出记录显示当前任务的目标平台。
@@ -224,7 +226,7 @@ Windows 设备不直接在 Windows 账户执行 job：桌面端把每次 attempt
 - **WSLC 容器**（默认）：调用 `wslc.exe`，每次 attempt 启动一个干净容器，环境由镜像固定。要求 WSL 2.9.3+。
 - **WSL2 发行版**：在已安装的 WSL2 发行版里原生运行，直接使用该发行版自己的 Docker（`docker`、`docker buildx`）、语言运行时和工具链，适合构建镜像或需要容器的任务。要求该发行版已安装并能启动。
 
-两种后端都要求 Windows 10 1809+ 或 Windows 11、到控制面的私网 HTTPS；构建机另需 Go 1.27+ 和 Rust（MSVC 工具链）。
+两种后端都要求 Windows 10 1809+ 或 Windows 11、到控制面的私网 HTTPS；构建机另需 Go 1.27+ 和 Rust（MSVC 工具链及 Windows SDK 资源编译器）。
 
 在 Windows 构建机生成应用和 Linux 执行镜像：
 
@@ -233,6 +235,8 @@ pwsh -File desktop/windows/package.ps1
 ```
 
 产物是单个 `dist\Forgelet Runner.exe`（Windows 执行器与 WSL2 用的 Linux 执行器都由构建脚本编译并内嵌，首次启动写入 `%LOCALAPPDATA%\io.forgelet.runner\bin`，无需安装其他文件），同目录的 `SHA256SUMS.txt` 可用于校验；若未加 `-SkipImage`，还会用 `wslc build` 生成 `forgelet-runner-wslc:dev`。只重建执行镜像时可执行 `make runner-windows-image`；镜像来自 `desktop/windows/image/Dockerfile`，以非 root 用户运行，内含 bash、git、CA 和常用解压工具。
+
+Windows 应用图标由 `build.rs` 通过构建期依赖 `winresource` 写入 exe 的图标组资源 `1`，供 NSH 窗口、任务栏及 Explorer 使用，无需旁置图标文件。`desktop/windows/assets/runner.ico` 包含 16–256 像素的九档图像，沿用 macOS 的 F 与状态点标记；修改图标后可用 `pwsh -File desktop/windows/icon.ps1` 重新生成。此依赖仅在构建时调用 Windows SDK 资源编译器，不增加常驻组件。
 
 把镜像推送到 Windows 设备可拉取的 registry，并固定 digest：
 
@@ -1201,9 +1205,9 @@ repository_dependencies:
 
 跨架构 act 试跑可在对应管理员 profile 的 `act` 下配置 `platform: linux/amd64`；它同时选择任务容器平台和 Docker 默认构建平台。镜像验收以 registry 的实际 `os/architecture` 和 revision label 为准。此配置代码需随新版控制面、executor 和 act worker 一起发布；本机原型验证不代表已安装桌面应用完成接入。
 
-### Mac 完整 act 接单（2026-11-15）
+### Mac 与 Windows WSL2 完整 act 接单（2026-11-16）
 
-使用包含 Linux arm64 Runner/act worker 的正式 Mac 应用，OrbStack 必须可用。控制面配置示意：
+Mac 应用须包含 Linux arm64 Runner/act worker，OrbStack 必须可用；Windows 应用须包含 Linux amd64 双内核并选用可用 Docker 的 WSL2 发行版。控制面配置示意：
 
 ```yaml
 runner_act_image: docker.io/library/docker@sha256:ea9d20492ca1caaaba78e68453433895d256173c79281756e88b745647fcbcfd
@@ -1221,4 +1225,10 @@ repository_dependencies:
 
 `runner_registry_config/config.json` 由只读工具镜像 reader Secret 挂载到控制面；不得使用管理员或业务 publisher Docker 配置。现有 ubuntu-latest.act 指定固定 runner_image、platform: linux/amd64、CPU/内存、镜像目录与 BuildKit 设置。引擎镜像必须写完整 registry/repository 名称。应用只配置控制面 URL 并复用设备认证；原生 `forgelet/build@v1` 的可选 Docker 配置不参与此 act 路径，publisher 用原 YAML 的仓库 secrets。
 
-无匹配的就绪设备则走原 Pod。Tasks main 的原 image.yml 先执行 reusable reliability，通过后构建/推送，既有 tasks 自动 CD 负责 Flux；失败不会发布。设备停止或关窗会取消当前任务。安装或升级应用请在空闲时进行，并保留旧应用、ConfigMap、Deployment 和 SQLite 备份。Windows 包尚不包含完整 act Linux 双内核，不能把 WSL2 native 通过视作此路径已通过。
+无匹配的就绪设备则走原 Pod。Tasks main 的原 image.yml 先执行 reusable reliability，通过后构建/推送；自动 CD 仅按当前发布绑定执行。设备停止或关窗会取消当前任务。安装或升级应用请在空闲时进行，并保留旧应用、ConfigMap、Deployment 和 SQLite 备份。Windows 已在真实 WSL2 完成 Tasks 的 PG18 测试与镜像发布；不等于取消/失联专项或所有业务部署均通过，具体范围见 status。
+
+Rust 的原 `runs-on: ubuntu-24.04` 可使用相同路径，额外加入 `runner_fallbacks: {ubuntu-24.04: ubuntu-24.04}` 并将 `shitamachi/steam-cm` 加入 `runner_secrets`。profile 标签允许小写字母、数字、连字符与点号，首字符必须为字母或数字；设备登记名继续使用原来的严格校验。对应 act profile 仍须提供固定 Rust/PowerShell 工作镜像与自己的资源预算，不把它替换成 ubuntu-latest 的工具环境。
+
+CM 原 rust-ci.yml 仅在 `workflow_dispatch` 且 `inputs.publish=true` 时推送经过 smoke 和 managed lifecycle 测试的 `registry.shitamchi.com/steam-cm:rust-<完整SHA>`，不部署生产池。仓库 secrets `STEAM_CM_REGISTRY_USERNAME` 与 `STEAM_CM_REGISTRY_PASSWORD` 通过现有加密 secrets API 配置，计划只保存名称；不可把值放进 inputs、源码或命令行参数。普通 push 保留 publish=false 行为。
+
+2026-11-16 的 CM 验收为慢速 Debian 下载调整了 `ubuntu-24.04.act.image_mirrors`：`debian:bookworm-slim` 固定到 `zot.k.mygo.rocks/forgelet/mirrors/debian-bookworm@sha256:f5b3a2dc9f35248456d0ca2945603d78001a9b225cb33db19a6e8f0732a91bef`。该变体以原固定 digest `ec31d744f83f4a73447ba045aaab9409997efe5cc706eca4890c1be36cc1606a` 为基底，只将 debian.sources 的 `http://deb.debian.org` 替换成 `http://mirrors.aliyun.com`；suites、组件和 Signed-By 保留，未关闭 apt 签名校验。参考 [Debian 镜像机制](https://www.debian.org/mirror/list) 与 [镜像提供方说明](https://developer.aliyun.com/mirror/debian)。这是管理员提供的固定基础镜像变体，不代表上游 Debian 镜像字节一致；原业务 Dockerfile 的 apt 安装与全部测试仍实际运行。成本为现有 registry 中一个额外 tag/digest 和一个小配置层，无新增常驻服务。原 digest 保留供回退，旧运行的镜像快照不追溯修改，新运行重新编译计划后使用此变体。

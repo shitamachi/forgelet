@@ -357,3 +357,39 @@ Owner授权对齐并推送本地已提交业务代码；未提交改动保留原
 - [x] 60分钟首轮Mac static/unit/race/真实PG全部通过，缓存保存；错误落Pod的publisher在准备阶段取消，未发布。
 - [x] 修复portable环境连续任务交接窗口；HTTP/SQLite边界回归和完整make verify通过。
 - [ ] b17eb0ac真实链验证CI→同Mac构建交接、Zot镜像平台与Flux/业务健康。
+
+### 15.9 Windows WSL2 完整测试与镜像发布（2026-11-16）
+
+- [x] 固定 Tasks `340ca424`，原 image.yml 调用 reliability（postgres=true）；沿用 owner 已授权的 60 分钟测试预算，其余步骤与断言保留。
+- [x] Windows 正式桌面应用在真实 homelab 队列完成 static、unit/race、Testcontainers PG18；同设备连续领取 build-push，使用原 Docker Actions 构建并推送 Zot。
+- [x] 独立读取 registry 核对 OCI digest、linux/amd64 与源码 revision；按 digest 拉取镜像，在非 root、无网络容器中验证五个二进制、Atlas 与两套迁移文件。
+- [ ] 本次镜像的 GitOps/Flux 部署与业务健康：当前现网已改为 controller/worker 独立镜像且移除了旧 images 映射；owner 随后决定转用 steam-cm 测试，Tasks 部署验证停止。本轮 workflow_dispatch 未追加自动 CD，未覆盖现网。
+- [ ] Windows 取消、失联与专用发行版专项；本轮成功路径不替代这些验收，也不代表 forgelet/build@v1 的跨架构构建通过。
+
+### 15.10 Windows WSL2 steam-cm 原工作流发布验收（2026-11-16，完成）
+
+- [x] owner 改用 steam-cm；固定 master `490ddd455687bf652f4f87e7aa9a5936c0d32b8a`，保留原 rust-ci.yml 的测试/镜像步骤与 30/45 分钟预算，以 publish=true 手动发布 tested image，不接生产部署。
+- [x] 修复 `ubuntu-24.04` 中点号被 Runner profile 校验拒绝的问题；label 解析、HTTP/SQLite 桌面领取/Pod 回退回归及全量 Go race、lint 通过，已部署控制面。
+- [x] `make -o web-browsers verify` 使用已有系统 Chromium 156 通过：真实构建、全量 race、lint、generate、42 项前端单测、18 项浏览器用例（41.1s）。默认 make verify 的浏览器下载过慢而中止；临时验证目录恢复 LF，仓库 fixture/前端文件未改。
+- [x] 正式 Windows 应用完成原 Rust test→release image→容器安全 smoke→精确镜像 managed lifecycle→registry 推送；独立核验 digest、linux/amd64、受测 image config ID，并从 registry 按 digest 拉取后重跑原 smoke。
+- [x] 记录首轮取消结果、配置/凭据变化和清理；不连接真实 Steam，CM 三个生产池的镜像、generation 和副本前后相同。owner 已明确要求继续重跑。
+
+首轮 `47c2ea873681c0facfc9fb11` 由 Windows 执行，Rust fmt/架构/Clippy 与 cargo test（147 passed、3 ignored、0 failed）通过，benchmark 编译阶段在桌面切换为暂停后 cancelled；image skipped，未发布。已询问 owner 是否继续，未自行恢复暂停的设备。
+
+owner 确认后以原计划重跑 `c3923ef42544c4cbfed1d75e2f59a526`，test 九步全部成功；image 在慢速 Debian apt 下载时桌面再次进入暂停，取消且未发布。保留两次取消记录，不归因为测试断言失败。
+
+固定原 Debian digest 的派生基础镜像仅替换 apt 源 URL，签名校验保留；实际 apt 更新/安装通过后，将新 digest 冻结到全新运行 `f93b038c7b1eda46cc2aeb0b`。该运行 **success**，北京时间21:31:59→21:45:36，13分36秒；两个 job 均在 Windows。Rust 147 passed/3 ignored、15项Python测试、mock rollout、两项精确 release 镜像 managed 测试通过，发布 `registry.shitamchi.com/steam-cm:rust-490ddd455687bf652f4f87e7aa9a5936c0d32b8a`，digest `sha256:b40329fb0ce7c3e5806810d08ff5382672b71364c1991f17d66eeb55fe7e7362`。原 YAML、Dockerfile、publish=true 和1800/2700秒预算保持；基础镜像变体与上游字节差异单列于 status/deployment。发布后独立 smoke 通过，生产池未变，Runner 留在在线空闲/最小化状态。
+
+### 15.11 Windows Runner 图标与 release exe（2026-11-17）
+
+- [x] 修复 exe 缺少图标资源：沿用现有品牌标记，内嵌九档 ICO 为 NSH 使用的图标组资源 `1`，记录可复现生成方式及构建依赖。
+- [x] 桌面 6 项单测、修改文件 rustfmt 检查通过；Clippy 放行原有 `worker.rs` 的 `large_enum_variant` 一项后通过，其余警告仍作为错误。
+- [x] 从当前工作树构建 release 单文件 exe 和 SHA256 校验文件；检查 PE 的九个图像、图标组 `1` 和版本资源，启动新版确认标题栏图标显示，保持暂停。
+- [ ] 任务栏图标直接目视确认：当前桌面工具仅返回应用窗口截图，已验证 NSH 读取的同一窗口图标资源，未把标题栏截图记为任务栏截图。未操作实际集群，未提交/推送。
+
+### 15.12 桌面状态记录使用本地时区（2026-11-17）
+
+- [x] Windows/macOS 接入同一个本地时间格式模块，替换窗口启动后的相对计时；包括日期、秒及 UTC 偏移，复制/导出复用同一记录。
+- [x] 替换旧相对时间测试，覆盖 UTC、正负偏移、跨日期和非整小时时区；Windows 6 项桌面测试与带原有枚举警告例外的 Clippy 通过，macOS locked 依赖解析通过。
+- [x] Windows release 写入 `dist/local-time`，保留原 exe；实机「状态」显示 `2026-11-17 23:24:18 +08:00`，只关闭本次暂停的验证窗口。
+- [ ] macOS 原生构建、单测及窗口验收：当前 Windows 环境无法构建 AppKit 应用，需要 Apple Silicon Mac 重新打包。共享格式逻辑已在 Windows 测试，不混称 Mac 原生验收完成。

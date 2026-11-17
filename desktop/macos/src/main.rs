@@ -1,5 +1,7 @@
 mod activity;
 mod settings;
+#[path = "../../status_time.rs"]
+mod status_time;
 mod worker;
 
 use activity::{LOG_BYTES, PREVIEW_BYTES, Tail, write_report};
@@ -16,7 +18,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use worker::{Connection, Job, Status, Worker};
 
@@ -148,8 +150,8 @@ fn tab(name: &'static str, pane: Pane, current: Signal<Pane>) -> impl IntoElemen
         .child(text(name).text_size(px(12.0)).text_color(ink()))
 }
 
-fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
-    let elapsed = started.elapsed().as_secs();
+fn add_status(tail: &RefCell<Tail>, update: &Status) {
+    let time = status_time::now();
     let label = match update.state.as_str() {
         "succeeded" | "failed" | "stopped" | "timed_out" => job_label(&update.state),
         state => state_label(state),
@@ -173,19 +175,7 @@ fn add_status(tail: &RefCell<Tail>, started: Instant, update: &Status) {
         format!("  {}", update.message)
     };
     tail.borrow_mut()
-        .push(format!("{}  {label}{job}{detail}\n", stamp(elapsed)));
-}
-
-/// The status timeline's offset from the start of this window. Minutes alone
-/// are ambiguous once a window stays open for hours, so an hour or more adds
-/// the hours field instead of a three-digit minute count.
-fn stamp(seconds: u64) -> String {
-    let (hours, minutes, seconds) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
-    if hours > 0 {
-        format!("+{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("+{minutes:02}:{seconds:02}")
-    }
+        .push(format!("{time}  {label}{job}{detail}\n"));
 }
 
 /// The window's own title bar: the system bar is hidden so the sidebar and the
@@ -287,9 +277,8 @@ fn App() -> impl IntoElement {
     let job_state = signal(String::new());
     let run_url = signal(String::new());
     let worker = Rc::new(RefCell::new(None::<Worker>));
-    let started = Instant::now();
     let timeline = Rc::new(RefCell::new(Tail::new(64 * 1024)));
-    add_status(&timeline, started, &Status::default());
+    add_status(&timeline, &Status::default());
     let timeline_text = signal(timeline.borrow().snapshot(PREVIEW_BYTES));
     let logs = Arc::new(Mutex::new(Tail::new(LOG_BYTES)));
     let log_text = signal(String::new());
@@ -304,7 +293,7 @@ fn App() -> impl IntoElement {
     let record = {
         let timeline = timeline.clone();
         Rc::new(move |update: &Status| {
-            add_status(&timeline, started, update);
+            add_status(&timeline, update);
             timeline_text.set(timeline.borrow().snapshot(PREVIEW_BYTES));
         })
     };
@@ -884,23 +873,6 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A window stays open for hours; the timeline must not print a
-    /// three-digit minute count that reads like seconds.
-    #[test]
-    fn timeline_offsets_become_clear_after_an_hour() {
-        for (seconds, want) in [
-            (0, "+00:00"),
-            (29, "+00:29"),
-            (163, "+02:43"),
-            (3599, "+59:59"),
-            (3600, "+1:00:00"),
-            (19118, "+5:18:38"),
-            (360000, "+100:00:00"),
-        ] {
-            assert_eq!(stamp(seconds), want, "seconds {seconds}");
-        }
-    }
 
     /// The window must name every state the runner reports, including the two
     /// that only exist since pairing onboarding.
